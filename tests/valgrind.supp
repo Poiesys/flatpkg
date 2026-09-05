@@ -1,0 +1,74 @@
+# Valgrind suppressions for flatpkg; pass GLib's own glib.supp too.  What is left
+# on FreeBSD is GObject registering its fundamental types from ELF constructors -
+# one-time, still reachable at exit, otherwise indistinguishable from a real leak.
+{
+   gobject-type-register-fundamental-realloc
+   Memcheck:Leak
+   match-leak-kinds: possible,reachable
+   fun:realloc
+   ...
+   fun:g_type_register_fundamental
+}
+{
+   gobject-type-class-get-calloc
+   Memcheck:Leak
+   match-leak-kinds: possible,reachable
+   fun:calloc
+   ...
+   fun:g_type_class_get
+}
+# No symbol inside libgobject for this one (the build strips the internal helpers),
+# so it is matched by shape: a g_malloc0 inside libgobject with the loader's
+# constructor frames below.  flatpkg's code cannot appear in that chain.
+{
+   gobject-elf-constructor-init
+   Memcheck:Leak
+   match-leak-kinds: possible,reachable
+   fun:calloc
+   fun:g_malloc0
+   obj:*/libgobject-2.0.so*
+   ...
+   obj:*/ld-elf.so.1
+   obj:*/ld-elf.so.1
+}
+# "still reachable" blocks from allocations made while the loader runs shared-library
+# constructors: the stack bottoms out at ld-elf.so.1, where flatpkg's own allocations
+# bottom out at crt1/__libc_start1.  Not leaks, but the bulk of a show-all report.
+{
+   library-constructor-reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   ...
+   obj:*/ld-elf.so.1
+   obj:*/ld-elf.so.1
+}
+# FreeBSD libc's environment array under valgrind: clearenv() + putenv() + setenv()
+# makes memcheck report an uninitialised value inside libc, from the slack of the
+# environ array setenv itself grew.  Reproduces with libc alone.
+{
+   freebsd-libc-environ-slack-setenv
+   Memcheck:Cond
+   obj:/lib/libc.so.7
+   fun:setenv
+   ...
+}
+{
+   freebsd-libc-environ-slack-getenv
+   Memcheck:Cond
+   fun:getenv
+   ...
+}
+{
+   freebsd-libc-environ-slack-unsetenv
+   Memcheck:Cond
+   fun:unsetenv
+   ...
+}
+# The same slack, read by libc's own exit-time finalizers.
+{
+   freebsd-libc-environ-slack-at-exit
+   Memcheck:Cond
+   ...
+   fun:__cxa_finalize
+   ...
+}

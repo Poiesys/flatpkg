@@ -1,0 +1,17 @@
+flatpkg runs unmodified Flatpak Linux applications on FreeBSD.
+
+It is not a port of Flatpak and does not run FreeBSD applications: it
+replaces exactly one layer, sandbox construction.  bubblewrap becomes a
+per-launch jail(8), the OverlayFS and bind mounts become unionfs, nullfs
+and tmpfs, the device binds become devfs rulesets, and the Flatpak runtime
+tree itself - the Linux ELF binaries Flatpak ships - is the jail's
+userland, executed by the FreeBSD Linuxulator.
+
+Distribution is orchestrated, not reimplemented: the store is a real OSTree
+repository driven by the real ostree binary.
+
+The client is never setuid.  Every command is served over a Unix socket by a
+root daemon that authenticates the caller with getpeereid(2) and drops to the
+caller's uid before exec'ing the application.
+
+WWW: https://github.com/Poiesys/flatpkg

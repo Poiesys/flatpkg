@@ -1,0 +1,20 @@
+flatpkg needs two things configured before it can launch anything:
+
+  1. The store.  It is a real OSTree repo driven by the native ostree
+     binary (sysutils/libostree).
+
+  2. The daemon, which is the only privileged component:
+       sysrc flatpkgd_enable=YES
+
+A group member may use the daemon.  To join it:
+  pw groupadd flatpkg && pw groupmod flatpkg -m <user>
+
+Note that a jail is only as good as its kernel modules.  If every flatpkg
+command reports a missing module, load the ones the store and the sandbox
+need, in rc.conf:
+  linux64_load="YES"
+  nullfs_load="YES"
+  linprocfs_load="YES"
+  linsysfs_load="YES"
+  unionfs_load="YES"
+  fdescfs_load="YES"

@@ -1,0 +1,11 @@
+GLIBC_2.7 {
+global:
+	signalfd;
+};
+
+GLIBC_2.2.5 {
+global:
+	getsockopt;
+local:
+	*;
+};

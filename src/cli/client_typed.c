@@ -1,0 +1,839 @@
+// The only way a privileged command reaches the daemon: build one typed
+// request, send it, render the events, return the last event's status.  Ref
+// resolution happens here because the choice needs the caller's terminal.
+#include "flatpkg.h"
+#include "cli.h"
+#define FPKG_MODULE "client"
+#include "fpkglog.h"
+#include "protocol.h"
+
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/un.h>
+
+#include <errno.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+// The refusal the module message is made of, one log line per line of it.
+// This runs in the caller, which is where the message is shown.
+void flatpkg_host_modules_emit(const char* msg) {
+	char line[512];
+
+	while (msg != NULL && *msg != '\0') {
+		const char* nl = strchr(msg, '\n');
+		size_t n = nl ? (size_t)(nl - msg) : strlen(msg);
+		if (n >= sizeof(line)) n = sizeof(line) - 1;
+		memcpy(line, msg, n);
+		line[n] = '\0';
+		if (n > 0) fpkg_errorf("%s", line);
+		msg = nl ? nl + 1 : NULL;
+	}
+}
+
+// A ref the daemon can take as written: a complete id (the same test
+// install_req_prepare() uses to decide a lookup is needed) and a branch.
+// Anything else is a choice, and the choice is this side's.
+static bool ref_is_pinned(const char* s) {
+	fpkg_ref_t r;
+
+	if (s == NULL || ref_parse(s, &r) != 0) return false;
+	bool complete = strchr(r.id, '.') != NULL || strchr(r.id, '/') != NULL;
+	bool pinned = complete && r.branch != NULL;
+	ref_free(&r);
+	return pinned;
+}
+
+// The caller's FLATPKG_FORWARD_FDS names descriptors to carry into the sandbox
+// on those same numbers.  Mismatched numbers are refused, not dropped: a launch
+// that silently loses a descriptor fails later where nothing can say why.
+static int forward_targets(int* fds, size_t* nfds, char* list, size_t listsz) {
+	const char* s = cli_getenv("FLATPKG_FORWARD_FDS");
+	const char* bad_at = NULL;
+	size_t n = 0, off = 0;
+
+	list[0] = '\0';
+	*nfds = 0;
+	if (s == NULL || *s == '\0') return 0;
+	while (*s) {
+		char* end;
+		long v = strtol(s, &end, 10);
+		if (end == s) {
+			bad_at = s;
+			goto bad;
+		}
+		if (v < 3 || v >= FP_MAX_FDS || fcntl((int)v, F_GETFD) < 0) {
+			bad_at = s;
+			goto bad;
+		}
+		for (size_t i = 0; i < n; i++)
+			if (fds[i] == (int)v) {
+				bad_at = s;
+				goto bad;
+			}
+		if (n == FP_MAX_FDS) {
+			bad_at = s;
+			goto bad;
+		}
+		fds[n++] = (int)v;
+		if (*end == '\0') break;
+		if (*end != ',') {
+			bad_at = end;
+			goto bad;
+		}
+		s = end + 1;
+		if (*s == '\0') {
+			bad_at = end;
+			goto bad;
+		}
+	}
+	for (size_t i = 0; i < n; i++) {
+		int k = snprintf(list + off, listsz - off, "%s%d", i ? "," : "",
+				 fds[i]);
+		if (k < 0 || (size_t)k >= listsz - off) {
+			fpkg_errorf("FLATPKG_FORWARD_FDS is too long");
+			return -1;
+		}
+		off += (size_t)k;
+	}
+	*nfds = n;
+	return 0;
+bad:
+	fpkg_errorf("FLATPKG_FORWARD_FDS: %s is not an open descriptor between "
+		    "3 and %d",
+		    bad_at, FP_MAX_FDS - 1);
+	return -1;
+}
+
+// Free the resolved install spellings; NULL entries are skipped.
+static void free_refs(char** v, size_t n) {
+	for (size_t i = 0; i < n; i++) free(v[i]);
+}
+
+// Fill *out from the parsed command; false when this command does not go
+// the typed way.  Strings point into `req`.
+static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned) {
+	const char* const* op = req->ops;
+	size_t n = req->nops;
+
+	memset(out, 0, sizeof(*out));
+	switch (cli_req_cmd(req)) {
+	case CMD_REMOTE_ADD:
+		out->type = FP_REQ_REMOTE_ADD;
+		out->u.remote_add.name = (char*)(n > 0 ? op[0] : "");
+		out->u.remote_add.url = (char*)(n > 1 ? op[1] : "");
+		out->u.remote_add.from = (char*)(req->from ? req->from : "");
+		return n > 0;
+	case CMD_REMOTE_DELETE:
+		out->type = FP_REQ_REMOTE_DELETE;
+		out->u.remote_delete.name = (char*)(n > 0 ? op[0] : "");
+		return n > 0;
+	case CMD_OVERRIDE:
+		// Only the system scope is a request (cli_req_is_local() keeps
+		// the rest in the caller's process).  The text is allocated
+		// here and owned by the caller of this function.
+		out->type = FP_REQ_OVERRIDE;
+		out->u.override.app_id = (char*)(n > 0 ? op[0] : "");
+		out->u.override.flags = req->over_reset ? FP_OVERRIDE_RESET : 0;
+		*owned = overrides_to_text(&req->over);
+		if (*owned == NULL) return false;
+		out->u.override.changes = *owned;
+		return true;
+	case CMD_KILL:
+		out->type = FP_REQ_KILL;
+		out->u.kill.instance = (char*)(n > 0 ? op[0] : "");
+		return n > 0;
+	case CMD_IMPORT:
+		out->type = FP_REQ_IMPORT;
+		out->u.import.path = (char*)(n > 0 ? op[0] : "");
+		return n > 0;
+	case CMD_ROLLBACK:
+		out->type = FP_REQ_ROLLBACK;
+		out->u.rollback.ref = (char*)(n > 0 ? op[0] : "");
+		out->u.rollback.commit = (char*)(n > 1 ? op[1] : "");
+		return n > 0;
+	case CMD_INSTALL:
+		// A named install is planned by the CLI; only a bundle
+		// reaches this switch.
+		if (req->from == NULL) return false;
+		out->type = FP_REQ_INSTALL_BUNDLE;
+		return true;
+	case CMD_RUN: {
+		// A pipe or file is handed over as it is; a terminal becomes a
+		// pty of the daemon's own, so the app never holds the user's.
+		static char* noargs[1] = {NULL};
+		size_t nrest = 0;
+		if (n == 0) return false;
+		while (req->rest != NULL && req->rest[nrest] != NULL) nrest++;
+		out->type = FP_REQ_RUN;
+		out->u.run.app_id = (char*)op[0];
+		out->u.run.args =
+			req->rest != NULL ? (char**)req->rest : noargs;
+		out->u.run.nargs = nrest;
+		out->u.run.command =
+			req->run.command ? req->run.command : (char*)"";
+		out->u.run.branch =
+			req->run.branch ? req->run.branch : (char*)"";
+		out->u.run.arch = req->run.arch ? req->run.arch : (char*)"";
+		out->u.run.flags =
+			(req->run.devel ? FP_RUN_DEVEL : 0) |
+			(req->run.clearenv ? FP_RUN_CLEARENV : 0) |
+			(req->run.die_with_parent ? FP_RUN_DIE_WITH_PARENT
+						  : 0) |
+			(req->run.file_forwarding ? FP_RUN_FILE_FORWARDING : 0);
+		out->u.run.sockets = req->run.sockets.items;
+		out->u.run.nsockets = req->run.sockets.count;
+		out->u.run.devices = req->run.devices.items;
+		out->u.run.ndevices = req->run.devices.count;
+		out->u.run.shares = req->run.shares.items;
+		out->u.run.nshares = req->run.shares.count;
+		out->u.run.fs_add = req->run.fs_add.items;
+		out->u.run.nfs_add = req->run.fs_add.count;
+		out->u.run.fs_remove = req->run.fs_remove.items;
+		out->u.run.nfs_remove = req->run.fs_remove.count;
+		out->u.run.envs = req->run.envs.items;
+		out->u.run.nenvs = req->run.envs.count;
+		return true;
+	}
+	case CMD_ENTER: {
+		// Stdio as for run, descriptor by descriptor.  No command means
+		// the instance's shell.
+		static char* nocommand[1] = {NULL};
+		size_t ncmd = 0;
+		if (n == 0) return false;
+		while (req->rest != NULL && req->rest[ncmd] != NULL) ncmd++;
+		out->type = FP_REQ_ENTER;
+		out->u.enter.instance = (char*)op[0];
+		out->u.enter.command =
+			req->rest != NULL ? (char**)req->rest : nocommand;
+		out->u.enter.ncommand = ncmd;
+		return true;
+	}
+	case CMD_EXPORTS:
+		out->type = FP_REQ_EXPORTS;
+		return true;
+	default:
+		return false;
+	}
+}
+
+static int send_req(int fd, uint32_t id, const fp_req_t* r) {
+	fp_wbuf_t w;
+	fp_w_init(&w);
+	if (fp_req_encode(&w, id, r) != 0) {
+		fp_w_free(&w);
+		return EIO;
+	}
+	int e = fp_frame_write(fd, w.p, w.len);
+	fp_w_free(&w);
+	return e == FP_P_OK ? 0 : (errno ? errno : EIO);
+}
+
+// Read one ack.  0 on an OK ack (op id in *op_id), 1 on a refusal that has
+// been reported, -1 when the daemon cannot be talked to.
+static int read_ack(int fd, uint64_t* op_id) {
+	fp_frame_hdr_t hdr;
+	uint8_t* payload = NULL;
+	fp_ack_t ack;
+
+	if (fp_frame_read(fd, &hdr, &payload) != FP_P_OK) {
+		free(payload);
+		return -1;
+	}
+	int e = fp_ack_decode(&hdr, payload, &ack);
+	free(payload);
+	if (e != 0) return -1;
+	int rc = 0;
+	if (ack.type == FP_ACK_ERR) {
+		fpkg_errorf("%s", ack.message ? ack.message : "refused");
+		rc = 1;
+	} else if (op_id != NULL) {
+		*op_id = ack.op_id;
+	}
+	fp_ack_free(&ack);
+	return rc;
+}
+
+// The caller's session, for the daemon to filter.  It sends what it is asked
+// to; the daemon keeps only what is on its allowlist.
+static void send_env(int fd, uint32_t id) {
+	char** env = cli_environ();
+	size_t n = 0;
+	while (env != NULL && env[n] != NULL) n++;
+	if (n > 512) n = 512;
+	fp_req_t r;
+	memset(&r, 0, sizeof(r));
+	r.type = FP_REQ_ENV;
+	r.u.env.vars = env;
+	r.u.env.nvars = n;
+	if (send_req(fd, id, &r) == 0) (void)read_ack(fd, NULL);
+}
+
+static void render_log(const fp_event_t* ev) {
+	fp_logf(ev->u.log.scope && *ev->u.log.scope ? ev->u.log.scope
+						    : "daemon",
+		"", (int)ev->u.log.level, "%s",
+		ev->u.log.text ? ev->u.log.text : "");
+}
+
+// Fetch the metadata the solver needs for an install plan.  The daemon does
+// the store-repo pull (only root may write it) and returns the text; this
+// side only parses it.
+static int prefetch_meta(int fd, const char* const* refs, size_t n) {
+	fp_req_t r;
+	fp_wbuf_t w;
+	int e;
+
+	if (n == 0) return 0;
+	memset(&r, 0, sizeof(r));
+	r.type = FP_REQ_PREFETCH;
+	r.u.prefetch.remote = "";
+	r.u.prefetch.refs = (char**)refs;
+	r.u.prefetch.nrefs = n;
+	fp_w_init(&w);
+	e = fp_req_encode(&w, 3, &r);
+	if (e == FP_P_OK) e = fp_frame_write(fd, w.p, w.len);
+	fp_w_free(&w);
+	if (e != FP_P_OK || read_ack(fd, NULL) != 0) return 1;
+
+	for (;;) {
+		fp_frame_hdr_t h;
+		uint8_t* payload = NULL;
+		fp_event_t ev;
+		if (fp_frame_read(fd, &h, &payload) != FP_P_OK) {
+			free(payload);
+			return 1;
+		}
+		e = fp_event_decode(&h, payload, &ev);
+		free(payload);
+		if (e != FP_P_OK) return 1;
+		if (ev.type == FP_EV_META) {
+			if (ev.u.meta.ref == NULL || ev.u.meta.metadata == NULL ||
+			    ostree_plan_meta_add(ev.u.meta.ref,
+						 ev.u.meta.metadata) != 0) {
+				fp_event_free(&ev);
+				return 1;
+			}
+		} else if (ev.type == FP_EV_OP_LOG) {
+			render_log(&ev);
+		} else if (ev.type == FP_EV_OP_FINISHED) {
+			int rc = (int)ev.u.finished.status;
+			fp_event_free(&ev);
+			return rc == 0 ? 0 : 1;
+		}
+		fp_event_free(&ev);
+	}
+}
+
+// A file in this client's own state directory.  It is not package data:
+// the daemon only maps it to clients/<hello client>/<name>.
+static int state_declare(int fd, uint32_t id, const char* name) {
+	fp_req_t r;
+	fp_wbuf_t w;
+	char* names[1] = {(char*)name};
+	int e;
+	memset(&r, 0, sizeof(r));
+	r.type = FP_REQ_CLIENT_DECLARE;
+	r.u.client_declare.names = names;
+	r.u.client_declare.nnames = 1;
+	fp_w_init(&w);
+	e = fp_req_encode(&w, id, &r);
+	if (e == FP_P_OK) e = fp_frame_write(fd, w.p, w.len);
+	fp_w_free(&w);
+	if (e != FP_P_OK) return -1;
+	return read_ack(fd, NULL) == 0 ? 0 : -1;
+}
+
+static int state_write(int fd, uint32_t id, const char* name,
+		       const char* data) {
+	fp_req_t r;
+	fp_wbuf_t w;
+	int e;
+	memset(&r, 0, sizeof(r));
+	r.type = FP_REQ_CLIENT_STATE;
+	r.u.client_state.flags = FP_CLIENT_STATE_WRITE;
+	r.u.client_state.name = (char*)name;
+	r.u.client_state.data = (char*)data;
+	fp_w_init(&w);
+	e = fp_req_encode(&w, id, &r);
+	if (e == FP_P_OK) e = fp_frame_write(fd, w.p, w.len);
+	fp_w_free(&w);
+	if (e != FP_P_OK) return -1;
+	return read_ack(fd, NULL) == 0 ? 0 : -1;
+}
+
+typedef struct {
+	cli_req_t req;
+	fp_req_t typed;
+	char* owned;
+	int fd;
+	bool plan_install;
+	bool plan_remove;
+	bool plan_upgrade;
+	bool have_plan;
+	uint32_t req_id;
+	int fwd[FP_MAX_FDS];
+	size_t nfwd;
+	char fwlist[512];
+	char* ref_store[64];
+	const char* refs[64];
+	size_t nresolved;
+	fpkg_plan_t plan;
+	fp_change_row_t plan_rows[FP_APPLY_MAX];
+	char* plan_world;
+} typed_ctx_t;
+
+// The one cleanup path: every phase stops with goto out.
+static void typed_ctx_free(typed_ctx_t* c) {
+	if (c->fd >= 0) close(c->fd);
+	if (c->have_plan) fpkg_plan_free(&c->plan);
+	free(c->plan_world);
+	free_refs(c->ref_store, c->nresolved);
+	cli_req_free(&c->req);
+	free(c->owned);
+}
+
+static int typed_connect(typed_ctx_t* c) {
+	struct sockaddr_un sa;
+
+	ignore_sigpipe();
+	c->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (c->fd < 0) return daemon_unreachable(errno);
+	memset(&sa, 0, sizeof(sa));
+	sa.sun_family = AF_UNIX;
+	if (strlcpy(sa.sun_path, FPKG_SOCKET, sizeof(sa.sun_path)) >=
+	    sizeof(sa.sun_path))
+		return daemon_unreachable(ENAMETOOLONG);
+	if (connect(c->fd, (struct sockaddr*)&sa, sizeof(sa)) != 0) {
+		int err = errno;
+		return daemon_unreachable(err);
+	}
+	return 0;
+}
+
+static int typed_handshake(typed_ctx_t* c) {
+	fp_req_t hello;
+	char why[768];
+	int e;
+
+	// Refuse here, before anything runs: the missing modules are a fact
+	// about this host and the user is the one who can load them.
+	if (flatpkg_host_modules_message(why, sizeof(why))) {
+		flatpkg_host_modules_emit(why);
+		return 1;
+	}
+	memset(&hello, 0, sizeof(hello));
+	hello.type = FP_REQ_HELLO;
+	hello.u.hello.version = FP_PROTO_VERSION;
+	hello.u.hello.client = "flatpkg";
+	e = send_req(c->fd, 1, &hello);
+	if (e != 0 || read_ack(c->fd, NULL) != 0)
+		return daemon_unreachable(e ? e : EIO);
+	send_env(c->fd, 2);
+	if ((c->plan_install || c->plan_remove || c->plan_upgrade) &&
+	    state_declare(c->fd, 8, "world") != 0) {
+		fpkg_errorf("flatpkgd refused the client state");
+		return 1;
+	}
+	return 0;
+}
+
+static int typed_send_stdio(typed_ctx_t* c) {
+	fp_req_t sio;
+	fp_wbuf_t w;
+	int fds[FP_STDIO_FDS] = {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
+
+	// The daemon relays this stdin to the app's pty, so it must arrive
+	// unedited and unechoed; the pty does both.  Only stdin: stdout and
+	// stderr may be files even when stdin is a terminal.
+	if (isatty(STDIN_FILENO)) client_enter_raw_stdin();
+	// The caller's own stdio goes with the run, not through us.
+	memset(&sio, 0, sizeof(sio));
+	sio.type = FP_REQ_STDIO;
+	sio.u.stdio.count = FP_STDIO_FDS;
+	fp_w_init(&w);
+	if (fp_req_encode(&w, 4, &sio) != 0 ||
+	    fp_frame_write_fds(c->fd, w.p, w.len, fds, FP_STDIO_FDS) !=
+		    FP_P_OK ||
+	    read_ack(c->fd, NULL) != 0) {
+		fp_w_free(&w);
+		return daemon_unreachable(EIO);
+	}
+	fp_w_free(&w);
+	return 0;
+}
+
+// A partial name or a missing branch is the caller's choice: the daemon
+// takes exact refs only, and the menu needs the terminal this process has.
+static int typed_resolve_refs(typed_ctx_t* c) {
+	size_t n = c->req.nops;
+
+	for (size_t k = 0; k < n; k++) {
+		if (ref_is_pinned(c->req.ops[k])) {
+			c->refs[k] = c->req.ops[k];
+			continue;
+		}
+		c->ref_store[k] = ostree_resolve_install_request(
+			c->req.ops[k], c->req.runtime);
+		if (c->ref_store[k] == NULL) return 1;
+		c->refs[k] = c->ref_store[k];
+		c->nresolved = k + 1;
+	}
+	return 0;
+}
+
+// Encode the plan's rows as the APPLY request; the rows are shared by
+// install, removal and upgrade.
+static bool typed_apply_from_plan(typed_ctx_t* c, const char* what) {
+	c->plan_world = world_to_text(&c->plan.world);
+	if (c->plan_world == NULL || c->plan.cs.count > FP_APPLY_MAX) {
+		fpkg_errorf("cannot encode the %s plan", what);
+		free(c->plan_world);
+		c->plan_world = NULL;
+		return false;
+	}
+	for (size_t k = 0; k < c->plan.cs.count; k++) {
+		c->plan_rows[k].type = (uint32_t)c->plan.cs.items[k].type;
+		c->plan_rows[k].ref = c->plan.cs.items[k].ref;
+		c->plan_rows[k].old_version =
+			c->plan.cs.items[k].old_version;
+		c->plan_rows[k].new_version =
+			c->plan.cs.items[k].new_version;
+	}
+	memset(&c->typed, 0, sizeof(c->typed));
+	c->typed.type = FP_REQ_APPLY;
+	c->typed.u.apply.flags = 0;
+	c->typed.u.apply.remote =
+		c->plan.remote != NULL ? c->plan.remote : "";
+	c->typed.u.apply.rows = c->plan_rows;
+	c->typed.u.apply.nrows = c->plan.cs.count;
+	return true;
+}
+
+static bool typed_plan_install(typed_ctx_t* c, int* status) {
+	flatpkg_dep_kind_t kinds[FP_APPLY_MAX];
+	const char* commits[FP_APPLY_MAX];
+	const char* prefetch_refs[FP_APPLY_MAX];
+	size_t nprefetch = 0;
+	size_t n = c->req.nops;
+
+	for (size_t k = 0; k < n; k++) {
+		kinds[k] = c->req.runtime ? FLATPKG_DEP_KIND_RUNTIME
+					  : FLATPKG_DEP_KIND_APP;
+		commits[k] = c->req.commit;
+		if (kinds[k] == FLATPKG_DEP_KIND_APP)
+			prefetch_refs[nprefetch++] = c->refs[k];
+	}
+	if (prefetch_meta(c->fd, prefetch_refs, nprefetch) != 0 ||
+	    ostree_plan_install(c->refs, commits, kinds, n, c->req.reinstall,
+				&c->plan) != 0) {
+		ostree_plan_meta_reset();
+		*status = 1;
+		return false;
+	}
+	c->have_plan = true;
+	if (c->req.g.simulate) {
+		fpkg_infof("(simulate: no changes made)");
+		ostree_plan_meta_reset();
+		*status = 0;
+		return false;
+	}
+	if (!c->req.assume_yes && confirm_proceed(0) != 0) {
+		fpkg_errorf("aborted");
+		ostree_plan_meta_reset();
+		*status = 1;
+		return false;
+	}
+	if (!typed_apply_from_plan(c, "install")) {
+		ostree_plan_meta_reset();
+		*status = 1;
+		return false;
+	}
+	ostree_plan_meta_reset();
+	return true;
+}
+
+static bool typed_plan_remove(typed_ctx_t* c, int* status) {
+	if (ostree_plan_remove((const char**)c->req.ops, c->req.nops,
+			       c->req.rdepends, &c->plan) != 0) {
+		*status = 1;
+		return false;
+	}
+	c->have_plan = true;
+	if (c->req.g.simulate) {
+		fpkg_infof("(simulate: no changes made)");
+		*status = c->plan.absent && !c->plan.had_work ? 1 : 0;
+		return false;
+	}
+	if (!c->req.assume_yes && confirm_proceed(0) != 0) {
+		fpkg_errorf("aborted");
+		*status = 1;
+		return false;
+	}
+	if (!typed_apply_from_plan(c, "removal")) {
+		*status = 1;
+		return false;
+	}
+	return true;
+}
+
+static bool typed_plan_upgrade(typed_ctx_t* c, int* status) {
+	unsigned uf = FLATPKG_SOLVERF_UPGRADE;
+
+	if (c->req.prune) uf |= FLATPKG_SOLVERF_PRUNE;
+	if (c->req.available) uf |= FLATPKG_SOLVERF_AVAILABLE;
+	if (c->req.g.simulate) uf |= FLATPKG_SOLVERF_SIMULATE;
+	if (ostree_plan_upgrade(uf, (const char* const*)c->req.ops,
+				c->req.nops, &c->plan) != 0) {
+		*status = 1;
+		return false;
+	}
+	c->have_plan = true;
+	if (!c->plan.had_work) {
+		*status = 0;
+		return false;
+	}
+	if (c->req.g.simulate) {
+		fpkg_infof("(simulate: no changes made)");
+		*status = 0;
+		return false;
+	}
+	if (!c->req.assume_yes && confirm_proceed(0) != 0) {
+		fpkg_errorf("aborted");
+		*status = 1;
+		return false;
+	}
+	if (!typed_apply_from_plan(c, "upgrade")) {
+		*status = 1;
+		return false;
+	}
+	return true;
+}
+
+// true keeps going; false makes *status the exit code.
+static bool typed_make_plan(typed_ctx_t* c, int* status) {
+	if (c->plan_install) return typed_plan_install(c, status);
+	if (c->plan_remove) return typed_plan_remove(c, status);
+	if (c->plan_upgrade) return typed_plan_upgrade(c, status);
+	return true;
+}
+
+static int typed_send_request(typed_ctx_t* c) {
+	uint64_t op_id = 0;
+	int e;
+
+	if (c->typed.type == FP_REQ_INSTALL_BUNDLE) {
+		int bfd = open(c->req.from, O_RDONLY | O_CLOEXEC);
+		if (bfd < 0) {
+			fpkg_errorf("cannot open %s: %s", c->req.from,
+				    strerror(errno));
+			return 1;
+		}
+		fp_wbuf_t w;
+		fp_w_init(&w);
+		e = fp_req_encode(&w, c->req_id, &c->typed);
+		if (e == 0)
+			e = fp_frame_write_fds(c->fd, w.p, w.len, &bfd,
+					       FP_BUNDLE_FDS);
+		fp_w_free(&w);
+		close(bfd);
+	} else if (c->typed.type == FP_REQ_RUN && c->nfwd > 0) {
+		// The descriptors go with the request itself: the daemon
+		// applies them just before the launch and only for this run.
+		fp_wbuf_t w;
+		fp_w_init(&w);
+		e = fp_req_encode(&w, c->req_id, &c->typed);
+		if (e == 0 &&
+		    fp_frame_write_fds(c->fd, w.p, w.len, c->fwd,
+				       c->nfwd) != FP_P_OK)
+			e = EIO;
+		fp_w_free(&w);
+	} else {
+		e = send_req(c->fd, c->req_id, &c->typed);
+	}
+	if (e != 0) return daemon_unreachable(e);
+	int rc = read_ack(c->fd, &op_id);
+	if (rc != 0) return rc < 0 ? daemon_unreachable(EIO) : rc;
+	return 0;
+}
+
+static int typed_render(typed_ctx_t* c) {
+	int exit_code = 1;
+	bool finished = false;
+	bool said_error = false;
+	fp_bar_t bar;
+	bool have_bar = false;
+	int e;
+
+	while (!finished) {
+		fp_frame_hdr_t hdr;
+		uint8_t* payload = NULL;
+		fp_event_t ev;
+
+		if (fp_frame_read(c->fd, &hdr, &payload) != FP_P_OK) {
+			free(payload);
+			break;
+		}
+		e = fp_event_decode(&hdr, payload, &ev);
+		free(payload);
+		if (e != 0) break;
+		switch (ev.type) {
+		case FP_EV_OP_LOG:
+			if (ev.u.log.level >= FP_LEVEL_ERROR) said_error = true;
+			render_log(&ev);
+			break;
+		case FP_EV_OP_TABLE: {
+			// The daemon sends the cells; this side draws them the
+			// way it draws a table it built itself, so a plan reads
+			// the same whichever side worked it out.
+			const size_t nc = ev.u.table.ncols,
+				     nr = ev.u.table.nrows;
+			const char* const** rows =
+				calloc(nr + 1, sizeof(*rows));
+			if (rows != NULL) {
+				for (size_t r = 0; r < nr; r++)
+					rows[r] = (const char* const*)&ev.u
+							  .table.cells[r * nc];
+				fp_print_table(
+					(const char* const*)ev.u.table.headers,
+					nc, (const char* const* const*)rows, nr,
+					FP_TABLE_OUTPUT);
+				free(rows);
+			}
+			break;
+		}
+		case FP_EV_OP_PROGRESS:
+			// A bar is for a person at a terminal; into a pipe or a
+			// file it is one line per update, and the log records
+			// already say what finished.
+			if (ev.u.progress.total == 0 || !fp_is_tty()) break;
+			if (!have_bar ||
+			    strcmp(bar.label, ev.u.progress.stage) != 0) {
+				if (have_bar) fp_bar_dismiss(&bar);
+				bar = fp_bar_init("daemon", "",
+						  ev.u.progress.stage,
+						  ev.u.progress.total);
+				have_bar = true;
+			}
+			fp_bar_update(&bar, ev.u.progress.current);
+			break;
+		case FP_EV_OP_FINISHED:
+			if (have_bar) fp_bar_dismiss(&bar);
+			have_bar = false;
+			exit_code = (int)ev.u.finished.status;
+			if (exit_code != 0 && !said_error &&
+			    ev.u.finished.error && *ev.u.finished.error)
+				fpkg_errorf("%s", ev.u.finished.error);
+			finished = true;
+			break;
+		default:
+			break;
+		}
+		fp_event_free(&ev);
+	}
+	if (c->typed.type == FP_REQ_RUN || c->typed.type == FP_REQ_ENTER)
+		client_leave_raw_stdin();
+	if (!finished) {
+		fpkg_errorf("flatpkgd closed the connection before the "
+			    "operation finished");
+	}
+	return exit_code;
+}
+
+static int typed_complete(typed_ctx_t* c, int exit_code) {
+	// The world is the CLI's file, not the daemon's: after the rows have
+	// been applied, the client writes its own state.
+	if (exit_code == 0 && c->plan_world != NULL &&
+	    state_write(c->fd, c->req_id + 1, "world", c->plan_world) != 0) {
+		fpkg_errorf("the store changed, but the client state was not "
+			    "written");
+		exit_code = 1;
+	}
+	if (c->have_plan && c->plan_remove && c->plan.absent &&
+	    !c->plan.had_work && exit_code == 0)
+		exit_code = 1;
+	return exit_code;
+}
+
+int client_try_typed(int argc, char* argv[]) {
+	typed_ctx_t c;
+	bool appstream;
+	int rc = -1;
+
+	memset(&c, 0, sizeof(c));
+	c.fd = -1;
+
+	if (cli_parse(argc, argv, &c.req) != CLI_PROCEED) goto out;
+	if (cli_req_is_local(&c.req)) goto out;
+	// A bundle simulation changes nothing, so it needs no daemon.
+	if (cli_req_cmd(&c.req) == CMD_INSTALL && c.req.from != NULL &&
+	    c.req.g.simulate) {
+		fpkg_infof("(simulate: would install %s)", c.req.from);
+		rc = 0;
+		goto out;
+	}
+	c.plan_install =
+		cli_req_cmd(&c.req) == CMD_INSTALL && c.req.from == NULL;
+	c.plan_remove = cli_req_cmd(&c.req) == CMD_UNINSTALL;
+	appstream = cli_req_cmd(&c.req) == CMD_UPDATE && c.req.appstream;
+	c.plan_upgrade = !appstream &&
+			 (cli_req_cmd(&c.req) == CMD_UPDATE ||
+			  cli_req_cmd(&c.req) == CMD_UPGRADE);
+	if (appstream) {
+		memset(&c.typed, 0, sizeof(c.typed));
+		c.typed.type = FP_REQ_APPSTREAM;
+		c.typed.u.appstream.remote =
+			(char*)(c.req.remote ? c.req.remote : "");
+		c.typed.u.appstream.arch =
+			(char*)(c.req.run.arch ? c.req.run.arch : "");
+	} else if (c.plan_install || c.plan_remove || c.plan_upgrade) {
+		if ((c.plan_install || c.plan_remove) &&
+		    (c.req.nops == 0 || c.req.nops > FP_APPLY_MAX)) {
+			fpkg_errorf("too many refs for one operation");
+			rc = 1;
+			goto out;
+		}
+		memset(&c.typed, 0, sizeof(c.typed));
+	} else if (!typed_request(&c.req, &c.typed, &c.owned)) {
+		fpkg_errorf("'%s' cannot be sent to flatpkgd", c.req.name);
+		rc = 1;
+		goto out;
+	}
+
+	// A run may carry descriptors the caller wants the app to inherit.  The
+	// list is decided here, where the caller's own table is, and travels in
+	// the RUN payload; the descriptors themselves ride on the frame.
+	if (c.typed.type == FP_REQ_RUN) {
+		if (forward_targets(c.fwd, &c.nfwd, c.fwlist,
+				    sizeof(c.fwlist)) != 0) {
+			rc = 1;
+			goto out;
+		}
+		c.typed.u.run.forward = c.fwlist;
+	}
+
+	rc = typed_connect(&c);
+	if (rc != 0) goto out;
+	rc = typed_handshake(&c);
+	if (rc != 0) goto out;
+	if (c.typed.type == FP_REQ_RUN || c.typed.type == FP_REQ_ENTER) {
+		rc = typed_send_stdio(&c);
+		if (rc != 0) goto out;
+	}
+	if (c.plan_install) {
+		rc = typed_resolve_refs(&c);
+		if (rc != 0) goto out;
+	}
+	c.req_id = c.plan_install ? 4 : 3;
+	if (!typed_make_plan(&c, &rc)) goto out;
+	rc = typed_send_request(&c);
+	if (rc != 0) goto out;
+	rc = typed_complete(&c, typed_render(&c));
+
+out:
+	typed_ctx_free(&c);
+	return rc;
+}

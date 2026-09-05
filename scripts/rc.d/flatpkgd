@@ -1,0 +1,41 @@
+#!/bin/sh
+# $FreeBSD$
+#
+# flatpkgd - the flatpkg system service.
+#
+# Runs the flatpkg daemon as root: it owns the privileges (jail(2),
+# mounts, devfs rulesets) and serves every flatpkg command to users
+# in the "flatpkg" group over /var/run/flatpkg/control.sock.
+#
+# Enable in /etc/rc.conf:  flatpkgd_enable="YES"
+#
+# PROVIDE: flatpkgd
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="flatpkgd"
+rcvar=flatpkgd_enable
+
+load_rc_config ${name}
+
+: ${flatpkgd_enable:="NO"}
+: ${flatpkgd_args:=""}
+
+pidfile="/var/run/flatpkg/flatpkgd.pid"
+child_pidfile="/var/run/flatpkg/flatpkgd.child.pid"
+flatpkgd_bin="@PREFIX@/sbin/flatpkgd"
+
+command="/usr/sbin/daemon"
+procname="/usr/sbin/daemon"
+command_args="-f -T ${name} -o /var/log/flatpkgd.log -P ${pidfile} -p ${child_pidfile} ${flatpkgd_bin} ${flatpkgd_args}"
+
+start_precmd="flatpkgd_precmd"
+
+flatpkgd_precmd()
+{
+	mkdir -p /var/run/flatpkg
+}
+
+run_rc_command "$1"

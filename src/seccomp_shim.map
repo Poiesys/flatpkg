@@ -1,0 +1,20 @@
+{
+global:
+	syscall;
+	socket;
+	mount;
+	umount;
+	umount2;
+	pivot_root;
+	chroot;
+	unshare;
+	setns;
+	clone;
+	clone3;
+	add_key;
+	keyctl;
+	request_key;
+	ptrace;
+local:
+	*;
+};

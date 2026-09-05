@@ -1,0 +1,674 @@
+.Dd September 26, 2026
+.Dt FLATPKG 8
+.Os
+.Sh NAME
+.Nm flatpkg
+.Nd run Flatpak Linux applications on FreeBSD via jails, unionfs, and the Linuxulator
+.Sh SYNOPSIS
+.Nm
+.Op Ar options
+.Ar command
+.Op Ar args ...
+.Nm
+.Cm run
+.Op Ar options
+.Ar app-id
+.Op Fl Fl Ar args ...
+.Sh DESCRIPTION
+.Nm
+is a FreeBSD-native front end for running already-deployed Flatpak
+applications.
+It plays the role Flatpak's own
+.Xr bwrap 1 Ns -based
+launcher plays on Linux, but builds the sandbox out of
+.Xr jail 8 ,
+.Xr mount_unionfs 8 ,
+and
+.Xr mount_nullfs 8
+instead of Linux namespaces and OverlayFS, and relies on the Linuxulator
+.Pq Xr linux 4
+to execute the unmodified Linux ELF binaries that ship inside Flatpak
+runtimes and apps.
+.Pp
+Distribution is delegated rather than reimplemented: the store is a real
+OSTree repository driven by the real
+.Xr ostree 1
+binary, and a per-launch tree is assembled from
+.Xr unionfs 8 ,
+.Xr nullfs 8 ,
+.Xr tmpfs 8
+and
+.Xr devfs 8
+rulesets.
+App building
+.Xr flatpak-builder 1 Ns -style
+and per-syscall filtering
+.Xr seccomp 2
+are not implemented; the source tree documents the exact boundary and the
+gap list against upstream.
+.Pp
+Every command except
+.Cm daemon
+is served by the system daemon over
+.Pa /var/run/flatpkg/control.sock
+when it is running.
+The client is never setuid: a setuid client would hand the daemon peer
+credentials of 0:0 and defeat the group check.
+The daemon authenticates the caller with
+.Xr getpeereid 2
+and runs the application as that user.
+Membership of the
+.Em flatpkg
+group
+.Pq see
+.Xr pw 8
+is what grants access.
+.Pp
+A location that is
+.Em in use
+.Pq a store tree a running sandbox has mounted
+is never removed: see
+.Sx EXIT STATUS
+and the
+.Cm remove
+entry below.
+.Sh COMMANDS
+.Bl -tag -width Ds
+.It Cm import Ar path
+Scan
+.Ar path
+for a Flatpak deploy tree
+.Pq Pa app/ , Pa runtime/
+laid out the way
+.Pa ~/.local/share/flatpak
+or
+.Pa /var/lib/flatpak
+are on Linux, and register every app found in
+.Nm Ns 's
+own store under
+.Pa /var/db/flatpkg .
+The canonical path is
+.Pa /var/lib/flatpkg
+.Pq a symlink to the store ;
+.Pa /var/lib/flatpak
+is a compatibility symlink for Flatpak applications.
+.It Cm list
+List imported app ids.
+.It Cm info Ar app-id
+Print the parsed
+.Xr flatpak-metadata 5
+contents for an imported app.
+.It Cm run Op Ar options Ar app-id Op Fl Fl Ar args ...
+Build the sandbox root, create a jail branded for Linux compatibility,
+and execute the app's
+.Cm command=
+inside it.
+Anything after
+.Fl Fl
+is passed through to the application as argv.
+See
+.Sx RUN OPTIONS .
+.It Cm install Op Ar options Ar ref ...
+Install an application, a runtime, or a
+.Pa .flatpak
+bundle from a configured remote.
+A ref is
+.Ql remote:app.id//branch
+or the bare
+.Ql app.id//branch
+when the branch is
+.Ql stable .
+Pulls the runtime the ref names and any extensions the ref asks for.
+The changeset is calculated, shown and confirmed before the store is
+touched.
+.Pp
+The options are
+.Bl -tag -width Ds -compact
+.It Fl -runtime
+Treat the ref as a runtime rather than an application.
+.It Fl -no-pull
+Accepted for
+.Xr flatpak 1
+compatibility; has no effect.
+.It Fl -no-deploy
+Accepted for
+.Xr flatpak 1
+compatibility; has no effect.
+.It Fl -reinstall
+Reinstall the ref even when it is already installed.
+.It Fl -or-update
+Accepted for
+.Xr flatpak 1
+compatibility; has no effect.
+.It Fl -commit Ns = Ns Ar hash
+Install exactly this commit.
+.It Fl -from Ns = Ns Ar file
+Install from a
+.Pa .flatpak
+bundle instead of a remote.
+.It Fl -y , Fl -assumeyes , Fl -noninteractive
+Do not prompt; required when there is no terminal attached.
+.It Fl -n , Fl -simulate , Fl -dry-run
+Show the changeset and stop before the store is touched.
+.It Fl -user , Fl -system
+Accepted and ignored: flatpkg has one installation, the system store.
+Unlike
+.Cm override ,
+there is no per-user install to choose between, so the flag selects
+nothing rather than doing the opposite of what it says.
+.El
+.Pp
+The following are accepted for parity with
+.Xr flatpak 1
+and are refused with a diagnostic rather than silently ignored, because
+each one would mean the opposite of what it says:
+.Fl -no-deps ,
+.Fl -no-related ,
+.Fl -include-sdk ,
+.Fl -include-debug ,
+.Fl -no-static-deltas ,
+.Fl -subpath Ns = Ns Ar path ,
+and
+.Fl -sideload-repo Ns = Ns Ar path .
+.It Cm uninstall , Cm remove Op Fl -y Op Fl -n Op Ar ref ...
+Uninstall a ref.
+The changeset is calculated, shown and confirmed before the store is
+touched.
+A runtime an installed application still needs is refused; flatpkg has no
+.Xr flatpak 1 Ns 's
+.Fl -force-remove .
+A ref a running application has mounted is refused as well.
+.Fl -rdepends
+also removes every installed ref that depends on the ones given.
+.Fl -n
+shows the table and stops.
+.It Cm update Op Fl -y Op Fl -n Op Ar ref
+Update one ref, or every installed ref when none is given.
+The changeset is calculated, shown and confirmed before the store is
+touched; the last three deploy commits of each ref are kept so that
+.Cm rollback
+has somewhere to go.
+.Fl -y
+skips the question and
+.Fl -n
+stops after the table.
+.It Cm upgrade Op Fl Ar options Op Ar ref ...
+Re-solve the world file and upgrade the listed refs, or all of them, to
+the latest commit a remote offers.
+Options:
+.Fl -simulate
+(also
+.Fl -dry-run )
+prints the changeset without executing it,
+.Fl -prune
+drops deploys nothing references any more, and
+.Fl -available
+limits the solve to what the remotes currently offer.
+.It Cm search Ar text
+Search the configured remotes, and the installed refs, for
+.Ar text .
+.It Cm rollback Ar ref Ar commit
+Re-check out a previously kept commit.
+The valid targets are the ones
+.Cm list-commits
+prints.
+.It Cm list-commits Ar ref
+Show the commits
+.Cm rollback
+can move to.
+.It Cm repair Op Ar ref ...
+Verify deployed trees and report the suspicious ones.
+It is report-only by design: it never deletes or reinstalls anything,
+because a repair that repairs is a repair that can destroy a working
+tree.
+Act on its output with
+.Cm install
+.Fl -reinstall .
+.It Cm history
+Print the install, import, upgrade and uninstall log.
+An import is recorded as its own action: it is the one install
+.Ar flatpkg install
+cannot repeat, since the store keeps a reference to a deploy root
+rather than a copy of it.
+.It Cm ps Op Fl -columns Ns = Ns Ar list
+List running instances.
+The default is a table; with no
+.Fl -columns
+the width-adaptive table is used.
+.Ar list
+is a comma-separated subset of
+.Ql instance,pid,application,jail,root .
+An unknown component is an error, not an omission: a typo like
+.Ql app
+for
+.Ql application
+would otherwise print a table missing the one column the user asked
+for, and the empty result looks like a correct answer.
+.It Cm enter Ar jid Op Ar command Op Ar args ...
+Run
+.Ar command
+inside the jail of a running instance.
+.Ar jid
+is a jail id or an instance id, both of which
+.Cm ps
+and
+.Xr sh 1
+completion produce.
+The command is positional, as it is for
+.Xr flatpak 1 ;
+a
+.Fl Fl
+in its place is accepted and dropped.
+With no
+.Ar command ,
+the runtime's
+.Pa /bin/sh
+is started.
+The command runs as the instance's user, or as the caller when
+.Ar jid
+names no instance.
+Only a jail
+.Cm flatpkg
+created is entered: a bare
+.Ar jid
+that names somebody else's jail is refused, and says so.
+A jail is also entered only by the user it was made for, or by root: the
+kernel keeps that user with the jail, and a jail made for another user is
+refused even when an instance directory names it.
+A jail made before owners were recorded has no owner, and only root may
+enter it.
+.It Cm kill Ar jid
+Terminate a running instance's jail.
+.Ar jid
+is a jail id or an instance id.
+As with
+.Cm enter ,
+only a jail
+.Cm flatpkg
+created is terminated; a
+.Ar jid
+belonging to another jail is refused rather than removed, and so is a jail
+made for another user: only that user, or root, may terminate it.
+.It Cm exports
+Rebuild
+.Pa /var/db/flatpkg/exports ,
+the farm of
+.Pa .desktop
+entries and relative symlinks that make apps visible to the host's
+desktop.
+It also runs after every install and update, and does not touch the
+world file.
+.It Cm override Op Ar options Ar app-id
+Change an application's permissions persistently, in the override file
+that Flatseal and
+.Xr flatpak 1 Ns 's
+.Cm override
+write.
+The accepted options are
+@@OVERRIDE_OPTIONS@@
+plus
+.Fl -show
+to print the file and
+.Fl -reset
+to empty it.
+.Fl -user
+and
+.Fl -system
+select which file is written; the user installation is the default.
+.It Cm remote-add Op Ar options Ar name Op Ar url
+Add a remote.
+.Ar url
+may be omitted when
+.Fl -from
+names a
+.Pa .flatpakrepo
+file.
+Options:
+.Fl -from Ns = Ns Ar file
+reads the URL from that file, and
+.Fl -if-not-exists
+makes re-adding a known remote an error instead of a change.
+.It Cm remotes , Cm remote-list
+List the configured remotes.
+.It Cm remote-delete Ar name
+Remove a remote.
+.It Cm daemon
+Run the system service in the foreground.
+Started by
+.Xr rc 8
+as
+.Pa flatpkgd_enable=YES .
+.It Cm help Op Ar command
+Print the main help page, or the page for
+.Ar command .
+The same bytes are printed by
+.Nm
+.Fl h
+and
+.Nm Ar command Fl h .
+.It Cm complete Ar what
+Hidden helper for shell completion.
+.Ar what
+is one of
+.Cm apps ,
+.Cm refs ,
+.Cm runtimes ,
+.Cm remotes ,
+.Cm instances
+or
+.Cm commands ,
+and the output is one bare candidate per line.
+.El
+.Ss RUN OPTIONS
+These are the options
+.Cm run
+accepts, and they are the whole of it: every one was probed against the
+binary, not read off a list.
+Grant, policy and environment options that
+.Cm run
+does not take -
+.Fl -nosocket ,
+.Fl -nodevice ,
+.Fl -nofilesystem ,
+.Fl -noshare ,
+.Fl -persist ,
+.Fl -unset-env ,
+.Fl -allow ,
+.Fl -metadata ,
+.Fl -no-docs ,
+.Fl -no-a11y-bus
+and the D-Bus name options
+.Pq Fl -talk-name , Fl -own-name , Fl -system-talk-name
+and friends
+-
+are
+.Cm override
+options; set them once with
+.Cm override
+and they apply to every run of that app.
+A
+.Fl Fl
+ends the option list and everything after it is the application's argv.
+@@RUN_OPTIONS@@
+.Sh OPTIONS
+These are global.  They are recognised before the command, and the ones
+that only select a destination or a side effect
+.Fl -u Ar name , -user , -system , -no-color , -ostree-verbose , -simulate
+are recognised after it too, for compatibility with
+.Xr flatpak 1 .
+.Fl -version
+and
+.Fl -help
+are not: after a command they belong to the command, and after
+.Nm run
+they belong to the app.
+A
+.Ql --
+ends the list - everything after it is the command's, and for
+.Nm run
+the app's.
+@@GLOBAL_OPTIONS@@
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev FLATPKG_STORE
+Store root.
+Ignored when the effective user is root, so that the daemon cannot be
+redirected.
+.It Ev FLATPKG_DEBUG_KEEP
+Set to
+.Ql 1
+to leave the jail and its mounts in place after the app exits, for
+inspection with
+.Pa tests/check-clean.sh --clean .
+.It Ev FLATPKG_FILECHOOSER_TIMEOUT
+Seconds the session portal's fallback
+.Em org.freedesktop.portal.FileChooser
+dialog may stay open before the portal answers for it.
+Defaults to 600; 0 disables the bound.
+Used only on a host with no
+.Em xdg-desktop-portal
+of its own, where the portal owns the desktop portal name itself.
+A dialog the user is browsing is not a failure, so the default is
+generous; a backend that opens nothing is, and without a bound the
+calling app waits for a
+.Em Response
+that never comes and shows a spinner with no error.
+.It Ev FLATPKG_LOGFMT
+Append logfmt records to this file, the same as
+.Fl l .
+.It Ev FLATPKG_OSTREE_VERBOSE
+Set by
+.Fl -ostree-verbose ;
+setting it directly has the same effect.
+.It Ev FLATPKG_SECCOMP_ALLOW_CAN , Ev FLATPKG_SECCOMP_ALLOW_BT
+Set by the sandbox when the ref asks for
+.Ql features=canbus
+or
+.Ql features=bluetooth ,
+to let those socket families through the syscall filter.
+An app's own
+.Sq Environment
+can set them too, so a ref that genuinely needs one is not blocked.
+.It Ev FLATPKG_RLIMIT_SHIM_TRACE , Ev FLATPKG_DEVT_SHIM_TRACE , Ev FLATPKG_MEMFD_SHIM_TRACE , Ev FLATPKG_SYNCOBJ_SHIM_TRACE , Ev FLATPKG_MADVISE_SHIM_TRACE
+Set one to
+.Ql 1
+to have that compatibility shim trace what it intercepts, to stderr.
+They are four names for one habit: the shims exist because the
+Linuxulator cannot express something the app needs -
+.Ev RLIMIT_NICE ,
+.Ev RLIMIT_RTPRIO
+and
+.Ev RLIMIT_RTTIME
+come back
+.Ev EINVAL ;
+a compositor
+.Vt dev_t
+is not the Linux one Mesa compares against;
+a
+.Vt memfd
+has no
+.Ev fstatfs ;
+and a DRM syncobj wait times out with
+.Ev ETIMEDOUT
+where Linux says
+.Ev ETIME .
+Tracing the one you are chasing is faster than adding
+.Xr printf 3
+to a shim that runs in every app.
+.It Ev FLATPKG_SIMULATE
+Set by
+.Fl -n ;
+see the note on that flag for which commands honour it.
+.It Ev FLATPKG_NO_SHIMS
+Set to
+.Ql 1
+to skip the
+.Ev LD_PRELOAD
+compatibility shims.
+.It Ev FLATPKG_SECCOMP_DEVEL
+Set to
+.Ql 1
+to disable the syscall filter's ptrace and personality rules.
+.It Ev FLATPKG_INTERACTIVE
+Set by the daemon worker when the client reported a window size.
+Internal.
+.It Ev FLATPKG_FORWARD_FDS , Ev FLATPKG_SPAWN_NONCE , Ev FLATPKG_APP_UID , Ev FLATPKG_APP_GID , Ev FLATPKG_APP_USER , Ev FLATPKG_APP_HOME , Ev FLATPKG_APP_MASTER , Ev FLATPKG_APP_TTY
+Internal plumbing between the daemon, the portal and the sandbox worker.
+.It Ev XDG_RUNTIME_DIR
+Where per-instance directories live.
+The daemon worker falls back to
+.Pa /var/run/user/<uid>
+when it is unset.
+.It Ev NO_COLOR , Ev FORCE_COLOR , Ev TERM
+Colour control, honoured by
+.Nm
+itself.
+.It Ev FLATPKG_VERBOSE , Ev FLATPKG_LOGFMT
+Same as
+.Fl v
+and
+.Fl l .
+.It Ev FLATPKG_PROFILE
+Same as
+.Fl -profile .
+.El
+.Sh FILES
+.Bl -tag -width indent
+.It Pa /var/db/flatpkg
+The store: a real OSTree repository in
+.Pa repo/ ,
+checked-out deploy trees under
+.Pa app/ , Pa runtime/ , Pa extension/ ,
+the client state root in
+.Pa clients/ ,
+where flatpkg's own world file is
+.Pa clients/flatpkg/world ,
+and the desktop farm in
+.Pa exports/ .
+.It Pa /var/db/flatpkg/clients/ Ns Ar client Ns Pa / Ns Ar file
+State a client owns, such as flatpkg's
+.Pa clients/flatpkg/world .
+A client declares its files over the control protocol and cannot reach
+another client's directory.
+.It Pa /usr/local/etc/flatpkg/helper.conf
+The D-Bus system helper's request map: an absolute command line per
+method, with
+.Ql %r
+the ref and
+.Ql %i
+the installation; `%b` bundle, `%n` remote, `%o` origin, `%a` arch,
+`%p` repo path, `%s` subpaths, `%P` previous ids, `%c` config, `%u` url, `%k`
+key, `%v` value, `%S` summary path, `%G` signature path, `%d` source dir
+and `%f` flags.  An empty entry is refused; it is not a daemon fallback.
+The shipped map enables uninstall, deploy, install-bundle and remote
+add/remove.
+.It Pa /var/run/flatpkg
+The control socket, the daemon's pid file, and one per-launch
+union-mounted jail root per running app.
+.It Pa /var/run/flatpkg/control.sock
+The client-to-daemon socket.
+.It Pa /var/log/flatpkgd.log
+The daemon's stderr, kept by
+.Xr daemon 8 .
+.It Pa /usr/local/lib/flatpkg
+The
+.Ev LD_PRELOAD
+compatibility shims: signalfd, seccomp, dmabuf dev_t, memfd
+.Pa fstatfs ,
+DRM syncobj errno, and rlimit.
+.It Pa ~/.local/share/flatpak/overrides/<app-id>
+The per-app override file that
+.Cm override
+writes and Flatseal edits;
+.Pa global
+in the same directory applies to every app.
+The
+.Fl -system
+files are the same tree under the store,
+.Pa /var/db/flatpkg/overrides ,
+and the per-app file wins over the global one.
+.It Pa ~/.var/app/<app-id>
+An application's own writable data, visible inside the sandbox at
+.Pa /var/lib/flatpkg/var/data .
+.It Pa $XDG_RUNTIME_DIR/.dbus-proxy
+Where
+.Xr xdg-dbus-proxy 1
+binds the session, system and accessibility bus sockets for a run.
+On the host, not inside the jail: the jail root's skeleton is
+root-owned and the proxy drops to the caller, so it could not create
+sockets there.
+The directory is bound read-only into the jail at
+.Pa /run/flatpak/.dbus-proxy
+since nullfs cannot mount a socket file but can mount the directory
+holding it.
+Socket names carry the worker's pid, so two concurrent launches of one
+app do not unlink each other's socket; the directory itself is reused
+and is safe to leave behind.
+.It Pa $XDG_RUNTIME_DIR/.flatpkg-p11kit.lock
+Lock held while the per-user
+.Xr p11-kit 1
+trust store is set up.
+It lives in the runtime directory rather than under p11-kit's own,
+because that directory may not exist yet and must be created with the
+user's ownership.
+Opened
+.Dv O_NOFOLLOW ,
+so a user-controlled symlink cannot redirect this root-side open
+elsewhere.
+.It Pa $XDG_RUNTIME_DIR/.flatpak/<id>
+Per-instance host directory:
+.Pa info ,
+.Pa .ref
+lock,
+.Pa pid ,
+.Pa run-environ
+(the NUL-separated environment the app ran with, recorded when the
+launch reached its final environment - the metadata's
+.Sy [Environment] ,
+every
+.Fl --env=N=V ,
+and the sandbox's own
+.Ev PATH
+and
+.Ev XDG_*
+pins included;
+.Cm enter
+restores it, and the four variables a
+.Xr jail_attach 2
+shell must control are set on top of it)
+and
+.Pa bwrapinfo.json .
+.El
+.Sh EXIT STATUS
+.Nm
+exits 0 on success, 1 on a usage or operational error, and otherwise
+with the exit status of the application it ran.
+.Cm enter
+propagates the command's status, and
+.Ql 128 + Ns Ar signal
+when the command died from a signal.
+.Pp
+A removal is refused, and the status is 1, when the target is a runtime
+an installed app still needs or a store tree a running app has mounted.
+Neither refusal is a soft failure that something else goes on to undo.
+.Sh EXAMPLES
+Run an app and let it keep the host's network and its own session bus:
+.Bd -literal -offset indent
+flatpkg run org.gnome.Fractal
+.Ed
+.Pp
+Run a command inside an app instead of its own entry point:
+.Bd -literal -offset indent
+flatpkg run --command=/bin/sh org.gnome.Fractal -c 'id'
+.Ed
+.Pp
+Find a running instance, then look at its mounts from inside:
+.Bd -literal -offset indent
+flatpkg ps
+flatpkg enter "$(flatpkg complete instances | head -1)" /bin/sh -c 'cat /proc/mounts'
+.Ed
+.Pp
+Update everything, showing what would change first:
+.Bd -literal -offset indent
+flatpkg upgrade --simulate
+.Ed
+.Sh SEE ALSO
+.Xr ostree 1 ,
+.Xr linux 4 ,
+.Xr flatpak-metadata 5 ,
+.Xr devfs 8 ,
+.Xr jail 8 ,
+.Xr mount_nullfs 8 ,
+.Xr mount_unionfs 8 ,
+.Xr rc 8
+.Pp
+The design record and the gap list against upstream ship in the source tree.
+.Sh BUGS
+Report to the flatpkg issue tracker.
+Known gaps are listed in the source tree; the ones a user is most likely to
+hit first are
+per-syscall filtering, which the
+.Xr jail 8
+facilities do not offer, 32-bit Linux runtimes, and
+.Xr flatpak-builder 1 Ns -style
+app building.

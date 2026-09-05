@@ -1,0 +1,4 @@
+# D-Bus session activation for flatpkg's flatpak session-helper surface
+[D-BUS Service]
+Name=org.freedesktop.Flatpak
+Exec=/usr/local/sbin/flatpkg session-helper

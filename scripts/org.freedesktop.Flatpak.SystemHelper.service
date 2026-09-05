@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.Flatpak.SystemHelper
+Exec=/usr/local/sbin/flatpkgd system-helper
+User=root

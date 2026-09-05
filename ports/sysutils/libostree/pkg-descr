@@ -1,0 +1,27 @@
+OSTree is a system for managing bootable, immutable, versioned
+filesystem trees. It is used both as the foundation for operating
+system build and deployment systems (such as Fedora Silverblue,
+Endless OS, and GNOME Continuous) and as a standalone tool for
+managing container/OS image repositories.
+
+It supports:
+- Storing files indexed by their content hash (CAS), with hardlink
+  deduplication.
+- Signed commits and static delta transfers.
+- GPG and ed25519 signature verification.
+- A libostree shared library (libostree-1) and the `ostree` CLI.
+
+FreeBSD notes:
+This port builds libostree-1 and the `ostree` command-line tool on
+FreeBSD. The repository core (init, commit, pull, pull-local, checkout,
+fsck, show, log, summary, static deltas and GPG verification) works and
+is exercised by the port's smoke test.
+
+The Linux extended-attribute API is provided by a FreeBSD extattr(2)
+shim, and the ext2 immutable-flag ioctls are reimplemented with
+fchflags(2). Features that depend on Linux kernel primitives - mount
+namespaces, pivot_root, overlayfs, kexec, fs-verity, O_TMPFILE,
+rofiles-fuse and systemd - are not supported: the affected code is
+guarded so that it builds and reports "not supported" at runtime. In
+particular, `ostree admin` deployment/sysroot and bootloader management
+remain Linux-only and do not work on FreeBSD.

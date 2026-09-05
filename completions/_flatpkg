@@ -1,0 +1,55 @@
+#compdef flatpkg flatpak
+# zsh completion for flatpkg (and the flatpak -> flatpkg symlink).
+#
+# Installed by `make install` as share/zsh/site-functions/_flatpkg.
+# Commands, options and option values come from `flatpkg complete`, which reads
+# the tables in src/cli/cli.c.
+
+_flatpkg_kind() {
+	local -a items
+	items=(${(f)"$(flatpkg complete $1 2>/dev/null)"})
+	(( ${#items} )) && _describe -t $1 $1 items
+}
+
+_flatpkg_operands() {
+	local kind
+	kind=$(flatpkg complete operands "$1" 2>/dev/null)
+	case $kind in
+	apps | refs | world | instances | remotes) _flatpkg_kind $kind ;;
+	files) _files ;;
+	esac
+}
+
+_flatpkg() {
+	local curcontext="$curcontext" state line cmd opt
+	local -a words vals
+	typeset -A opt_args
+
+	_arguments -C \
+		'1: :->command' \
+		'*::argument:->args'
+
+	case $state in
+	command)
+		local -a commands
+		commands=(${(f)"$(flatpkg complete commands 2>/dev/null)"})
+		(( ${#commands} )) && _describe -t commands 'command' commands
+		;;
+	args)
+		cmd=$words[1]
+		if [[ $words[CURRENT] == --*=* ]]; then
+			opt=${words[CURRENT]%%=*}
+			vals=(${(f)"$(flatpkg complete values -- $opt 2>/dev/null)"})
+			if (( ${#vals} )); then
+				compadd -P "$opt=" -a vals
+				return
+			fi
+		fi
+		words=(${(f)"$(flatpkg complete words $cmd 2>/dev/null)"})
+		(( ${#words} )) && _describe -t options 'option' words
+		_flatpkg_operands $cmd
+		;;
+	esac
+}
+
+_flatpkg "$@"

@@ -1,0 +1,29 @@
+bin/flatpak
+etc/dbus-1/system.d/org.freedesktop.Flatpak.SystemHelper.conf
+etc/profile.d/flatpkg.sh
+lib/environment.d/99-flatpkg.conf
+lib/flatpkg/dmabuf_devt_shim.so
+lib/flatpkg/madvise_shim.so
+lib/flatpkg/memfd_shim.so
+lib/flatpkg/rlimit_shim.so
+lib/flatpkg/seccomp_shim.so
+lib/flatpkg/signalfd_shim.so
+lib/flatpkg/syncobj_shim.so
+lib/libflatpkg_shared.so
+man/man8/flatpkg.8
+sbin/flatpkg
+sbin/flatpkgd
+share/dbus-1/services/org.freedesktop.Flatpak.service
+share/dbus-1/services/org.freedesktop.portal.Desktop.service
+share/dbus-1/services/org.freedesktop.portal.Flatpak.service
+share/dbus-1/system-services/org.freedesktop.Flatpak.SystemHelper.service
+etc/rc.d/flatpkgd
+@sample etc/flatpkg/helper.conf.sample
+share/bash-completion/completions/flatpak
+share/bash-completion/completions/flatpkg
+share/zsh/site-functions/_flatpkg
+share/fish/vendor_completions.d/flatpak.fish
+share/fish/vendor_completions.d/flatpkg.fish
+@dir /var/db/flatpkg
+@postexec /bin/mkdir -p /var/lib && /bin/ln -sfn /var/db/flatpkg /var/lib/flatpkg && /bin/ln -sfn flatpkg /var/lib/flatpak
+@postunexec /bin/rm -f /var/lib/flatpkg /var/lib/flatpak
