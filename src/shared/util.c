@@ -6,6 +6,7 @@
 #include <string.h>
 #include <sys/param.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "flatpkg.h"
@@ -92,4 +93,42 @@ fpkg_error_t copy_file(const char* from, const char* to, mode_t mode) {
 	close(in);
 	errno = e;
 	return e == 0 ? FPKG_OK : fpkg_error_from_errno(e);
+}
+
+// Run a program with no shell.  Any of the three fds may be -1 to inherit;
+// returns the child's exit status, or -1 when it could not be run.
+int run_program(char* const argv[], int in_fd, int out_fd, int err_fd) {
+	assert(argv != NULL);
+	assert(argv[0] != NULL);
+	if (argv[0][0] != '/') {
+		fpkg_errorf("run_program: program word is not absolute: %s",
+			    argv[0]);
+		return -1;
+	}
+
+	pid_t pid = fork();
+	if (pid < 0) return -1;
+	if (pid == 0) {
+		if (in_fd >= 0) {
+			(void)dup2(in_fd, STDIN_FILENO);
+			if (in_fd != STDIN_FILENO) close(in_fd);
+		}
+		if (out_fd >= 0) {
+			(void)dup2(out_fd, STDOUT_FILENO);
+			if (out_fd != STDOUT_FILENO) close(out_fd);
+		}
+		if (err_fd >= 0) {
+			(void)dup2(err_fd, STDERR_FILENO);
+			if (err_fd != STDERR_FILENO) close(err_fd);
+		}
+		execv(argv[0], argv);
+		_exit(127);
+	}
+
+	int ws = 0;
+	while (waitpid(pid, &ws, 0) < 0) {
+		if (errno != EINTR) return -1;
+	}
+	if (!WIFEXITED(ws)) return -1;
+	return WEXITSTATUS(ws);
 }

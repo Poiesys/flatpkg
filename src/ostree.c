@@ -46,8 +46,6 @@ static fpkg_error_t write_file(const char* path, const char* content,
 static int rm_cb(const char* path, const struct stat* st, int type,
 		 struct FTW* ftw) {
 	assert(path != NULL);
-	(void)st;
-	(void)ftw;
 	if (type == FTW_DP || type == FTW_D) rmdir(path);
 	else
 		unlink(path);
@@ -2689,12 +2687,27 @@ static const char* active_gtk_theme(void) {
 	static bool done;
 	if (done) return theme;
 	done = true;
-	FILE* p = popen("/usr/local/bin/dconf read "
-			"/org/gnome/desktop/interface/gtk-theme 2>/dev/null",
-			"r");
-	if (!p) return theme;
+
+	int fds[2];
+	if (pipe(fds) != 0) return theme;
+	int null = open("/dev/null", O_WRONLY);
+	char* argv[] = {"/usr/local/bin/dconf", "read",
+			"/org/gnome/desktop/interface/gtk-theme", NULL};
+	int rc = run_program(argv, -1, fds[1], null);
+	close(fds[1]);
+	if (null >= 0) close(null);
+	if (rc != 0) {
+		close(fds[0]);
+		return theme;
+	}
+
+	FILE* f = fdopen(fds[0], "r");
+	if (!f) {
+		close(fds[0]);
+		return theme;
+	}
 	char raw[128] = "";
-	if (fgets(raw, sizeof(raw), p)) {
+	if (fgets(raw, sizeof(raw), f)) {
 		raw[strcspn(raw, "\n")] = 0;
 		char* q = strchr(raw, '\'');
 		if (q++) {
@@ -2703,7 +2716,7 @@ static const char* active_gtk_theme(void) {
 			snprintf(theme, sizeof(theme), "%s", q);
 		}
 	}
-	pclose(p);
+	fclose(f);
 	return theme;
 }
 
@@ -3457,7 +3470,6 @@ static void prefetch_installs(const flatpkg_changeset_t* cs, const char* remote,
 static bool cs_ext_install_planned(const flatpkg_changeset_t* cs,
 				   const fpkg_ref_t* rt) {
 	assert(cs != NULL);
-	(void)rt;
 	for (size_t i = 0; i < cs->count; i++)
 		if (cs->items[i].type == FP_CHANGE_INSTALL &&
 		    cs->items[i].ref &&
@@ -4641,7 +4653,6 @@ static int find_deploy_dir(const char* type, const fpkg_ref_t* r, char* out,
 }
 
 bool remote_name_valid(const char* name) {
-	assert(name != NULL);
 	if (name == NULL || *name == '\0' || name[0] == '.') return false;
 	for (const char* c = name; *c; c++) {
 		bool alnum = (*c >= '0' && *c <= '9') ||
@@ -5020,7 +5031,6 @@ int cmd_rollback(const char* ref, const char* commit) {
 }
 
 int cmd_search(const char* text) {
-	assert(text != NULL);
 	if (!text || !*text) {
 		fpkg_errorf("usage: search TEXT");
 		return 1;
@@ -5616,14 +5626,15 @@ int ostree_appstream_extract(const char* remote, const char* arch) {
 	}
 
 	{
-		char xml[PATH_MAX], gz[PATH_MAX], cmd[PATH_MAX * 2 + 32];
+		char xml[PATH_MAX], gz[PATH_MAX];
 		snprintf(xml, sizeof(xml), "%s/appstream.xml", tmpdir);
 		snprintf(gz, sizeof(gz), "%s/appstream.xml.gz", tmpdir);
 		if (access(gz, F_OK) != 0 && access(xml, F_OK) == 0) {
-			snprintf(cmd, sizeof(cmd),
-				 "/usr/bin/gzip -c '%s' > '%s'", xml, gz);
-			if (system(cmd) != 0)
-				fpkg_warnf("could not compress %s", xml);
+			int out = open(gz, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			char* argv[] = {"/usr/bin/gzip", "-c", xml, NULL};
+			int rc = out >= 0 ? run_program(argv, -1, out, -1) : -1;
+			if (out >= 0) close(out);
+			if (rc != 0) fpkg_warnf("could not compress %s", xml);
 		}
 	}
 
@@ -5632,11 +5643,15 @@ int ostree_appstream_extract(const char* remote, const char* arch) {
 		snprintf(gz, sizeof(gz), "%s/appstream.xml.gz", tmpdir);
 		snprintf(xml, sizeof(xml), "%s/appstream.xml", tmpdir);
 		if (access(xml, F_OK) != 0 && access(gz, F_OK) == 0) {
-			char cmd[PATH_MAX * 2 + 32];
-			snprintf(cmd, sizeof(cmd),
-				 "/usr/bin/gzip -dc '%s' > '%s'", gz, xml);
-			if (system(cmd) != 0)
-				fpkg_warnf("could not decompress %s", gz);
+			int in = open(gz, O_RDONLY);
+			int out = open(xml, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			char* argv[] = {"/usr/bin/gzip", "-dc", NULL};
+			int rc = (in >= 0 && out >= 0)
+					 ? run_program(argv, in, out, -1)
+					 : -1;
+			if (in >= 0) close(in);
+			if (out >= 0) close(out);
+			if (rc != 0) fpkg_warnf("could not decompress %s", gz);
 		}
 	}
 

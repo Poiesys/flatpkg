@@ -3,6 +3,7 @@
 #include "flatpkg.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +12,6 @@
 
 bool flatpkg_kernel_module_loaded(const char* name) {
 	char path[PATH_MAX];
-	char cmd[256];
 
 	if (name == NULL || *name == '\0') return false;
 	for (const char* p = name; *p != '\0'; p++) {
@@ -22,8 +22,13 @@ bool flatpkg_kernel_module_loaded(const char* name) {
 
 	snprintf(path, sizeof(path), "/sys/module/%s", name);
 	if (access(path, F_OK) == 0) return true;
-	snprintf(cmd, sizeof(cmd), "/sbin/kldstat -q -n %s 2>/dev/null", name);
-	if (system(cmd) == 0) return true;
+
+	int null = open("/dev/null", O_WRONLY);
+	char* argv[] = {"/sbin/kldstat", "-q", "-n", (char*)name, NULL};
+	bool loaded = run_program(argv, -1, -1, null) == 0;
+	if (null >= 0) close(null);
+	if (loaded) return true;
+
 	snprintf(path, sizeof(path), "/boot/kernel/%s.ko", name);
 	return access(path, F_OK) == 0;
 }

@@ -49,6 +49,9 @@ char* xasprintf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 fpkg_error_t mkdir_p(const char* path, mode_t mode);
 // Copy a regular file, creating `to`; errno is set on failure.
 fpkg_error_t copy_file(const char* from, const char* to, mode_t mode);
+// Fork/exec a program with no shell; fds < 0 inherit.  Returns its exit
+// status, or -1 when it could not be run.
+int run_program(char* const argv[], int in_fd, int out_fd, int err_fd);
 
 static inline fpkg_error_t fpkg_error_from_errno(int e) {
 	switch (e) {
@@ -258,8 +261,7 @@ typedef struct {
 
 void permissions_apply_overrides(sandbox_plan_t* plan, const run_opts_t* opts);
 
-void evaluate_conditionals_in_lists(sandbox_plan_t* plan,
-				    const fp_metadata_t* meta);
+void evaluate_conditionals_in_lists(const fp_metadata_t* meta);
 
 typedef struct {
 	char* id;

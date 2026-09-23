@@ -526,13 +526,11 @@ static void warn_unknown_context_entry(const char* list, const char* item) {
 		   list, item);
 }
 
-void evaluate_conditionals_in_lists(sandbox_plan_t* plan,
-				    const fp_metadata_t* meta) {
+void evaluate_conditionals_in_lists(const fp_metadata_t* meta) {
 	assert(meta != NULL);
 	strlist_t* lists[] = {
 		(strlist_t*)&meta->shared, (strlist_t*)&meta->sockets,
 		(strlist_t*)&meta->devices, (strlist_t*)&meta->features, NULL};
-	(void)plan;
 	for (int li = 0; lists[li]; li++) {
 		strlist_t* l = lists[li];
 		for (size_t i = 0; i < l->count; i++) {
@@ -743,7 +741,7 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 		 meta->app_id);
 	plan->app_data_dir = xstrdup(data_dir);
 
-	evaluate_conditionals_in_lists(plan, meta);
+	evaluate_conditionals_in_lists(meta);
 
 	// share=network|ipc from [Context]; anything else is a typo and warns.
 	for (size_t i = 0; i < meta->shared.count; i++) {

@@ -60,33 +60,31 @@ static bool control_socket_live(void) {
 static void store_repair_ownership(void) {
 	struct group* g = getgrnam("flatpkg");
 	struct stat st;
-	char cmd[512];
-	pid_t pid;
-	int devnull;
 
 	if (!g) return;
 	if (stat(FLATPKG_STORE_DIR, &st) == 0 && st.st_gid == g->gr_gid) return;
-	snprintf(cmd, sizeof(cmd),
-		 "/usr/sbin/chown -R 0:%u %s/app %s/extension %s/runtime "
-		 "%s/keys %s/world 2>/dev/null; "
-		 "/usr/sbin/chown 0:%u %s %s/repo 2>/dev/null",
-		 (unsigned)g->gr_gid, FLATPKG_STORE_DIR, FLATPKG_STORE_DIR,
-		 FLATPKG_STORE_DIR, FLATPKG_STORE_DIR, FLATPKG_STORE_DIR,
-		 (unsigned)g->gr_gid, FLATPKG_STORE_DIR, FLATPKG_STORE_DIR);
 
-	pid = fork();
+	// Detached: a recursive chown can take a while on a full store, and the
+	// daemon must start serving.  The child reports a failure to stderr.
+	pid_t pid = fork();
 	if (pid != 0) return;
+
+	char owner[32];
+	snprintf(owner, sizeof(owner), "0:%u", (unsigned)g->gr_gid);
+	char* recursive[] = {"/usr/sbin/chown", "-R", owner,
+			     (char*)FLATPKG_STORE_DIR "/app",
+			     (char*)FLATPKG_STORE_DIR "/extension",
+			     (char*)FLATPKG_STORE_DIR "/runtime",
+			     (char*)FLATPKG_STORE_DIR "/keys",
+			     (char*)FLATPKG_STORE_DIR "/world", NULL};
+	char* top[] = {"/usr/sbin/chown", owner,
+		       (char*)FLATPKG_STORE_DIR,
+		       (char*)FLATPKG_STORE_DIR "/repo", NULL};
+
 	(void)setsid();
-	devnull = open("/dev/null", O_RDWR);
-	if (devnull >= 0) {
-		(void)dup2(devnull, 0);
-		(void)dup2(devnull, 1);
-		(void)dup2(devnull, 2);
-		if (devnull > 2) close(devnull);
-	}
-	closefrom(3);
-	execl("/bin/sh", "sh", "-c", cmd, (char*)NULL);
-	_exit(127);
+	run_program(recursive, -1, -1, -1);
+	run_program(top, -1, -1, -1);
+	_exit(0);
 }
 
 static void worker(int conn, int bus, uid_t uid, gid_t gid) {
