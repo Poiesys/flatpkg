@@ -35,7 +35,7 @@ bugprone-undefined-memory-manipulation\
 CKS=$(echo "$CKS" | tr -d '\n')
 
 # ---- compile flags ---------------------------------------------------
-# dbus-1.0 and glib-2.0 include paths are needed for ostree.c and the GDBus
+# dbus-1.0 and glib-2.0 include paths are needed for the ostree units and GDBus
 # modules.  -w silences compiler warnings: this is an analysis run, not a build.
 CF="-Iinclude -Ibuild -std=gnu11 -include sys/param.h"
 CF="$CF -I/usr/local/include/dbus-1.0 -I/usr/local/lib/dbus-1.0/include"
@@ -44,7 +44,7 @@ CF="$CF -w"
 
 # ---- the privileged set ----------------------------------------------
 FILES="\
-src/daemon/daemon.c src/daemon/sandbox.c src/ostree.c src/shared/store.c src/shared/config.c src/daemon/ops/store_write.c src/shared/dbus.c src/daemon/ops/dbus_proxy.c \
+src/daemon/daemon.c src/daemon/sandbox.c src/daemon/sandbox_root.c src/daemon/sandbox_exec.c src/ostree.c src/ostree_plan.c src/ostree_cmds.c src/shared/store.c src/shared/config.c src/daemon/ops/store_write.c src/shared/dbus.c src/daemon/ops/dbus_proxy.c \
 src/shared/permissions.c src/shared/protocol.c src/shared/instance.c src/daemon/ops/instance_ctl.c src/cli/portal.c src/cli/sessionhelper.c \
 src/daemon/systemhelper.c src/cli/dispatch.c"
 
@@ -53,7 +53,7 @@ src/daemon/systemhelper.c src/cli/dispatch.c"
 # entirely).  Add one only when the call is provably safe and say why.
 EXEMPT_STRCPY="src/daemon/sandbox.c:ld_path"          # strlcpy already used
 EXEMPT_SPRINTF="src/ostree.c:repo_arg"         # bounded by snprintf
-EXEMPT_STRCAT="src/ostree.c:key_out"           # bounded by realloc
+EXEMPT_STRCAT="src/ostree_cmds.c:key_out"      # bounded by realloc
 # No gets() exemptions: none exist in the tree.
 
 fail=0
@@ -69,7 +69,7 @@ trap 'rm -rf "$TMP"' EXIT
 for f in $FILES; do
 	echo "-- $f"
 	# Captured to a file so compile errors can be checked for separately.  The limit
-	# stops a hung analyser: ostree.c takes 60-90s here.  The status is captured with
+	# stops a hung analyser: the ostree units take 60-90s here.  The status is captured with
 	# `||` because `set -e` would exit on a bare `cmd; rc=$?`.
 	tidy_rc=0
 	timeout "${FPKG_TIDY_TIMEOUT:-600}" "$TIDY" -checks="$CKS" "$f" -- $CF \

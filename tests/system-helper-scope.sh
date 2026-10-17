@@ -157,13 +157,13 @@ printf '%s' "$ib" | grep -q 'run_helper_command(argv, argc, &ref)' &&
 # The old assert turned every bundle install into a daemon abort.
 dep=$(awk '/^int ostree_deploy_from_repo/ { f=1 }
 	f && /^}/ { print; exit }
-	f' src/ostree.c)
+	f' src/ostree_cmds.c)
 printf '%s' "$dep" | grep -q 'assert(child_repo != NULL)' &&
 	note "ostree_deploy_from_repo still rejects the NULL child repo"
 # ostree_config_has() asks without a buffer.
 cfg=$(awk '/^static int ostree_config_get/ { f=1 }
 	f && /^}/ { print; exit }
-	f' src/ostree.c)
+	f' src/ostree_cmds.c)
 printf '%s' "$cfg" | grep -q 'assert(out != NULL)' &&
 	note "ostree_config_get still rejects a NULL output buffer"
 

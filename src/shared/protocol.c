@@ -641,7 +641,6 @@ static int hdr_is(const fp_frame_hdr_t* h, uint8_t kind) {
 	return FP_P_OK;
 }
 
-// A decode that read a bad field, or left bytes unread, is a failure.
 static int finish(const fp_rbuf_t* r) {
 	if (r->err != FP_P_OK) return r->err;
 	if (r->pos != r->len) return FP_P_ERR_MALFORMED;

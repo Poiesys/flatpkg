@@ -91,12 +91,16 @@ CLI_OBJS=       $(OBJDIR)/cli/dispatch.o \
 DAEMON_OBJS=    $(OBJDIR)/daemon/daemon.o \
 		$(OBJDIR)/daemon/bus.o \
 		$(OBJDIR)/daemon/sandbox.o \
+		$(OBJDIR)/daemon/sandbox_root.o \
+		$(OBJDIR)/daemon/sandbox_exec.o \
 		$(OBJDIR)/daemon/systemhelper.o \
 		$(OBJDIR)/daemon/ops/typed_worker.o \
 		$(OBJDIR)/daemon/ops/run.o
 
 # Legacy objects still in src/ root (need to be moved)
 LEGACY_OBJS=    $(OBJDIR)/ostree.o \
+		$(OBJDIR)/ostree_plan.o \
+		$(OBJDIR)/ostree_cmds.o \
 		$(OBJDIR)/daemon/ops/dbus_proxy.o \
 		$(OBJDIR)/daemon/ops/instance_ctl.o \
 		$(OBJDIR)/daemon/ops/store_write.o
@@ -235,9 +239,17 @@ $(OBJDIR)/cli/translations.o: src/cli/translations.c include/translations.h
 	@mkdir -p $(OBJDIR)/cli
 	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/cli/translations.c
 
-$(OBJDIR)/ostree.o: src/ostree.c
+$(OBJDIR)/ostree.o: src/ostree.c src/ostree_internal.h
 	@mkdir -p $(OBJDIR)
 	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/ostree.c
+
+$(OBJDIR)/ostree_plan.o: src/ostree_plan.c src/ostree_internal.h
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/ostree_plan.c
+
+$(OBJDIR)/ostree_cmds.o: src/ostree_cmds.c src/ostree_internal.h
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/ostree_cmds.c
 
 $(OBJDIR)/cli/repair.o: src/cli/repair.c
 	@mkdir -p $(OBJDIR)/cli
@@ -285,6 +297,14 @@ $(OBJDIR)/cli/portal.o: src/cli/portal.c
 $(OBJDIR)/daemon/sandbox.o: src/daemon/sandbox.c
 	@mkdir -p $(OBJDIR)/daemon
 	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/sandbox.c
+
+$(OBJDIR)/daemon/sandbox_root.o: src/daemon/sandbox_root.c
+	@mkdir -p $(OBJDIR)/daemon
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/sandbox_root.c
+
+$(OBJDIR)/daemon/sandbox_exec.o: src/daemon/sandbox_exec.c
+	@mkdir -p $(OBJDIR)/daemon
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/sandbox_exec.c
 
 $(OBJDIR)/cli/sessionhelper.o: src/cli/sessionhelper.c
 	@mkdir -p $(OBJDIR)/cli
@@ -340,6 +360,8 @@ sinclude $(OBJDIR)/daemon/daemon.d
 sinclude $(OBJDIR)/daemon/bus.d
 sinclude $(OBJDIR)/cli/portal.d
 sinclude $(OBJDIR)/daemon/sandbox.d
+sinclude $(OBJDIR)/daemon/sandbox_root.d
+sinclude $(OBJDIR)/daemon/sandbox_exec.d
 sinclude $(OBJDIR)/cli/sessionhelper.d
 sinclude $(OBJDIR)/daemon/systemhelper.d
 sinclude $(OBJDIR)/shared/metadata.d
@@ -355,6 +377,8 @@ sinclude $(OBJDIR)/shared/instance.d
 sinclude $(OBJDIR)/shared/modules.d
 sinclude $(OBJDIR)/shared/util.d
 sinclude $(OBJDIR)/ostree.d
+sinclude $(OBJDIR)/ostree_plan.d
+sinclude $(OBJDIR)/ostree_cmds.d
 sinclude $(OBJDIR)/cli/repair.d
 sinclude $(OBJDIR)/daemon/ops/dbus_proxy.d
 sinclude $(OBJDIR)/daemon/ops/typed_worker.d

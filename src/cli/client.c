@@ -85,8 +85,6 @@ void client_enter_raw_stdin(void) {
 	(void)signal(SIGQUIT, on_term_signal);
 }
 
-// Called when a run/enter request is over: put the terminal back before the
-// app's modes are left for the shell to inherit.
 void client_leave_raw_stdin(void) {
 	restore_term();
 	reset_terminal();
@@ -101,9 +99,8 @@ void ignore_sigpipe(void) {
 	sigaction(SIGPIPE, &sa, NULL);
 }
 
-// Say why the daemon cannot be used, and return the exit status for it.  The
-// log line is cut at the terminal width, so reason, socket and hint are
-// separate short lines; a long path on the end is what gets cut off.
+// Say why the daemon cannot be used and return its exit status. The log line is
+// width-cut, so reason, socket and hint are separate short lines.
 int daemon_unreachable(int err) {
 	switch (err) {
 	case ENOENT:

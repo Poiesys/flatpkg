@@ -122,10 +122,6 @@ handle_deploy_appstream(GDBusConnection* connection, const gchar* sender,
 	const gchar *origin = NULL, *arch = NULL, *installation = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(@ayu&s&s&s)", &path_v, &flags, &origin,
 		      &arch, &installation);
@@ -202,10 +198,6 @@ static void handle_deploy(GDBusConnection* connection, const gchar* sender,
 	gchar **subpaths = NULL, **previous_ids = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(@ayu&s&s^as^as&s)", &path_v, &flags, &ref,
 		      &origin, &subpaths, &previous_ids, &installation);
@@ -320,10 +312,6 @@ static void handle_uninstall(GDBusConnection* connection, const gchar* sender,
 	const gchar *ref = NULL, *installation = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s&s)", &flags, &ref, &installation);
 	if (!authorize(connection, sender, invocation, "Uninstall")) return;
@@ -341,9 +329,8 @@ static void handle_uninstall(GDBusConnection* connection, const gchar* sender,
 			"Unsupported flags enabled: 0x%x", flags);
 		return;
 	}
-	// The map is the contract: no entry means the request is refused,
-	// not silently handled by a daemon fallback.  That keeps behaviour
-	// with the client that configured it.
+	// The map is the contract: no entry means refused, not silently handled by a
+	// daemon fallback. That keeps behaviour with the client that configured it.
 	char** argv = NULL;
 	size_t argc = 0;
 	fpkg_helper_args_t hargs = {
@@ -425,10 +412,6 @@ static void handle_ensure_repo(GDBusConnection* connection, const gchar* sender,
 	const gchar* installation = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s)", &flags, &installation);
 	if (!helper_call_ok(connection, sender, invocation, "EnsureRepo",
@@ -453,10 +436,6 @@ handle_prune_local_repo(GDBusConnection* connection, const gchar* sender,
 	const gchar* installation = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s)", &flags, &installation);
 	if (!helper_call_ok(connection, sender, invocation, "PruneLocalRepo",
@@ -482,10 +461,6 @@ handle_remove_local_ref(GDBusConnection* connection, const gchar* sender,
 	const gchar *remote = NULL, *ref = NULL, *installation = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s&s&s)", &flags, &remote, &ref,
 		      &installation);
@@ -522,10 +497,6 @@ static void handle_run_triggers(GDBusConnection* connection,
 	const gchar* installation = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s)", &flags, &installation);
 	if (!helper_call_ok(connection, sender, invocation, "RunTriggers",
@@ -550,10 +521,6 @@ handle_update_summary(GDBusConnection* connection, const gchar* sender,
 	const gchar* installation = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s)", &flags, &installation);
 	if (!helper_call_ok(connection, sender, invocation, "UpdateSummary",
@@ -580,10 +547,6 @@ static void handle_configure(GDBusConnection* connection, const gchar* sender,
 	const gchar *key = NULL, *value = NULL, *installation = NULL;
 	guint flags = 0;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s&s&s)", &flags, &key, &value,
 		      &installation);
@@ -627,10 +590,6 @@ handle_configure_remote(GDBusConnection* connection, const gchar* sender,
 	gchar* group = NULL;
 	gchar** keys = NULL;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s&s@ay&s)", &flags, &remote, &config,
 		      &gpg_v, &installation);
@@ -685,8 +644,6 @@ out:
 	g_variant_unref(gpg_v);
 }
 
-// UpdateRemote: the client fetched the summary and asks the root helper to
-// apply it, since the config lives in the root-owned repo.
 static void handle_update_remote(GDBusConnection* connection,
 				 const gchar* sender, const gchar* object_path,
 				 const gchar* interface_name,
@@ -699,10 +656,6 @@ static void handle_update_remote(GDBusConnection* connection,
 	gchar *summary_path = NULL, *sig_path = NULL;
 	char* error_msg = NULL;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(u&s&s@ay@ay)", &flags, &remote,
 		      &installation, &summary_v, &sig_v);
@@ -754,7 +707,6 @@ out:
 	if (sig_v != NULL) g_variant_unref(sig_v);
 }
 
-// 0 only when the configured command exits 0.
 static int run_helper_command(char** argv, size_t argc) {
 	if (argc == 0 || argv[0] == NULL) return -1;
 	pid_t pid = fork();
@@ -807,8 +759,6 @@ static gboolean helper_run_mapped(const char* request,
 	return TRUE;
 }
 
-// InstallBundle: apply the .flatpak bundle (an OSTree static delta), record
-// the ref under the caller's remote and deploy it.
 static void
 handle_install_bundle(GDBusConnection* connection, const gchar* sender,
 		      const gchar* object_path, const gchar* interface_name,
@@ -820,10 +770,6 @@ handle_install_bundle(GDBusConnection* connection, const gchar* sender,
 	guint flags = 0;
 	char* ref = NULL;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(@ayu&s&s)", &path_v, &flags, &remote,
 		      &installation);
@@ -914,11 +860,6 @@ static void handle_unimplemented(GDBusConnection* connection,
 				 const gchar* method_name, GVariant* parameters,
 				 GDBusMethodInvocation* invocation,
 				 gpointer user_data) {
-	(void)connection;
-	(void)sender;
-	(void)object_path;
-	(void)interface_name;
-	(void)user_data;
 
 	if (g_str_equal(method_name, "GenerateOciSummary")) {
 		const gchar *origin = NULL, *installation = NULL;
@@ -982,11 +923,6 @@ static GVariant* syshelper_get_property(GDBusConnection* connection,
 					const gchar* interface_name,
 					const gchar* property_name,
 					GError** error, gpointer user_data) {
-	(void)connection;
-	(void)sender;
-	(void)object_path;
-	(void)interface_name;
-	(void)user_data;
 
 	if (g_str_equal(property_name, "version"))
 		return g_variant_new_uint32(SYSHELPER_VERSION);
@@ -1160,7 +1096,6 @@ static void on_bus_acquired(GDBusConnection* connection, const gchar* name,
 	GDBusNodeInfo* info;
 	GError* error = NULL;
 
-	(void)user_data;
 	system_bus = connection;
 
 	info = g_dbus_node_info_new_for_xml(syshelper_xml, &error);
@@ -1184,8 +1119,6 @@ static void on_bus_acquired(GDBusConnection* connection, const gchar* name,
 
 static void on_name_lost(GDBusConnection* connection, const gchar* name,
 			 gpointer user_data) {
-	(void)connection;
-	(void)user_data;
 	dprintf(2,
 		"flatpkg system-helper: cannot own %s on the "
 		"system bus\n",
@@ -1196,8 +1129,6 @@ static void on_name_lost(GDBusConnection* connection, const gchar* name,
 int system_helper_main(int argc, char* argv[]) {
 	GMainLoop* loop;
 
-	(void)argc;
-	(void)argv;
 
 	loop = g_main_loop_new(NULL, FALSE);
 	g_bus_own_name(G_BUS_TYPE_SYSTEM, SYSHELPER_BUS_NAME,

@@ -6,7 +6,7 @@
   <p>Flatpak for BSD.</p>
 
 <a href="https://github.com/Poiesys/flatpkg/stargazers"><img src="https://img.shields.io/github/stars/Poiesys/flatpkg?style=flat&color=orange" alt="Stars"/></a>
-<a href="https://github.com/Poiesys/flatpkg/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat" alt="License"/></a>
+<a href="https://github.com/Poiesys/flatpkg/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue?style=flat" alt="License"/></a>
 
 </div>
 

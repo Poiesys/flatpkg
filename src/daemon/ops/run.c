@@ -1,4 +1,3 @@
-// run and import build a jail and write the store, so they are root's.
 #include <assert.h>
 #include <errno.h>
 #include <pwd.h>

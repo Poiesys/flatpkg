@@ -15,7 +15,7 @@ trap 'rm -rf "$tmp"' EXIT
 # shellcheck source=tests/commentlib.sh
 . "$ROOT/tests/commentlib.sh"
 
-strip_comments < "$ROOT/src/daemon/sandbox.c" > "$tmp/sb.c"
+strip_comments < "$ROOT/src/daemon/sandbox_root.c" > "$tmp/sb.c"
 
 # ---- 1. every ownership test must refuse inside the statement it guards --
 # Only lines that COMPARE the uid are sites: a grep for `st_uid` also finds
@@ -25,7 +25,7 @@ nsites=$(grep -c . "$tmp/sites" || true)
 # The floor: a site that cannot be found is a site that cannot be checked, so a
 # count that drops is a failure rather than a smaller pass.
 [ "${nsites:-0}" -ge 3 ] || {
-	echo "FAIL: found ${nsites:-0} ownership test(s) in src/daemon/sandbox.c, below"
+	echo "FAIL: found ${nsites:-0} ownership test(s) in src/daemon/sandbox_root.c, below"
 	echo "       the floor of 3 - the extraction broke or the shape moved"
 	fail=1
 }
@@ -48,7 +48,7 @@ while read -r ul; do
 		continue
 	fi
 	if ! printf '%s\n' "$blk" | grep -q 'return'; then
-		note "the ownership test at src/daemon/sandbox.c:$ul does not refuse inside"
+		note "the ownership test at src/daemon/sandbox_root.c:$ul does not refuse inside"
 		echo "       the statement it guards: root would go on to act on a path"
 		echo "       that is not the caller's"
 	fi
@@ -56,7 +56,7 @@ while read -r ul; do
 	# every caller's directory as somebody else's and every launch fails.  The
 	# comparison must be against the CALLER's uid, however it is spelled.
 	if printf '%s\n' "$blk" | grep -qE 'get[eu]id\(\)'; then
-		note "the ownership test at src/daemon/sandbox.c:$ul compares against"
+		note "the ownership test at src/daemon/sandbox_root.c:$ul compares against"
 		echo "       getuid()/geteuid(), which is 0 in the root worker"
 	fi
 done < "$tmp/sites"
@@ -68,7 +68,7 @@ printf '%s\n' "$fn" > "$tmp/fn.c"
 # then pass on an empty set - so its shape is checked first.
 case "$fn" in
 *sandbox_ensure_runtime_dir*) : ;;
-*) echo "FAIL: could not carve sandbox_ensure_runtime_dir() out of src/daemon/sandbox.c"
+*) echo "FAIL: could not carve sandbox_ensure_runtime_dir() out of src/daemon/sandbox_root.c"
    exit 1 ;;
 esac
 grep -q '^}$' "$tmp/fn.c" ||
@@ -135,7 +135,7 @@ if ! grep -lq 'client_ensure_app_data_dirs' "$ROOT"/src/*.c "$ROOT"/src/*/*.c "$
 fi
 
 if [ $fail -eq 0 ]; then
-	echo "PASS: all $nsites ownership tests in src/daemon/sandbox.c refuse inside the"
+	echo "PASS: all $nsites ownership tests in src/daemon/sandbox_root.c refuse inside the"
 	echo "      statement they guard, and none compares against the worker's own"
 	echo "      uid; the worker refuses a runtime dir that is not the caller's"
 	echo "      (test at $uidline, refusing at $refuse) before it tightens"

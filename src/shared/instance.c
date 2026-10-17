@@ -30,11 +30,9 @@
 #define FPKG_MODULE "instance"
 #include "fpkglog.h"
 
-// Read side of the instance registry: listing, completion and usage checks.
 
 int kf_get(const char* path, const char* group, const char* key, char* out,
 	   size_t outlen) {
-	assert(path != NULL);
 	assert(group != NULL);
 	assert(key != NULL);
 	assert(out != NULL);

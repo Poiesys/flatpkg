@@ -133,9 +133,9 @@ done
 # `run` executes in the daemon's process, so a daemon started before the
 # last install runs the old build while every guard reports on the new one.
 if [ -x "$PREFIX/sbin/flatpkg" ]; then
-	dpid=$(pgrep -f "$PREFIX/sbin/flatpkgd" 2>/dev/null | head -n 1 || true)
+	dpid=$(pgrep -f "^$PREFIX/sbin/flatpkgd$" 2>/dev/null | head -n 1 || true)
 	if [ -z "$dpid" ]; then
-		echo "note: no flatpkgd running; the stale-daemon check is skipped"
+		echo "note: no flatpkgd listener running; the stale-daemon check is skipped"
 	else
 		# Seconds SINCE the daemon started, not a parsed start date: the
 		# lstart parse failed here, left the comparison skipped, and the

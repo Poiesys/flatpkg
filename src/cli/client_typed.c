@@ -1,6 +1,3 @@
-// The only way a privileged command reaches the daemon: build one typed
-// request, send it, render the events, return the last event's status.  Ref
-// resolution happens here because the choice needs the caller's terminal.
 #include "flatpkg.h"
 #include "cli.h"
 #define FPKG_MODULE "client"
@@ -18,8 +15,6 @@
 #include <string.h>
 #include <unistd.h>
 
-// The refusal the module message is made of, one log line per line of it.
-// This runs in the caller, which is where the message is shown.
 void flatpkg_host_modules_emit(const char* msg) {
 	char line[512];
 
@@ -47,9 +42,8 @@ static bool ref_is_pinned(const char* s) {
 	return pinned;
 }
 
-// The caller's FLATPKG_FORWARD_FDS names descriptors to carry into the sandbox
-// on those same numbers.  Mismatched numbers are refused, not dropped: a launch
-// that silently loses a descriptor fails later where nothing can say why.
+// FLATPKG_FORWARD_FDS names descriptors to carry into the sandbox on those same
+// numbers. Mismatched numbers are refused, not dropped: silently losing one fails later.
 static int forward_targets(int* fds, size_t* nfds, char* list, size_t listsz) {
 	const char* s = cli_getenv("FLATPKG_FORWARD_FDS");
 	const char* bad_at = NULL;
@@ -108,13 +102,10 @@ bad:
 	return -1;
 }
 
-// Free the resolved install spellings; NULL entries are skipped.
 static void free_refs(char** v, size_t n) {
 	for (size_t i = 0; i < n; i++) free(v[i]);
 }
 
-// Fill *out from the parsed command; false when this command does not go
-// the typed way.  Strings point into `req`.
 static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned) {
 	const char* const* op = req->ops;
 	size_t n = req->nops;
@@ -132,9 +123,8 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned) {
 		out->u.remote_delete.name = (char*)(n > 0 ? op[0] : "");
 		return n > 0;
 	case CMD_OVERRIDE:
-		// Only the system scope is a request (cli_req_is_local() keeps
-		// the rest in the caller's process).  The text is allocated
-		// here and owned by the caller of this function.
+		// Only the system scope is a request (cli_req_is_local() keeps the rest in the
+		// caller's process). The text is allocated here and owned by the caller.
 		out->type = FP_REQ_OVERRIDE;
 		out->u.override.app_id = (char*)(n > 0 ? op[0] : "");
 		out->u.override.flags = req->over_reset ? FP_OVERRIDE_RESET : 0;
@@ -156,8 +146,6 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned) {
 		out->u.rollback.commit = (char*)(n > 1 ? op[1] : "");
 		return n > 0;
 	case CMD_INSTALL:
-		// A named install is planned by the CLI; only a bundle
-		// reaches this switch.
 		if (req->from == NULL) return false;
 		out->type = FP_REQ_INSTALL_BUNDLE;
 		return true;
@@ -199,8 +187,6 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned) {
 		return true;
 	}
 	case CMD_ENTER: {
-		// Stdio as for run, descriptor by descriptor.  No command means
-		// the instance's shell.
 		static char* nocommand[1] = {NULL};
 		size_t ncmd = 0;
 		if (n == 0) return false;
@@ -232,8 +218,6 @@ static int send_req(int fd, uint32_t id, const fp_req_t* r) {
 	return e == FP_P_OK ? 0 : (errno ? errno : EIO);
 }
 
-// Read one ack.  0 on an OK ack (op id in *op_id), 1 on a refusal that has
-// been reported, -1 when the daemon cannot be talked to.
 static int read_ack(int fd, uint64_t* op_id) {
 	fp_frame_hdr_t hdr;
 	uint8_t* payload = NULL;
@@ -257,8 +241,6 @@ static int read_ack(int fd, uint64_t* op_id) {
 	return rc;
 }
 
-// The caller's session, for the daemon to filter.  It sends what it is asked
-// to; the daemon keeps only what is on its allowlist.
 static void send_env(int fd, uint32_t id) {
 	char** env = cli_environ();
 	size_t n = 0;
@@ -279,9 +261,6 @@ static void render_log(const fp_event_t* ev) {
 		ev->u.log.text ? ev->u.log.text : "");
 }
 
-// Fetch the metadata the solver needs for an install plan.  The daemon does
-// the store-repo pull (only root may write it) and returns the text; this
-// side only parses it.
 static int prefetch_meta(int fd, const char* const* refs, size_t n) {
 	fp_req_t r;
 	fp_wbuf_t w;
@@ -386,7 +365,6 @@ typedef struct {
 	char* plan_world;
 } typed_ctx_t;
 
-// The one cleanup path: every phase stops with goto out.
 static void typed_ctx_free(typed_ctx_t* c) {
 	if (c->fd >= 0) close(c->fd);
 	if (c->have_plan) fpkg_plan_free(&c->plan);
@@ -446,9 +424,8 @@ static int typed_send_stdio(typed_ctx_t* c) {
 	fp_wbuf_t w;
 	int fds[FP_STDIO_FDS] = {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
 
-	// The daemon relays this stdin to the app's pty, so it must arrive
-	// unedited and unechoed; the pty does both.  Only stdin: stdout and
-	// stderr may be files even when stdin is a terminal.
+	// The daemon relays this stdin to the app's pty, so it must arrive unedited and
+	// unechoed; the pty does both. Only stdin: stdout and stderr may be files.
 	if (isatty(STDIN_FILENO)) client_enter_raw_stdin();
 	// The caller's own stdio goes with the run, not through us.
 	memset(&sio, 0, sizeof(sio));
@@ -485,8 +462,6 @@ static int typed_resolve_refs(typed_ctx_t* c) {
 	return 0;
 }
 
-// Encode the plan's rows as the APPLY request; the rows are shared by
-// install, removal and upgrade.
 static bool typed_apply_from_plan(typed_ctx_t* c, const char* what) {
 	c->plan_world = world_to_text(&c->plan.world);
 	if (c->plan_world == NULL || c->plan.cs.count > FP_APPLY_MAX) {
@@ -613,7 +588,6 @@ static bool typed_plan_upgrade(typed_ctx_t* c, int* status) {
 	return true;
 }
 
-// true keeps going; false makes *status the exit code.
 static bool typed_make_plan(typed_ctx_t* c, int* status) {
 	if (c->plan_install) return typed_plan_install(c, status);
 	if (c->plan_remove) return typed_plan_remove(c, status);
@@ -686,9 +660,8 @@ static int typed_render(typed_ctx_t* c) {
 			render_log(&ev);
 			break;
 		case FP_EV_OP_TABLE: {
-			// The daemon sends the cells; this side draws them the
-			// way it draws a table it built itself, so a plan reads
-			// the same whichever side worked it out.
+			// The daemon sends the cells; this side draws them as it draws its own table, so
+			// a plan reads the same whichever side worked it out.
 			const size_t nc = ev.u.table.ncols,
 				     nr = ev.u.table.nrows;
 			const char* const** rows =
@@ -706,9 +679,8 @@ static int typed_render(typed_ctx_t* c) {
 			break;
 		}
 		case FP_EV_OP_PROGRESS:
-			// A bar is for a person at a terminal; into a pipe or a
-			// file it is one line per update, and the log records
-			// already say what finished.
+			// A bar is for a person at a terminal; into a pipe or file it is one line per
+			// update, and the log records already say what finished.
 			if (ev.u.progress.total == 0 || !fp_is_tty()) break;
 			if (!have_bar ||
 			    strcmp(bar.label, ev.u.progress.stage) != 0) {
@@ -803,9 +775,8 @@ int client_try_typed(int argc, char* argv[]) {
 		goto out;
 	}
 
-	// A run may carry descriptors the caller wants the app to inherit.  The
-	// list is decided here, where the caller's own table is, and travels in
-	// the RUN payload; the descriptors themselves ride on the frame.
+	// A run may carry descriptors the caller wants inherited. The list is decided
+	// here, where the caller's table is; the descriptors ride on the RUN frame.
 	if (c.typed.type == FP_REQ_RUN) {
 		if (forward_targets(c.fwd, &c.nfwd, c.fwlist,
 				    sizeof(c.fwlist)) != 0) {

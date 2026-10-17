@@ -14,7 +14,6 @@
 #define FPKG_MODULE "store"
 #include "fpkglog.h"
 
-// Read-only half of the store: layout, listing and resolving.
 
 bool flatpkg_client_name_ok(const char* name) {
 	if (name == NULL || *name == '\0') return false;
@@ -439,9 +438,8 @@ int store_resolve(const char* app_id, sandbox_t* sb_out,
 		return -1;
 	}
 
-	// An imported entry points into the tree the caller named.  The import
-	// checked the types; check them again here, because that tree can be
-	// changed after the import and these paths are mounted as root.
+	// An imported entry points into the caller's tree. The import checked the types;
+	// check again here, because that tree can change after the import and is mounted as root.
 	struct stat st;
 	if (lstat(app_files, &st) != 0 || !S_ISDIR(st.st_mode) ||
 	    lstat(runtime_files, &st) != 0 || !S_ISDIR(st.st_mode) ||
@@ -460,9 +458,8 @@ int store_resolve(const char* app_id, sandbox_t* sb_out,
 	return 0;
 }
 
-// The store-facing world API: thin wrappers over world_load()/world_save(),
-// so the worldfile has one parser and one save path.  A missing file is an
-// empty world; a file that exists but cannot be read is an error.
+// Store-facing world API: thin wrappers, so the worldfile has one parser and one
+// save path. Missing is empty; existing but unreadable is an error.
 
 int world_has(const char* id) {
 	assert(id != NULL);

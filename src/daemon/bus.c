@@ -1,6 +1,3 @@
-// One broker in the parent, one socketpair per worker: a worker publishes an
-// encoded event frame and the parent forwards it to the topic's subscribers,
-// keeping the last few so a late subscriber starts with the current state.
 #include "bus.h"
 
 #include <errno.h>
@@ -90,7 +87,6 @@ static snap_t* snap_new(const char* topic) {
 				 topic);
 			return &snaps[i];
 		}
-	// Full: drop every history and reuse the first slot.
 	for (size_t i = 0; i < sizeof(snaps) / sizeof(snaps[0]); i++) {
 		for (int k = 0; k < snaps[i].n; k++)
 			free(snaps[i].frame[k]);
@@ -256,9 +252,8 @@ void broker_handle(int fd) {
 		topic[tlen] = '\0';
 		const char* frame = payload + 4 + tlen;
 		size_t flen = h.len - 4 - tlen;
-		// `op` is a live stream, not one operation: replaying the last
-		// events of whatever ran before would tell a new watcher
-		// nothing true about the operation it is waiting for.
+		// `op` is a live stream, not one operation: replaying whatever ran before would
+		// tell a new watcher nothing true about the operation it waits for.
 		if (strcmp(topic, "op") != 0) snap_add(topic, frame, flen);
 		route(topic, frame, flen, fd);
 		return;
@@ -306,8 +301,7 @@ static int worker_fd = -1;
 
 int bus_worker_init(int fd) {
 	worker_fd = fd;
-	// A tool the worker starts must not hold the bus open after the worker
-	// exits; the broker learns a worker is gone from this descriptor.
+	// A tool the worker starts must not hold the bus open after it exits.
 	(void)fcntl(fd, F_SETFD, FD_CLOEXEC);
 	return 0;
 }

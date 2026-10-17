@@ -1,6 +1,3 @@
-// One broker in the parent, one socketpair per worker: a worker publishes an
-// encoded event frame and the parent forwards it to the topic's subscribers.
-// A worker's own operation events go to its client, so it is not echoed.
 #ifndef FPKG_BUS_H
 #define FPKG_BUS_H
 
@@ -50,7 +47,6 @@ int bus_cancel(uint64_t op_id);
 // 0 = one message; `*type` says which.  BUS_FORWARD copies its frame into
 // `buf`.  -1 = nothing now, -2 = the broker went away.
 int bus_next(void* buf, size_t cap, size_t* len, uint32_t* type);
-// Publish a state event outside any operation (store/remote/instance).
 int bus_emit_event(const char* topic, const fp_event_t* ev);
 
 // The owner worker sets this from SIGUSR1; long operations poll it.

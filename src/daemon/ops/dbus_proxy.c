@@ -24,8 +24,6 @@
 #define FPKG_MODULE "dbus"
 #include "fpkglog.h"
 
-// The xdg-dbus-proxy launcher: runs while the root worker builds an app's
-// sandbox.  Caller identity and the proxy list are in src/shared/dbus.c.
 
 static bool unix_socket_live(const char* path) {
 	assert(path != NULL);
@@ -193,9 +191,8 @@ static void bus_addrs_free(bus_addrs_t* a) {
 	memset(a, 0, sizeof(*a));
 }
 
-// The host-side addresses to proxy: the session bus unless the grant makes it
-// unrestricted, the system bus only when a policy asks for one, and the
-// accessibility bus from the environment, the runtime dir, or org.a11y.Bus.
+// Addresses to proxy: session unless the grant is unrestricted, system only on a
+// policy, and accessibility from the environment, runtime dir, or org.a11y.Bus.
 static int bus_addrs_resolve(bus_addrs_t* a, const sandbox_plan_t* plan) {
 	a->session = dbus_host_session_address(plan);
 	if (!a->session) {
@@ -207,9 +204,8 @@ static int bus_addrs_resolve(bus_addrs_t* a, const sandbox_plan_t* plan) {
 			"grant could not be honoured",
 			(unsigned)plan->uid);
 	} else if (plan->sock_session_bus) {
-		// Unrestricted grant: FreeBSD cannot mount a socket inode and
-		// the bus may live outside XDG_RUNTIME_DIR, so serve it through
-		// the proxy unfiltered.
+		// Unrestricted grant: FreeBSD cannot mount a socket inode and the bus may live
+		// outside XDG_RUNTIME_DIR, so serve it through the proxy unfiltered.
 		a->session_raw = true;
 	}
 	if (!plan->sock_system_bus && plan->system_bus_policy.count > 0) {
@@ -388,8 +384,6 @@ static void fill_proxy_argv(argvec_t* av, sandbox_t* sb,
 	}
 }
 
-// Publish the in-jail addresses and the /run/user/<uid>/bus symlink once the
-// proxy is up.
 static void publish_bus_socks(sandbox_t* sb, const sandbox_plan_t* plan,
 			      const char* bus_id, const bus_addrs_t* a) {
 	sb->session_bus_proxied = a->session != NULL;
@@ -482,9 +476,8 @@ int dbus_start_proxies(sandbox_t* sb, const sandbox_plan_t* plan) {
 			fpkg_errorf("mkdir %s: %s", path, strerror(errno));
 			goto fail;
 		}
-		// Unmount any stale bind from a previous aborted run. No shell:
-		// path comes from the caller's XDG_RUNTIME_DIR, so it goes over
-		// as its own argv entry.
+		// Unmount a stale bind from an aborted run. No shell: the path comes from the
+		// caller's XDG_RUNTIME_DIR, so it goes over as its own argv entry.
 		if (sb_is_mounted(sb, path)) {
 			char* av[4];
 			pid_t pid;

@@ -4,7 +4,7 @@
 # call that a no-op.  Needs vfs.usermount=1; the function is extracted verbatim.
 set -e
 
-SRC="$(dirname "$0")/../src/daemon/sandbox.c"
+SRC="$(dirname "$0")/../src/daemon/sandbox_root.c"
 HARNESS="$(dirname "$0")/nullfs-duplicate.c"
 
 if [ "$(sysctl -n vfs.usermount 2>/dev/null)" != "1" ]; then

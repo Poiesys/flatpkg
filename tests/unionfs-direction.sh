@@ -13,7 +13,7 @@ trap 'rm -rf "$tmp"' EXIT
 # shellcheck source=tests/commentlib.sh
 . "$(dirname "$0")/commentlib.sh"
 
-strip_comments < "$ROOT/src/daemon/sandbox.c" > "$tmp/sb.c"
+strip_comments < "$ROOT/src/daemon/sandbox_root.c" > "$tmp/sb.c"
 
 # A call site is not a mention: the token also appears in the definition, and
 # `m_unionfs` is the name of an argument in `mount_tool`'s tail call.
@@ -30,7 +30,7 @@ calls() { # calls CARVED TOKEN
 
 fn=$(carve_function '^m_unionfs' "$tmp/sb.c" || true)
 if [ -z "$fn" ]; then
-	note "could not carve m_unionfs() out of src/daemon/sandbox.c - the shape moved"
+	note "could not carve m_unionfs() out of src/daemon/sandbox_root.c - the shape moved"
 else
 	printf '%s\n' "$fn" > "$tmp/fn.c"
 

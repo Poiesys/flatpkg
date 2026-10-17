@@ -4,8 +4,8 @@
 # independently of the source, so a changed list is a conscious act.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-SRC=$ROOT/src/daemon/sandbox.c
-[ -f "$SRC" ] || { echo "SKIP: src/daemon/sandbox.c not found"; exit 0; }
+SRC=$ROOT/src/daemon/sandbox_root.c
+[ -f "$SRC" ] || { echo "SKIP: src/daemon/sandbox_root.c not found"; exit 0; }
 
 fail=0
 note() { echo "FAIL: $1"; fail=1; }

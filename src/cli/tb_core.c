@@ -257,7 +257,6 @@ static bool g_verbose = false;
 static int g_logfmt_fd = -1;
 static int64_t g_last_begin_ns = 0;
 
-// Accessors for state the output mutex guards.
 #define FP_LOCKED_GET(type, fn, var)                                           \
 	type fn(void) {                                                        \
 		type v_;                                                       \
@@ -371,9 +370,8 @@ static size_t write_left(fp_obuf_t* o, const char* scope_name, const char* desc,
 	if (g_prefix[0] == '\0') {
 		(void)snprintf(raw, sizeof(raw), "%s", base);
 	} else {
-		// The prefix is the app id, so it belongs in the SCOPE field
-		// and the module in the description: a launch reads "gimp:
-		// export".
+		// The prefix is the app id, so it goes in SCOPE and the module in the
+		// description: a launch reads "gimp: export".
 		n = snprintf(raw, sizeof(raw), "%s: %s", g_prefix, base);
 		if (n < 0 || (size_t)n > (size_t)FP_LEFT_W + 2 + 64)
 			(void)snprintf(raw, sizeof(raw), "%s", base);
@@ -511,7 +509,6 @@ static void append_logfmt_quoted(char* buf, size_t buflen, size_t* pos,
 	if (*pos < buflen) buf[(*pos)++] = '"';
 }
 
-// Appends a literal that is dropped whole if it does not fit.
 static void logfmt_lit(char* buf, size_t buflen, size_t* pos, const char* lit) {
 	size_t n = strlen(lit);
 
@@ -599,9 +596,8 @@ static void format_msg(char* buf, size_t buflen, const char* fmt, va_list ap) {
 
 void fp_anchor_after_log_line(void);
 
-// While a sink is installed (the daemon's worker serving a typed request),
-// lines are records for that request instead of terminal output; the daemon
-// binary gets the same entry points from src/daemon/ops/evui.c.
+// While a sink is installed (a worker serving a typed request), lines are records
+// for that request instead of terminal output; evui.c serves the daemon.
 static evui_sink_t g_rec;
 static bool g_have_rec;
 

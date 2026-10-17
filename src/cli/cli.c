@@ -14,11 +14,8 @@
 
 extern char** environ;
 
-// One id per option spelling, shared across commands: `--socket` means the
-// same thing to `run` and `override`, so both switch on OPT_SOCKET.
 typedef enum {
 	OPT_NONE = 0,
-	// global
 	OPT_HELP,
 	OPT_VERSION,
 	OPT_VERBOSE,
@@ -31,7 +28,6 @@ typedef enum {
 	OPT_INSTALLATION,
 	OPT_USER,
 	OPT_SYSTEM,
-	// install, uninstall, upgrade, remote-add, ps
 	OPT_YES,
 	OPT_NONINTERACTIVE,
 	OPT_RUNTIME,
@@ -55,7 +51,6 @@ typedef enum {
 	OPT_COLUMNS,
 	OPT_APPSTREAM,
 	OPT_REMOTE,
-	// run and override
 	OPT_SOCKET,
 	OPT_NOSOCKET,
 	OPT_SHARE,
@@ -72,7 +67,6 @@ typedef enum {
 	OPT_CLEARENV,
 	OPT_DIE_WITH_PARENT,
 	OPT_FILE_FORWARDING,
-	// override only
 	OPT_ALLOW,
 	OPT_DISALLOW,
 	OPT_PERSIST,
@@ -135,7 +129,6 @@ static const char* const unshare_set[] = {"network", "ipc", "process", "all",
 static const char* const columns_set[] = {"instance", "pid",  "application",
 					  "jail",     "root", NULL};
 
-// Options that mean the same thing to every command.
 static const cli_opt_t global_opts[] = {
 	FLAG(OPT_HELP, "--help", 'h',
 	     "Show help; after a command, that command's page"),
@@ -238,8 +231,6 @@ static const cli_opt_t remote_add_opts[] = {
 	      "Read the remote from this .flatpakrepo file or URL"),
 	FLAG(OPT_IF_NOT_EXISTS, "--if-not-exists", 0, STUB), NO_OPT};
 
-// run takes the per-launch grants; the rest of a sandbox's permissions are
-// persistent and belong to override.
 static const cli_opt_t run_opts[] = {
 	CHOICE(OPT_SOCKET, "--socket", "NAME", "Expose a socket", sockets_set,
 	       OPTF_CHECK | OPTF_NEG),
@@ -336,11 +327,7 @@ typedef struct {
 	const char* help; // NULL keeps it out of the help
 } cli_env_t;
 
-// Every environment variable flatpkg reads is named here, whichever file
-// reads it; cli_getenv() is the only way in.  Three kinds: user-set,
-// daemon/portal/sandbox, inherited from the caller's session.
 static const cli_env_t env_vars[] = {
-	// set by the user
 	{"FLATPKG_VERBOSE", ENV_BOOL, NULL, OPT_VERBOSE, "Same as --verbose"},
 	{"FLATPKG_LOGFMT", ENV_VALUE, NULL, OPT_LOGFMT, "Same as -l"},
 	{"FLATPKG_PROFILE", ENV_BOOL, NULL, OPT_PROFILE, "Same as --profile"},
@@ -364,7 +351,6 @@ static const cli_env_t env_vars[] = {
 	{"FLATPKG_FILECHOOSER_TIMEOUT", ENV_VALUE, NULL, OPT_NONE, NULL},
 	{"FLATPAK_DBUSPROXY", ENV_VALUE, NULL, OPT_NONE, NULL},
 	{"FLATPAK_GL_DRIVERS", ENV_VALUE, NULL, OPT_NONE, NULL},
-	// between the daemon, the portal and the sandbox
 	{"FLATPKG_INTERACTIVE", ENV_VALUE, NULL, OPT_NONE, NULL},
 	{"FLATPKG_FORWARD_FDS", ENV_VALUE, NULL, OPT_NONE, NULL},
 	{"FLATPKG_APP_UID", ENV_VALUE, NULL, OPT_NONE, NULL},
@@ -373,7 +359,6 @@ static const cli_env_t env_vars[] = {
 	{"FLATPKG_APP_HOME", ENV_VALUE, NULL, OPT_NONE, NULL},
 	{"FLATPKG_APP_TTY", ENV_VALUE, NULL, OPT_NONE, NULL},
 	{"FLATPKG_APP_MASTER", ENV_VALUE, NULL, OPT_NONE, NULL},
-	// inherited from the caller's session
 	{"HOME", ENV_VALUE, NULL, OPT_NONE, NULL},
 	{"PATH", ENV_VALUE, NULL, OPT_NONE, NULL},
 	{"LD_PRELOAD", ENV_VALUE, NULL, OPT_NONE, NULL},
@@ -412,7 +397,6 @@ char** cli_environ(void) { return environ; }
 #define G_REMOTE "Remote management"
 #define G_MISC "Miscellaneous"
 
-// Display order of the command groups.
 static const char* const groups[] = {G_INSTALL, G_MAINT, G_QUERY, G_RUN,
 				     G_REMOTE,	G_MISC,	 NULL};
 
@@ -620,8 +604,6 @@ void cli_complete_commands(void) {
 	}
 }
 
-// The option tables, for the completion and man-page generators.  Keep this
-// list equal to the tables the parser reads.
 static const cli_opt_t* const opt_tables[] = {
 	global_opts,  install_opts, uninstall_opts, update_opts,
 	upgrade_opts, repair_opts,	 ps_opts,	remote_add_opts,
@@ -654,7 +636,6 @@ static void opt_words(const cli_opt_t* tab) {
 	}
 }
 
-// `complete words [CMD]`: the option spellings tab may offer, one per line.
 void cli_complete_words(const char* cmd) {
 	const cli_cmd_t* c = cmd != NULL ? cli_find(cmd) : NULL;
 	if (cmd != NULL && c == NULL) return;
@@ -662,7 +643,6 @@ void cli_complete_words(const char* cmd) {
 	opt_words(global_opts);
 }
 
-// `complete operands CMD`: which candidate kind the command's operands are.
 void cli_complete_operands(const char* cmd) {
 	const cli_cmd_t* c = cmd != NULL ? cli_find(cmd) : NULL;
 	if (c == NULL) return;
@@ -699,7 +679,6 @@ void cli_complete_operands(const char* cmd) {
 	}
 }
 
-// `complete values OPT`: the vocabulary the parser enforces for OPT.
 void cli_complete_values(const char* opt) {
 	const cli_opt_t* o = find_opt(opt);
 	if (o == NULL) return;
@@ -708,7 +687,6 @@ void cli_complete_values(const char* opt) {
 	for (const char* const* v = set; *v != NULL; v++) fp_outl("%s", *v);
 }
 
-// An mdoc `.It` head for one option, without its description.
 static void man_opt_head(const cli_opt_t* o) {
 	char buf[256];
 	size_t n = 0;
@@ -730,8 +708,6 @@ static void man_opt_head(const cli_opt_t* o) {
 	fp_outl("%s", buf);
 }
 
-// The generated half of man/flatpkg.8: the option lists come from the same
-// rows that parse and document them, so the page cannot drift.
 void cli_man_options(const char* which) {
 	const cli_opt_t* tab;
 	bool list_only = false;
@@ -789,8 +765,6 @@ typedef struct {
 	const char* extra; // first operand past the command's maximum
 } cli_it_t;
 
-// Does token `a` spell option `o`?  A long option with a value may carry it
-// after '='; a flag may not.  A short option is exactly two characters.
 static bool spells(const cli_opt_t* o, const char* a, bool* has_eq,
 		   const char** eqv) {
 	*has_eq = false;
@@ -819,7 +793,6 @@ static const cli_opt_t* match(const cli_opt_t* tab, const char* a, bool* has_eq,
 	return NULL;
 }
 
-// How an option is named in a message.
 static const char* shown(const cli_opt_t* o, char* buf) {
 	if (o->lname) return o->lname;
 	buf[0] = '-';
@@ -844,8 +817,6 @@ static void choices_join(const cli_opt_t* o, char* out, size_t n) {
 					"%s%s", len ? ", " : "", *c);
 }
 
-// Is every item of `v` in the option's vocabulary?  On failure `bad` names
-// the first item that is not.
 static bool value_ok(const cli_opt_t* o, const char* v, char* bad,
 		     size_t badn) {
 	if (!(o->flags & OPTF_CHECK) || o->choices == NULL) return true;
@@ -981,12 +952,10 @@ static int cli_it_next(cli_it_t* it) {
 	return o->id;
 }
 
-// The application's own arguments for a CLI_CMD_TAIL command, or NULL.
 static char* const* cli_it_rest(const cli_it_t* it) {
 	return it->i < it->argc ? it->argv + it->i : NULL;
 }
 
-// After the last cli_it_next: the operand count against the command's.
 static int cli_it_finish(cli_it_t* it) {
 	const cli_cmd_t* c = it->cmd;
 	if (it->npos < c->min_args)
@@ -1033,7 +1002,6 @@ static void apply_global(cli_globals_t* g, cli_opt_id_t id, const char* val) {
 	}
 }
 
-// Fold the environment spellings into g; a flag on the command line wins.
 static void cli_apply_env(cli_globals_t* g) {
 	int env_color = -1;
 	for (size_t k = 0; k < N_ENV; k++) {
@@ -1061,9 +1029,8 @@ static void cli_apply_env(cli_globals_t* g) {
 	if (g->color < 0) g->color = env_color;
 }
 
-// Walk argv[first..) the way a command line reads: globals before the
-// command apply and the terminal ones stop the walk; after it only the
-// non-terminal ones do, never past where operands become the app's.
+// Walk argv like a command line: globals before the command apply, the terminal
+// ones stop the walk, and after it only non-terminal ones do, never past the app's operands.
 static int cli_scan(int argc, char* const* argv, int first, cli_globals_t* g,
 		    bool report) {
 	assert(argv != NULL);
@@ -1149,7 +1116,6 @@ const char* cli_run_app_id(int argc, char* const* argv) {
 	return NULL;
 }
 
-// Per-command options
 
 static void push(strlist_t* l, const char* item) {
 	char** items = realloc(l->items, (l->count + 1) * sizeof(char*));
@@ -1179,9 +1145,8 @@ static void ops_add(cli_req_t* r, const char* v) {
 	r->ops[r->nops++] = v;
 }
 
-// --share / --unshare keep flatpak's vocabulary, but `process` is inherent
-// (every sandbox is its own jail) and `all` expands to the two that can be
-// switched off.
+// --share / --unshare keep flatpak's vocabulary; `process` is inherent (every
+// sandbox is a jail) and `all` expands to the two that can be switched off.
 static int run_share(cli_req_t* r, const char* v, bool unshare) {
 	bool neg = v[0] == '!';
 	const char* n = neg ? v + 1 : v;
@@ -1270,8 +1235,7 @@ static int apply_run(cli_req_t* r, int id, const char* v) {
 	return 0;
 }
 
-// An override is a metadata keyfile's worth of changes; the lists are the
-// ones the file format keeps, a leading `!` removes an entry.
+// An override is a metadata keyfile's worth of changes; a leading `!` removes an entry.
 static int over_add(cli_req_t* r, strlist_t* l, const char* v, bool neg,
 		    const char* policy) {
 	char buf[1024];
@@ -1438,8 +1402,6 @@ int cli_parse(int argc, char* const* argv, cli_req_t* r) {
 		if (_loc == NULL || *_loc == '\0') _loc = getenv("LANG");
 		translations_set_locale(_loc);
 	}
-	// Colour and verbosity are the logger's configuration, and every
-	// message below is already subject to them.
 	if (r->g.color >= 0) fp_set_color(r->g.color == 1);
 	fp_set_term_dumb(getenv("TERM") != NULL &&
 			 strcmp(getenv("TERM"), "dumb") == 0);
@@ -1514,7 +1476,6 @@ int cli_parse(int argc, char* const* argv, cli_req_t* r) {
 
 // Pages are rendered into one buffer and written once - stdout when asked
 // for, stderr under an error - so a page never splits between the streams.
-// The palette is the logger's, and the wording follows apk's pages.
 
 typedef struct {
 	char* p;
@@ -1550,7 +1511,6 @@ static void b_fmt(buf_t* b, const char* fmt, ...) {
 	b_str(b, tmp);
 }
 
-// The palette is the logger's, so a help page and a log line agree.
 #define C_HEAD (FP_LEVELS[FP_LVL_OKAY].bg)  // group headings: green bg
 #define C_CMD (FP_LEVELS[FP_LVL_INFO].msg)  // command names: cyan
 #define C_OPT (FP_LEVELS[FP_LVL_WARN].msg)  // option names: yellow
@@ -1578,8 +1538,6 @@ static void b_heading(buf_t* b, const char* text) {
 	b_str(b, "\n");
 }
 
-// `text` word-wrapped to `width` columns, starting at column `col`; lines
-// after the first start at `indent`.  Ends the line.
 static void b_wrap(buf_t* b, const char* text, size_t indent, size_t col,
 		   size_t width) {
 	bool line_start = true;
@@ -1607,8 +1565,7 @@ static void b_wrap(buf_t* b, const char* text, size_t indent, size_t col,
 	b_str(b, "\n");
 }
 
-// Colour where it can be seen: a terminal, a client that has one behind the
-// daemon, or FORCE_COLOR.  A page piped to a pager stays plain.
+// Colour where it can be seen: a terminal, a client with one behind the daemon, or FORCE_COLOR.
 static bool help_color(int fd) {
 	if (!fp_get_color()) return false;
 	const char* fc = cli_getenv("FORCE_COLOR");
@@ -1645,8 +1602,6 @@ static const char* arch_name(void) {
 #endif
 }
 
-// "-y, --assumeyes", "--socket=NAME", "-l FILE", "-n, --simulate, --dry-run".
-// *ph is where the value placeholder starts.
 static void opt_spec(const cli_opt_t* o, char* out, size_t n, size_t* ph) {
 	size_t len = 0;
 	out[0] = '\0';
@@ -1674,8 +1629,6 @@ static bool opt_visible(const cli_opt_t* o) {
 	return o->help != NULL && o->unimpl == NULL;
 }
 
-// A two-column row: `left` padded to column `col`, `right` wrapped beside
-// it.  `left` is drawn in `color` up to `ph`, dimmed after.
 static void b_row(buf_t* b, const char* left, size_t ph, int color, size_t col,
 		  const char* right, size_t width) {
 	size_t l = strlen(left);
@@ -1716,7 +1669,6 @@ static void b_opts(buf_t* b, const cli_opt_t* tab, size_t col, size_t width) {
 	for (const cli_opt_t* o = tab; o->id != OPT_NONE; o++) {
 		if (!opt_visible(o)) continue;
 		opt_spec(o, spec, sizeof(spec), &ph);
-		// The vocabulary on the page is the one the parser enforces.
 		if (opt_values(o) != NULL) {
 			choices_join(o, valid, sizeof(valid));
 			snprintf(desc, sizeof(desc), "%s: %s",
@@ -1832,7 +1784,6 @@ static void cli_help_cmd(const cli_cmd_t* c, bool to_stderr) {
 	b_str(&b, "  ");
 	b_wrap(&b, get_string(c->summary), 2, 2, width);
 	if (c->desc != NULL) {
-		// Paragraphs are separated by '\n' in the table.
 		const char* p = get_string(c->desc);
 		while (*p != '\0') {
 			size_t n = strcspn(p, "\n");
@@ -1868,7 +1819,6 @@ static void cli_help_cmd(const cli_cmd_t* c, bool to_stderr) {
 	emit(&b, to_stderr);
 }
 
-// The Usage line and where to read more, on stderr, under an error.
 static void cli_hint(const cli_cmd_t* c) {
 	buf_t b = {NULL, 0, 0, help_color(STDERR_FILENO)};
 	b_usage(&b, c);
@@ -1880,7 +1830,6 @@ static void cli_hint(const cli_cmd_t* c) {
 	emit(&b, true);
 }
 
-// Show the problem, then the command's Usage line.  Returns -1.
 static int cli_fail(const cli_cmd_t* c, const char* fmt, ...) {
 	char msg[512];
 	va_list ap;

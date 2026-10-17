@@ -12,11 +12,11 @@ trap 'rm -rf "$tmp"' EXIT
 
 # shellcheck source=tests/commentlib.sh
 . "$(dirname "$0")/commentlib.sh"
-strip_comments < "$ROOT/src/daemon/sandbox.c" > "$tmp/sb.c"
+strip_comments < "$ROOT/src/daemon/sandbox_root.c" > "$tmp/sb.c"
 
 fn=$(carve_function '^mount_covering' "$tmp/sb.c" || true)
 printf '%s\n' "$fn" | grep -q 'return NULL' || {
-	note "could not carve mount_covering() out of src/daemon/sandbox.c"
+	note "could not carve mount_covering() out of src/daemon/sandbox_root.c"
 	exit 1
 }
 

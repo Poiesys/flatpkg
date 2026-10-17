@@ -64,7 +64,6 @@ int cmd_info(const char* app_id) {
 	fp_print_table(headers1, 2, (const char* const* const*)rows, m,
 		       FP_TABLE_OUTPUT);
 
-	// A blank line keeps permissions from reading as part of the app info.
 	fp_out("\n");
 
 	const char* headers2[] = {"Permission", "Grant"};
@@ -469,8 +468,7 @@ static int open_as_caller(const char* path, int flags, mode_t mode, uid_t uid,
 	return fd;
 }
 
-// Open the `-l` / FLATPKG_LOGFMT path as the caller (open_as_caller()).  It
-// must be a regular file: a FIFO or a device the caller can open is not a log.
+// Open the -l / FLATPKG_LOGFMT path as the caller; it must be a regular file.
 static int logfmt_open(const char* path) {
 	assert(path != NULL);
 	uid_t caller = getuid();
@@ -500,8 +498,6 @@ static int logfmt_open(const char* path) {
 	return fd;
 }
 
-// Flatpak parity: ~/.var/app/<id> exists before the daemon sees the request.
-// A partial id is left to the daemon's child.
 static void client_ensure_app_data_dirs(int argc, char* argv[]) {
 	assert(argv != NULL);
 	const char* app_id = cli_run_app_id(argc, argv);
@@ -532,9 +528,6 @@ int cmd_override(const cli_req_t* r) {
 	return rc;
 }
 
-// Only commands that read the store directly are dispatched here.  Every
-// command that needs privilege is a typed request (client_typed.c); this
-// process never runs one, and the daemon does not link this file.
 static int dispatch_local(const cli_req_t* r) {
 	assert(r != NULL);
 	const char** op = r->ops;
@@ -596,8 +589,6 @@ int flatpkg_main(int argc, char* argv[]) {
 	return rc < 0 ? 1 : rc;
 }
 
-// The CLI entry point, called from src/cli/entry.c's main().  The daemon is a
-// separate binary and has its own main().
 int cli_entry(int argc, char* argv[]) {
 	// Service entry points: one fixed word, no CLI.  `daemon` takes no argv
 	// at all; the D-Bus helpers pass theirs straight to GLib.
@@ -616,9 +607,8 @@ int cli_entry(int argc, char* argv[]) {
 				return subs[k].run(argc, argv);
 	}
 
-	// What needs no daemon is decided here by the real parser: help,
-	// --version, a usage error and `complete commands`.  The rest asks
-	// flatpkgd and fails rather than running it here in-process.
+	// What needs no daemon is decided by the real parser: help, --version, a usage
+	// error and `complete commands`. The rest asks flatpkgd and fails rather than run in-process.
 	{
 		client_ensure_app_data_dirs(argc, argv);
 		if (argc >= 2) {
@@ -638,8 +628,7 @@ int cli_entry(int argc, char* argv[]) {
 			}
 			if (local) free(logfmt_path);
 			if (!local) {
-				// The records are rendered here, so the
-				// caller's client opens the file; the
+				// The records are rendered here, so the caller's client opens the file; the
 				// daemon never opens a caller-named path.
 				if (logfmt_path != NULL) {
 					int lfd = logfmt_open(logfmt_path);
@@ -651,9 +640,8 @@ int cli_entry(int argc, char* argv[]) {
 							   strerror(errno));
 					free(logfmt_path);
 				}
-				// The request is built here and there
-				// is no other path, so a refusal to
-				// build it is an error, not a retry.
+				// The request is built here and there is no other path, so a refusal to build
+				// it is an error, not a retry.
 				int trc = client_try_typed(argc, argv);
 				if (trc >= 0) return trc;
 				fpkg_errorf("this command cannot be sent to "

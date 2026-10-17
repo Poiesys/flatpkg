@@ -122,7 +122,12 @@ n_guarded=0
 n_sites=0
 # Use carve_function from commentlib.sh (sourced above) which handles
 # static functions and multi-line definitions correctly.
-for fn in $(awk '
+sites=$(mktemp /tmp/.fpkg-storepath.XXXXXX)
+trap 'rm -f "$sites"' EXIT
+# The ostree backend is split across several units; discover the file per
+# function instead of assuming one.
+for f in "$ROOT"/src/ostree*.c; do
+    awk '
     /^(static )?[a-zA-Z_*][a-zA-Z_0-9* ]* [a-z_][a-z_0-9]*\(/ { 
         fn = $0
         sub(/^(static )?[a-zA-Z_*][a-zA-Z_0-9* ]* /, "", fn)
@@ -132,18 +137,20 @@ for fn in $(awk '
         line = $0
         sub(/.*store_path\([^,]+,[^,]+, *"/, "", line)
         sub(/".*/, "", line)
-        if (line ~ /%s/ && line != "%s" && fn != "") print fn
+        if (line ~ /%s/ && line != "%s" && fn != "") print FILENAME "|" fn
     }
-' "$ROOT/src/ostree.c" | sort -u)
-do
-    body=$(carve_function "^$fn" "$ROOT/src/ostree.c" | strip_comments)
+    ' "$f"
+done | sort -u > "$sites"
+while IFS='|' read -r sfile fn; do
+    [ -n "$fn" ] || continue
+    body=$(carve_function "^$fn" "$sfile" | strip_comments)
     n_sites=$((n_sites + 1))
     if printf '%s' "$body" | grep -qE 'remote_name_valid|strchr\(arch|valid_arch'; then
         n_guarded=$((n_guarded + 1))
     else
         note "$fn() builds a store path from an interpolated name without validating it"
     fi
-done
+done < "$sites"
 # If the carve ever stops finding the sites, this must fail rather than
 # pass on an empty list.  Three is the count after the dead helper removal.
 [ "$n_sites" -ge 3 ] ||

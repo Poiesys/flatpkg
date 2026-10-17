@@ -1,4 +1,3 @@
-// The listener, the peer check, and one typed worker per connection.
 #include "flatpkg.h"
 #define FPKG_MODULE "daemon"
 #include "fpkglog.h"

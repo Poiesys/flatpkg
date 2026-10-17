@@ -13,7 +13,7 @@ trap 'rm -rf "$tmp"' EXIT
 # shellcheck source=tests/commentlib.sh
 . "$(dirname "$0")/commentlib.sh"
 
-strip_comments < "$ROOT/src/daemon/sandbox.c" > "$tmp/sb.c"
+strip_comments < "$ROOT/src/daemon/sandbox_root.c" > "$tmp/sb.c"
 
 kind=$(carve_function '^hosts_line_kind' "$tmp/sb.c" || true)
 stage=$(carve_function '^stage_hosts' "$tmp/sb.c" || true)
@@ -21,15 +21,15 @@ etcfn=$(carve_function '^build_etc' "$tmp/sb.c" || true)
 
 # ---- floors: a carve that came back empty would pass everything below ----
 printf '%s\n' "$kind" | grep -q 'return v6lo' || {
-	note "could not carve hosts_line_kind() out of src/daemon/sandbox.c - the"
+	note "could not carve hosts_line_kind() out of src/daemon/sandbox_root.c - the"
 	echo "       shape moved, and this guard is no longer looking at the thing"
 	echo "       it was written for"
 }
 printf '%s\n' "$stage" | grep -q 'getline' || {
-	note "could not carve stage_hosts() out of src/daemon/sandbox.c"
+	note "could not carve stage_hosts() out of src/daemon/sandbox_root.c"
 }
 printf '%s\n' "$etcfn" | grep -q 'passwd' || {
-	note "could not carve build_etc() out of src/daemon/sandbox.c"
+	note "could not carve build_etc() out of src/daemon/sandbox_root.c"
 }
 if [ $fail -ne 0 ]; then
 	exit $fail

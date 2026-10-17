@@ -40,7 +40,6 @@ static sigset_t shim_mask;
 static pthread_mutex_t shim_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void* shim_sigloop(void* arg) {
-	(void)arg;
 	pthread_sigmask(SIG_BLOCK, &shim_mask, NULL);
 	int my_wfd = shim_wfd;
 	for (;;) {
@@ -76,7 +75,6 @@ static void* shim_sigloop(void* arg) {
 }
 
 int signalfd4(int fd, const sigset_t* mask, int flags) {
-	(void)flags;
 	pthread_mutex_lock(&shim_lock);
 	if (shim_rfd < 0 || fcntl(shim_rfd, F_GETFD) < 0) {
 		if (shim_rfd >= 0) {

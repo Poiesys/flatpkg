@@ -29,8 +29,18 @@ case "$fn" in
 esac
 grep -q '^}$' "$T/fn" ||
 	{ echo "FAIL: the carve stopped before the function's closing brace"; exit 1; }
-grep -q 'devfs rule -s' "$T/fn" ||
-	{ echo "FAIL: the carve has no devfs rule in it - the shape moved"; exit 1; }
+grep -q 'devfs_rule(' "$T/fn" ||
+	{ echo "FAIL: the carve calls no devfs_rule() - the shape moved"; exit 1; }
+
+# The helper is a fork/exec with an absolute program word, not a shell.
+helper=$(carve_function '^static int devfs_rule\(' "$SB")
+case "$helper" in
+*'/sbin/devfs'*run_program* | *run_program*'/sbin/devfs'*) : ;;
+*)
+	echo "FAIL: devfs_rule() no longer runs /sbin/devfs through run_program()"
+	exit 1
+	;;
+esac
 
 # The flags the struct declares, from the struct itself and not from a
 # hand-typed list: a list here would be a fifth copy of the vocabulary,

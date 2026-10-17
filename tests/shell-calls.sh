@@ -16,246 +16,20 @@ trap 'rm -rf "$tmp"' EXIT
 # shellcheck source=tests/commentlib.sh
 . "$ROOT/tests/commentlib.sh"
 
-# The one site whose program word is interpolated from a table, and a property
-# of that TABLE's contents rather than of the call: `gpgconfs[]` holds
-# "/usr/local/bin/gpgconf", so the word is absolute.  The last check pins it.
-EXEMPT='sandbox.c:gpg_agent_socket'
-
-: > "$tmp/sites"
+# No shell may run a command from this tree: every program word is exec'd.
+shells=0
 for f in "$ROOT"/src/*.c "$ROOT"/src/*/*.c "$ROOT"/src/*/*/*.c; do
 	strip_comments < "$f" > "$tmp/one.c"
-	grep -nE '\b(system|popen)\(' "$tmp/one.c" | cut -d: -f1 |
-	while read -r ln; do
-		printf '%s:%s\n' "$(basename "$f")" "$ln" >> "$tmp/sites"
-	done
+	n=$(grep -cE '\b(system|popen)\(' "$tmp/one.c" || true)
+	shells=$((shells + n))
 done
-total=$(grep -c . "$tmp/sites" || true)
-[ "${total:-0}" -ge 1 ] || {
-	echo "FAIL: no system()/popen() site found in src/ - either the"
-	echo "       extraction broke or the tree stopped handing strings to a shell"
-	exit 1
-}
-# The floor: two sites went with the dead helper removal, and a tree that
-# loses another has changed shape and this file's reasoning has to be re-read.
-[ "$total" -ge 10 ] || {
-	echo "FAIL: only $total shell call site(s) found, below the floor of 10"
+if [ "$shells" -ne 0 ]; then
+	echo "FAIL: $shells system()/popen() call site(s) remain in src/: a root"
+	echo "       worker would hand a string to /bin/sh, which resolves a bare"
+	echo "       program word through the caller's PATH"
 	fail=1
-}
-
-resolved=0
-interp=0
-while IFS=: read -r base line; do
-	[ -n "$base" ] || continue
-	strip_comments < "$(srcf "$base")" > "$tmp/body.c"
-
-	# The argument.  awk, not sed: `system(`/`popen(` need an alternation, BSD
-	# sed has no `\|` and `\b` is a GNUism.  It may be a LITERAL, which is the
-	# easiest case there is.
-	arg=$(awk -v L="$line" 'NR == L {
-		if (match($0, /(system|popen)\(/)) {
-			s = substr($0, RSTART + RLENGTH)
-			sub(/^[ \t]+/, "", s)
-			if (match(s, /^"[^"]*"/))
-				print "L " substr(s, 2, RLENGTH - 2)
-			else if (match(s, /^[A-Za-z_][A-Za-z_0-9]*/))
-				print "V " substr(s, RSTART, RLENGTH)
-		}
-	}' "$tmp/body.c")
-	akind=${arg%% *}
-	arg=${arg#* }
-	case "$akind" in
-	L)
-		case "$arg" in
-		/*) resolved=$((resolved + 1)) ;;
-		*) note "$base:$line hands '$arg' straight to the shell and its"
-		   echo "       program word is not absolute" ;;
-		esac
-		continue
-		;;
-	V) : ;;
-	*)
-		note "$base:$line passes something this guard cannot resolve to"
-		echo "       system()/popen(); it is UNVERIFIED rather than safe"
-		continue
-		;;
-	esac
-
-	# The enclosing function: back to the last column-0 definition, forward to
-	# its closing brace in column 0.  The return type may share the line, so the
-	# pattern allows one; anchoring on `^name(` alone found nothing.
-	start=$(awk -v L="$line" 'NR < L && /^[A-Za-z_][A-Za-z0-9_ \t*]*\(/ { last = NR }
-		END { print last + 1 }' "$tmp/body.c")
-	end=$(awk -v S="$start" 'NR >= S && /^\}$/ { print NR; exit }' "$tmp/body.c")
-	if [ -z "$start" ] || [ -z "$end" ] || [ "$end" -le "$start" ]; then
-		note "could not carve the function around $base:$line"
-		continue
-	fi
-	sed -n "${start},${end}p" "$tmp/body.c" > "$tmp/fn.c"
-
-	# The STATEMENT that fills the argument, not the line: five of the twelve
-	# wrap the call, so a line-at-a-time scan finds no literal.  Flatten, then
-	# walk from each `snprintf(<arg>` to its `;`.
-	lits=$(tr '\n' ' ' < "$tmp/fn.c" | awk -v a="$arg" '
-		BEGIN { RS = "" }
-		{
-			rest = $0
-			out = ""
-			while (1) {
-				p = index(rest, "snprintf(" a)
-				q2 = index(rest, "= " a)
-				if (p == 0 && q2 == 0) break
-				if (p == 0 || (q2 > 0 && q2 < p)) p = q2
-				rest = substr(rest, p)
-				e = index(rest, ";")
-				if (e == 0) e = length(rest)
-				stmt = substr(rest, 1, e)
-				while (match(stmt, /"[^"]*"/)) {
-					out = out substr(stmt, RSTART + 1, RLENGTH - 2) "\n"
-					stmt = substr(stmt, RSTART + RLENGTH)
-				}
-				rest = substr(rest, e + 1)
-			}
-			printf "%s", out
-		}' | sort -u)
-
-	listed=no
-	for e in $EXEMPT; do
-		[ "$(printf '%s' "$e" | cut -d: -f1)" = "$base" ] || continue
-		listed=yes
-	done
-
-	if [ -z "$lits" ]; then
-		if [ "$listed" = yes ]; then
-			interp=$((interp + 1))
-		else
-			note "$base:$line: no literal fills '$arg' and the site is not in"
-			echo "       EXEMPT - it is UNVERIFIED, not safe.  Name it there with"
-			echo "       where its program word comes from."
-		fi
-		continue
-	fi
-
-	# **Adjacent C string literals concatenate**, so the decision is made once per
-	# STATEMENT: if any literal interpolates the program word, the rest are its
-	# arguments.  Read one literal at a time and `"2>/dev/null"` is a bare command.
-	if printf '%s\n' "$lits" | grep -q '^%'; then
-		: > "$tmp/bad"
-	else
-		: > "$tmp/bad"
-		printf '%s\n' "$lits" | while read -r lit; do
-			[ -n "$lit" ] || continue
-			case "$lit" in
-			/*) : ;;
-			*) printf '%s\n' "$lit" >> "$tmp/bad" ;;
-			esac
-		done
-	fi
-	if [ -s "$tmp/bad" ]; then
-		while read -r b; do
-			note "$base:$line builds '$b', whose program word is not absolute"
-			echo "       /bin/sh resolves a bare name through the CALLER's PATH,"
-			echo "       and the worker is root with the caller's environment"
-		done < "$tmp/bad"
-	elif printf '%s\n' "$lits" | grep -q '^%'; then
-		if [ "$listed" = yes ]; then
-			interp=$((interp + 1))
-		else
-			note "$base:$line interpolates its program word from a table and is"
-			echo "       not in EXEMPT - UNVERIFIED, not safe"
-		fi
-	else
-		resolved=$((resolved + 1))
-	fi
-done < "$tmp/sites"
-
-# The floors on the outcomes, so a guard that suddenly resolves nothing cannot
-# pass: a count that can only be zero is not a check.
-[ "$resolved" -ge 8 ] || {
-	echo "FAIL: only $resolved site(s) resolved to an absolute program word,"
-	echo "       below the floor of 8 - the extraction is not seeing the tree"
-	fail=1
-}
-[ "$interp" -ge 1 ] || {
-	echo "FAIL: no interpolated site found, so the EXEMPT path is untested and a"
-	echo "       table-supplied program word would pass as an absolute one"
-	fail=1
-}
-
-# Every exemption must name a file that exists, a function in it, and - because
-# it rests on the TABLE's contents - an absolute path in that table.  A stale
-# exemption is a name protecting nothing.
-for e in $EXEMPT; do
-	e_file=$(printf '%s' "$e" | cut -d: -f1)
-	e_fn=$(printf '%s' "$e" | cut -d: -f2)
-	[ -n "$e_fn" ] || { note "EXEMPT entry '$e' names no function"; continue; }
-	[ -f "$(srcf "$e_file")" ] ||
-		{ note "EXEMPT names src/$e_file, which does not exist"; continue; }
-	strip_comments < "$(srcf "$e_file")" > "$tmp/xe.c"
-	carve_function "^$e_fn\(" "$tmp/xe.c" > "$tmp/xe_fn.c" || true
-	[ -s "$tmp/xe_fn.c" ] ||
-		note "EXEMPT names $e_fn(), which is not in src/$e_file any more"
-	# and the table it depends on must still hold an absolute path
-	strip_comments < "$(srcf "$e_file")" |
-		grep -oE '"[^"]*gpgconf[^"]*"' | grep -qv '^"/' &&
-		note "the gpgconfs[] table $e_fn() interpolates holds a BARE gpgconf"
-done
-
-# ---- the ARGUMENT half, on the one sink where a caller supplies it ----
-# The other half of the same class: the INTERPOLATED value, and the only site where a
-# REMOTE's extension metadata reaches a command line.  The ORDER is the claim: a
-# whitelist placed after the `snprintf` protects nothing.
-MODFN=flatpkg_kernel_module_loaded
-# From THIS file, not from whatever the loop above happened to end on: a carve
-# that reads the previous file reports that the shape moved.
-strip_comments < "$ROOT/src/shared/modules.c" > "$tmp/mod.c"
-modfn=$(carve_function "^$MODFN\(" "$tmp/mod.c")
-if [ -z "$modfn" ]; then
-	note "could not carve $MODFN() out of src/shared/modules.c - the shape moved"
 else
-	# every character the whitelist ACCEPTS: the endpoints of its range
-	# tests and the literals of its equality tests.
-	accepts=$(printf '%s\n' "$modfn" |
-		grep -oE "\*p >= '.' && \*p <= '.'|\*p == '.'" |
-		grep -oE "'.'" | tr -d "'" | sort -u | tr -d '\n')
-	[ -n "$accepts" ] || {
-		note "$MODFN() has no character-class whitelist at all"
-		echo "       and it builds a command line - that is root code"
-		echo "       execution from a remote's extension metadata"
-	}
-	bad=$(printf '%s' "$accepts" | tr -d 'a-zA-Z0-9_-')
-	if [ -n "$bad" ]; then
-		note "$MODFN() accepts a character outside [a-zA-Z0-9_-]: '$bad'"
-		echo "       a module name carrying that reaches a root shell"
-	fi
-	# and the ORDER, which is what the claim actually says - plus that the
-	# rejection is INSIDE the loop rather than merely above it.
-	cline=$(printf '%s\n' "$modfn" | grep -n 'snprintf(cmd' | head -1 |
-		cut -d: -f1)
-	lloop=$(printf '%s\n' "$modfn" | grep -n 'for (const char\* p = name' |
-		head -1 | cut -d: -f1)
-	# The rejection INSIDE the loop, not the first `return false` in the
-	# function: there is one above the loop too, for the NULL/empty name.
-	vline=$(printf '%s\n' "$modfn" | grep -n 'return false' |
-		awk -F: -v L="$lloop" '$1 > L { print $1; exit }')
-	if [ -z "$vline" ] || [ -z "$cline" ] || [ -z "$lloop" ]; then
-		note "$MODFN(): cannot locate the loop, the rejection and the"
-		echo "       command line, so the 'refused before any command line"
-		echo "       is built' claim is UNVERIFIED"
-	elif [ "$vline" -ge "$cline" ]; then
-		note "$MODFN() builds its command line at $cline, before the"
-		echo "       whitelist rejects at $vline - a name checked afterwards"
-		echo "       is not checked at all"
-	elif [ -z "$vline" ]; then
-		note "$MODFN() has a character loop at $lloop but no rejection"
-		echo "       inside it: nothing refuses a name the loop walks past"
-	else
-		echo "ok   $MODFN() refuses a name at line $vline, inside the class"
-		echo "        loop at $lloop and before the command at $cline, and"
-		echo "        accepts only [a-zA-Z0-9_-]"
-	fi
-	# Two things this does NOT catch: NARROWING the class is not reported, since widening
-	# is the dangerous direction; and NEUTERING the loop mid-walk passes, because the order
-	# is a LINE comparison - an early `break` keeps the `return false` above the command.
+	echo "ok   no system()/popen() in src/: no string is handed to /bin/sh"
 fi
 
 # ---- the EXEC half: the same shape, a different sink --------------------
@@ -290,15 +64,16 @@ nexec=$(grep -c . "$tmp/execs" || true)
 # file:function, producing file:function, and a FACT that producer must still contain.
 # `!FACT` names a resolver; `~FACT` is checked at every call site.
 EXEC_EXEMPT='dbus_proxy.c:dbus_start_proxies:dbus_proxy.c:dbus_start_proxies:FLATPAK_DBUSPROXY
-portal.c:handle_spawn:portal.c:flatpkg_bin_path:access
+portal.c:spawn_child_exec:portal.c:flatpkg_bin_path:access
 portal.c:handle_update:portal.c:flatpkg_bin_path:access
-sandbox.c:sandbox_exec:sandbox.c:sandbox_exec:/app/bin:/run/flatpkg:/usr/bin
-sandbox.c:stage_ld_cache:extensions.c:fp_extensions_apply:/usr/bin/ldconfig
+sandbox_exec.c:child_exec:sandbox_exec.c:child_set_base_env:/app/bin:/run/flatpak:/usr/bin
+sandbox_root.c:run_ldconfig:extensions.c:fp_extensions_apply:/usr/bin/ldconfig
+util.c:run_program:util.c:run_program:argv[0][0] != '/' 
 instance_ctl.c:cmd_enter:instance_ctl.c:cmd_enter:/app/bin:/usr/bin
 systemhelper.c:handle_uninstall:config.c:fpkg_helper_command:argv[0][0] != '/'
 systemhelper.c:run_helper_command:config.c:fpkg_helper_command:argv[0][0] != '/'
-sandbox.c:run_argv:sandbox.c:mount_tool:~mount_tool
-sandbox.c:p11kit_ensure_server:sandbox.c:p11kit_ensure_server:/usr/local/bin/p11-kit
+sandbox_root.c:run_argv:sandbox_root.c:mount_tool:~mount_tool
+sandbox_root.c:p11kit_ensure_server:sandbox_root.c:p11kit_ensure_server:/usr/local/bin/p11-kit
 ostree.c:run_direct_cb:ostree.c:tool_binary:/usr/local/bin/ostree
 instance.c:jail_exists:instance.c:jail_exists:/usr/sbin/jls
 ostree.c:run_capture:ostree.c:gpg_program:!gpg_program'
@@ -588,11 +363,8 @@ else
 fi
 
 if [ $fail -eq 0 ]; then
-	echo "PASS: $resolved shell call sites build an absolute program path and"
-	echo "      $interp more interpolate theirs from the table EXEMPT names, so"
-	echo "      no bare name is left for the caller's PATH to resolve as root,"
-	echo "      and the one sink fed a remote's metadata whitelists before it"
-	echo "      builds anything"
+	echo "PASS: no system()/popen() reaches /bin/sh, so no string is handed"
+	echo "      to the caller's PATH to resolve as root,"
 	echo "      $nexec exec-family sites: $exec_resolved close on an absolute"
 	echo "      literal and $exec_registered are accounted for by EXEC_EXEMPT,"
 	echo "      each with the literal its program word comes from, so no bare"

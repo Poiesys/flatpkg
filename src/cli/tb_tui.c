@@ -26,7 +26,6 @@ struct tui_raw {
 static bool tui_raw_enter(struct tui_raw* r) {
 	struct termios t;
 
-	// Progress hides the cursor while it draws; take it back.
 	fp_progress_cursor_restore();
 
 	if (tcgetattr(STDIN_FILENO, &t) != 0) return false;
@@ -400,7 +399,6 @@ static void tui_write_confirm_head(const char* question, bool dflt) {
 	for (i = 0; i < 2; i++) {
 		if (i) tui_wch('/');
 		tui_wstr(opt[i].sgr);
-		// The default option is capitalised
 		tui_wch(opt[i].label[0] & ~((i != dflt) * 0x20));
 		tui_wstr(opt[i].label + 1);
 		tui_wstr(FP_SGR_RESET);
@@ -409,8 +407,7 @@ static void tui_write_confirm_head(const char* question, bool dflt) {
 	fp_out_unlock();
 }
 
-// Once the answer is known the "[Yes/no]" options have done their job: the
-// prompt line becomes the question and the answer that was given.
+// Once known, the "[Yes/no]" options become the question and the answer given.
 static void tui_settle_confirm(const char* question, size_t head_cols,
 			       bool yes) {
 	size_t cols = fp_term_cols();
@@ -442,7 +439,6 @@ static size_t tui_confirm_head_cols(const char* question) {
 	return fp_visible_width(question) + 1 + 8 + 1;
 }
 
-// Maps a key to an answer; false if the key is not one.
 static bool tui_confirm_key(const struct tui_key* k, bool on_enter,
 			    bool on_cancel, bool* ans) {
 	if (k->kind == TUI_K_ENTER) *ans = on_enter;
@@ -466,9 +462,8 @@ static bool tui_confirm_default(const char* question, bool dflt) {
 
 	tui_write_confirm_head(question, dflt);
 
-	// Escape, Ctrl-C and Ctrl-D mean "no", and so does the end of input,
-	// whatever the default is: a prompt that defaults to yes must still let
-	// the user say no.
+	// Esc, Ctrl-C, Ctrl-D and end of input mean "no" whatever the default: a prompt
+	// that defaults to yes must still let the user say no.
 	do {
 		if (tui_read_key(&k) != 0) {
 			tui_raw_leave(&raw);
@@ -619,9 +614,8 @@ void fp_print_table(const char* const* headers, size_t ncols,
 	size_t r;
 	bool color;
 
-	// A worker has no terminal to draw on, so a table goes to the requester as
-	// headers and cells and the client draws it as it draws its own; a sink
-	// that refuses tables (or one too big to send) gets plain rows instead.
+	// A worker has no terminal, so a table goes to the requester as headers and
+	// cells; a sink that refuses tables (or one too big) gets plain rows.
 	if (fp_record_active()) {
 		if (fp_record_table(headers, ncols, rows, nrows)) return;
 		for (r = 0; r < nrows; r++) {

@@ -14,6 +14,8 @@ trap 'rm -rf "$tmp"' EXIT
 . "$(dirname "$0")/commentlib.sh"
 
 strip_comments < "$ROOT/src/daemon/sandbox.c" > "$tmp/sb.c"
+strip_comments < "$ROOT/src/daemon/sandbox_root.c" > "$tmp/sr.c"
+strip_comments < "$ROOT/src/daemon/sandbox_exec.c" > "$tmp/se.c"
 
 # Calls, not text: a token with a quote somewhere before it on the line is
 # inside a string literal.
@@ -29,9 +31,9 @@ calls() { # calls CARVED-FILE TOKEN
 }
 
 # ---- 1. the close precedes every attach, in sandbox_exec() --------------
-ex=$(carve_function '^sandbox_exec\(' "$tmp/sb.c")
+ex=$(carve_function '^sandbox_exec\(' "$tmp/se.c")
 if [ -z "$ex" ]; then
-	note "could not carve sandbox_exec() out of src/daemon/sandbox.c - the shape moved"
+	note "could not carve sandbox_exec() out of src/daemon/sandbox_exec.c - the shape moved"
 else
 	printf '%s\n' "$ex" > "$tmp/ex.c"
 	nclose=$(calls "$tmp/ex.c" 'close_inherited_fds();' | wc -l | tr -d ' ')
@@ -66,9 +68,9 @@ else
 fi
 
 # ---- 2 and 3. the function's own contract ------------------------------
-f=$(carve_function '^close_inherited_fds' "$tmp/sb.c" || true)
+f=$(carve_function '^close_inherited_fds' "$tmp/sr.c" || true)
 if [ -z "$f" ]; then
-	note "could not carve close_inherited_fds() out of src/daemon/sandbox.c"
+	note "could not carve close_inherited_fds() out of src/daemon/sandbox_root.c"
 else
 	printf '%s\n' "$f" > "$tmp/f.c"
 	# The getenv() call specifically, not the bare NAME: the function also
@@ -101,7 +103,10 @@ else
 	fi
 	# The second call site is p11kit_ensure_server()'s forked child, where a
 	# full wipe is right; losing it hands the helper the worker's descriptors.
-	n=$(calls "$tmp/sb.c" 'close_inherited_fds();' | wc -l | tr -d ' ')
+	n1=$(calls "$tmp/sb.c" 'close_inherited_fds();' | wc -l | tr -d ' ')
+	n2=$(calls "$tmp/sr.c" 'close_inherited_fds();' | wc -l | tr -d ' ')
+	n3=$(calls "$tmp/se.c" 'close_inherited_fds();' | wc -l | tr -d ' ')
+	n=$((n1 + n2 + n3))
 	[ "${n:-0}" -ge 2 ] || {
 		note "only $n call site(s) of close_inherited_fds() left; one of them is"
 		echo "       the p11-kit helper's forked child, and losing THAT one"

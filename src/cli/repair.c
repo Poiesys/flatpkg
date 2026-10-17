@@ -58,8 +58,6 @@ static int check_deploy(const char* type, const char* id, char* arch_out,
 				snprintf(resolved, sizeof(resolved), "%s",
 					 target);
 			} else {
-				// <arch>/<branch>/<commit>; keep the branch
-				// component.
 				snprintf(resolved, sizeof(resolved), "%s/%s/%s",
 					 arch_dir, branch_ent->d_name, target);
 			}
@@ -83,12 +81,10 @@ static int check_deploy(const char* type, const char* id, char* arch_out,
 	return any_healthy ? 0 : -1;
 }
 
-// Like `apk fix`: plan what the world implies and the store lacks - a runtime,
-// an extension an app asks for - and nothing else.  Report only, never repair:
-// a repair that repairs can destroy a working tree.
+// Like `apk fix`: plan what the world implies and the store lacks, and nothing
+// else. Report only: a repair that repairs can destroy a working tree.
 static int report_world(const flatpkg_dep_array_t* world, unsigned flags) {
 	flatpkg_changeset_t cs = {0};
-	(void)flags;
 	if (solver_solve(world, FLATPKG_SOLVERF_REPAIR, &cs, NULL, 0) != 0) {
 		fpkg_errorf("solver failed");
 		return 1;

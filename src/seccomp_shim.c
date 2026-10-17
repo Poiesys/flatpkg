@@ -154,7 +154,6 @@
 #define SOCK_RAW 3
 #endif
 
-// Each entry: syscall number, errno to return (EPERM or ENOSYS).
 struct seccomp_rule {
 	long nr;
 	int err;
@@ -338,50 +337,36 @@ long syscall(long nr, ...) {
 
 int mount(const char* source, const char* target, const char* fstype,
 	  unsigned long flags, const void* data) {
-	(void)source;
-	(void)target;
-	(void)fstype;
-	(void)flags;
-	(void)data;
 	errno = EPERM;
 	return -1;
 }
 
 int umount(const char* target) {
-	(void)target;
 	errno = EPERM;
 	return -1;
 }
 
 int umount2(const char* target, int flags) {
-	(void)target;
-	(void)flags;
 	errno = EPERM;
 	return -1;
 }
 
 int pivot_root(const char* new_root, const char* put_old) {
-	(void)new_root;
-	(void)put_old;
 	errno = EPERM;
 	return -1;
 }
 
 int chroot(const char* path) {
-	(void)path;
 	errno = EPERM;
 	return -1;
 }
 
 int unshare(int flags) {
-	(void)flags;
 	errno = EPERM;
 	return -1;
 }
 
 int setns(int fd, int nstype) {
-	(void)fd;
-	(void)nstype;
 	errno = EPERM;
 	return -1;
 }
@@ -412,19 +397,12 @@ int clone(int (*fn)(void*), void* stack, int flags, void* arg, ...) {
 struct clone_args;
 
 int clone3(struct clone_args* args, size_t size) {
-	(void)args;
-	(void)size;
 	errno = ENOSYS;
 	return -1;
 }
 
 int add_key(const char* type, const char* desc, const void* payload,
 	    size_t plen, int ringid) {
-	(void)type;
-	(void)desc;
-	(void)payload;
-	(void)plen;
-	(void)ringid;
 	errno = EPERM;
 	return -1;
 }
@@ -436,16 +414,11 @@ long keyctl(int cmd, ...) {
 
 int request_key(const char* type, const char* desc, const char* callout,
 		int ringid) {
-	(void)type;
-	(void)desc;
-	(void)callout;
-	(void)ringid;
 	errno = EPERM;
 	return -1;
 }
 
 int ptrace(int req, ...) {
-	(void)req;
 	const char* devel = getenv("FLATPKG_SECCOMP_DEVEL");
 	if (devel && (*devel == '1' || *devel == 't')) {
 		init_real_syscall();

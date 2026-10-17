@@ -563,7 +563,6 @@ void evaluate_conditionals_in_lists(const fp_metadata_t* meta) {
 void permissions_apply_overrides(sandbox_plan_t* plan, const run_opts_t* opts) {
 	assert(plan != NULL);
 	assert(opts != NULL);
-	// socket=NAME / socket=!NAME from run(1).
 	for (size_t i = 0; i < opts->sockets.count; i++) {
 		const char* s = opts->sockets.items[i];
 		bool on = s[0] != '!';
@@ -591,7 +590,6 @@ void permissions_apply_overrides(sandbox_plan_t* plan, const run_opts_t* opts) {
 			plan->sock_gpg_agent = on;
 	}
 
-	// device=all|!NAME from run(1).
 	for (size_t i = 0; i < opts->devices.count; i++) {
 		const char* d = opts->devices.items[i];
 		bool on = d[0] != '!';
@@ -743,7 +741,6 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 
 	evaluate_conditionals_in_lists(meta);
 
-	// share=network|ipc from [Context]; anything else is a typo and warns.
 	for (size_t i = 0; i < meta->shared.count; i++) {
 		if (strcmp(meta->shared.items[i], "network") == 0)
 			plan->want_network = true;
@@ -802,8 +799,7 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 			warn_unknown_context_entry("sockets", s);
 	}
 
-	// features=: every accepted name sets a plan flag sandbox.c reads;
-	// `multiarch` is accepted and ignored (the Linuxulator is 64-bit only).
+	// features=: every accepted name sets a plan flag sandbox.c reads; `multiarch` is accepted and ignored.
 	for (size_t i = 0; i < meta->features.count; i++) {
 		const char* f = meta->features.items[i];
 		if (strcmp(f, "devel") == 0) plan->devel = true;

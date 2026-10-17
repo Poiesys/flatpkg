@@ -215,8 +215,8 @@ case "$body" in
 *) : ;;
 esac
 # ...and the writer must be called from where the environment is final.
-sbody=$(carved "$(srcf sandbox.c)" '^int sandbox_exec' || true)
-[ -n "$sbody" ] || note "could not carve sandbox_exec() out of src/daemon/sandbox.c"
+sbody=$(carved "$(srcf sandbox_exec.c)" '^int sandbox_exec' || true)
+[ -n "$sbody" ] || note "could not carve sandbox_exec() out of src/daemon/sandbox_exec.c"
 case "$sbody" in
 *instance_save_run_environ*) : ;;
 *) note "sandbox_exec() does not call instance_save_run_environ(), so"

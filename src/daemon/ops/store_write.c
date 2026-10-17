@@ -15,8 +15,6 @@
 #define FPKG_MODULE "store"
 #include "fpkglog.h"
 
-// Mutating half of the store: import, world edits, removal and the
-// exports tree.  The read-only half is src/shared/store.c.
 
 int store_import(const char* src_root, char*** imported_out, size_t* n_out) {
 	assert(src_root != NULL);
@@ -57,9 +55,8 @@ int store_import(const char* src_root, char*** imported_out, size_t* n_out) {
 		snprintf(meta_path, sizeof(meta_path), "%s/metadata", active);
 		snprintf(files_path, sizeof(files_path), "%s/files", active);
 
-		// The tree is the caller's, and these paths are handed to a root
-		// mount later: only a regular file and a directory, no symlink to
-		// somewhere root can read, no FIFO that would hold the worker.
+		// The tree is the caller's and these paths are mounted as root later: only a
+		// regular file and a directory, no symlink and no FIFO that would hold the worker.
 		struct stat st;
 		if (lstat(meta_path, &st) != 0 || !S_ISREG(st.st_mode)) {
 			fpkg_warnf("skipping '%s': metadata is not a regular file",
@@ -292,8 +289,6 @@ int store_remove_tree(const char* path, const char* label,
 	return rc;
 }
 
-// Mirror each app's export/ tree into <store>/exports with relative symlinks
-// and put it on XDG_DATA_DIRS.  The .desktop Exec= rewrite happens here.
 #define FPKG_FLATPAK_BIN "/usr/local/bin/flatpak"
 
 static int mkdir_parents_for(const char* path) {
@@ -441,7 +436,6 @@ static int export_mkdir(const char* store, const char* path, const char* app_id,
 	assert(store != NULL);
 	assert(path != NULL);
 	assert(app_id != NULL);
-	(void)store;
 	struct stat st;
 	if (lstat(path, &st) == 0) {
 		if (S_ISDIR(st.st_mode)) return 0;
@@ -641,9 +635,8 @@ int cmd_exports(void) {
 	return store_update_exports();
 }
 
-// Change or reset the SYSTEM override <store>/overrides/<id>.  The app id is
-// checked by overrides_path(), one path component, and the caller's text is
-// parsed and re-serialised: the file holds only keys the parser knows.
+// Change or reset the SYSTEM override <store>/overrides/<id>. overrides_path()
+// checks the app id, and the caller's text is re-serialised to keys the parser knows.
 int cmd_override_system(const char* app_id, unsigned flags,
 			const char* changes) {
 	const char* id = (app_id != NULL && *app_id != '\0') ? app_id : NULL;

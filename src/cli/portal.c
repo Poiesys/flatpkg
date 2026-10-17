@@ -1,6 +1,5 @@
-// org.freedesktop.portal.Flatpak, interface version 7, on libdbus.  The proxy
-// runs on the host, so the sender is the app's xdg-dbus-proxy, or the app
-// itself when it holds the raw grant.
+// org.freedesktop.portal.Flatpak v7 on libdbus; the sender is the app's
+// xdg-dbus-proxy, or the app itself when it holds the raw grant.
 #include <sys/file.h>
 #include <sys/param.h>
 #include <sys/stat.h>
@@ -66,8 +65,6 @@ extern void _dbus_message_get_unix_fds(DBusMessage* message, const int** fds,
 
 static char portal_argv0[PATH_MAX] = "";
 
-// Close every descriptor >= 3 except those in the comma-separated `keep` list
-// (NULL/empty closes all); close_range(2) walks the gaps.
 static void close_unforwarded_fds(const char* keep) {
 	unsigned targets[SPAWN_MAX_FDS];
 	size_t n = 0;
@@ -105,8 +102,6 @@ static void free_strv(char** v) {
 	free(v);
 }
 
-// Append one {sv} entry.  The dictionary signature is fixed, so a caller
-// names only the key and the value.
 static void dict_add_uint(DBusMessageIter* arr, const char* key,
 			  dbus_uint32_t val) {
 	DBusMessageIter de, var;
@@ -131,8 +126,6 @@ static void dict_add_string(DBusMessageIter* arr, const char* key,
 	dbus_message_iter_close_container(arr, &de);
 }
 
-// Recurse one dictionary entry into its key and value; false when the key
-// is missing.  The value is left on the value, not on a variant wrapper.
 static bool dict_lookup(DBusMessageIter* entry, const char** key,
 			DBusMessageIter* value) {
 	*key = NULL;
@@ -164,8 +157,6 @@ static char* proc_args(pid_t pid, size_t* len_out) {
 	}
 }
 
-// The base dir the instance registry lives under (the same XDG_RUNTIME_DIR
-// the app's run used; /var/run/user/<uid> fallback).
 static void instance_base(char* out, size_t n) {
 	const char* env = cli_getenv("XDG_RUNTIME_DIR");
 	if (env && env[0] == '/') {
@@ -479,9 +470,8 @@ static int parse_spawn_args(DBusMessage* msg, char* cwd_out, size_t cwd_n,
 	}
 	dbus_message_iter_next(&it);
 
-	// a{uh} fds: dict of (target fd -> unix-fd-list index). Upstream
-	// indexes the received list, so fall back to positional mapping when h
-	// exceeds it.
+	// a{uh} fds: target fd -> index into the received unix-fd list.  An
+	// index past the list falls back to positional mapping.
 	if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_ARRAY) return -1;
 	{
 		const int* unix_fds = NULL;
@@ -536,7 +526,6 @@ static int parse_spawn_args(DBusMessage* msg, char* cwd_out, size_t cwd_n,
 	}
 	dbus_message_iter_next(&it);
 
-	// 4. a{ss} envs -> "K=V" pairs
 	if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_ARRAY) return -1;
 	{
 		char** envs = NULL;
@@ -580,24 +569,11 @@ static int parse_spawn_args(DBusMessage* msg, char* cwd_out, size_t cwd_n,
 	dbus_message_iter_next(&it);
 
 	if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_ARRAY) return -1;
-	{
-		dbus_message_iter_recurse(&it, &sub);
-		while (dbus_message_iter_get_arg_type(&sub) !=
-		       DBUS_TYPE_INVALID) {
-			DBusMessageIter de;
-			const char* key = NULL;
-
-			// unset-env is accepted but not applied: Spawn starts
-			// from the caller's environment.
-			dbus_message_iter_recurse(&sub, &de);
-			if (dbus_message_iter_get_arg_type(&de) ==
-			    DBUS_TYPE_STRING) {
-				dbus_message_iter_get_basic(&de, &key);
-				(void)key;
-			}
-			dbus_message_iter_next(&sub);
-		}
-	}
+	// unset-env is accepted but not applied: Spawn starts from the
+	// caller's environment.
+	dbus_message_iter_recurse(&it, &sub);
+	while (dbus_message_iter_get_arg_type(&sub) != DBUS_TYPE_INVALID)
+		dbus_message_iter_next(&sub);
 	return 0;
 }
 
@@ -630,9 +606,8 @@ static long long now_ms(void) {
 	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-// While handle_spawn() polls it must not dispatch (a nested Spawn would
-// re-enter the poll), but it must answer flatpak-spawn's cheap read-only
-// `version` query.
+// While handle_spawn() polls it must not dispatch (a nested Spawn would re-enter
+// the poll), but it must answer flatpak-spawn's read-only `version` query.
 static void serve_queries_during_spawn(DBusConnection* conn) {
 	for (;;) {
 		DBusMessage* msg = dbus_connection_borrow_message(conn);
@@ -659,39 +634,26 @@ static void serve_queries_during_spawn(DBusConnection* conn) {
 	}
 }
 
-static void handle_spawn(DBusConnection* conn, DBusMessage* msg) {
-	const char* sender = dbus_message_get_sender(msg);
-	if (!sender) return;
-
-	char* app_id = resolve_app_id(conn, sender);
-	if (!app_id) {
-		reply_error(conn, msg,
-			    PORTAL_IFACE ".Spawn only works in a flatpak");
-		return;
-	}
-
-	char cwd[PATH_MAX];
-	char **argv = NULL, **envs = NULL;
-	dbus_uint32_t flags = 0;
-	int fd_map[SPAWN_MAX_FDS];
-	if (parse_spawn_args(msg, cwd, sizeof(cwd), &argv, &envs, &flags,
-			     fd_map) != 0 ||
-	    !argv || !argv[0]) {
-		free(app_id);
-		free_strv(argv);
-		free_strv(envs);
+static bool spawn_parse_request(DBusConnection* conn, DBusMessage* msg,
+				char* cwd, size_t cwd_n, char*** argv,
+				char*** envs, dbus_uint32_t* flags,
+				int* fd_map) {
+	if (parse_spawn_args(msg, cwd, cwd_n, argv, envs, flags, fd_map) != 0 ||
+	    !*argv || !(*argv)[0]) {
 		reply_error(conn, msg, "No command given");
-		return;
+		return false;
 	}
+	return true;
+}
 
+static bool spawn_validate_request(DBusConnection* conn, DBusMessage* msg,
+				   const char* app_id, dbus_uint32_t flags,
+				   const char* cwd) {
 	if ((flags & ~FLAG_ALL) != 0) {
 		fpkg_warnf("spawn from %s: unsupported flags 0x%x", app_id,
 			   flags & ~FLAG_ALL);
-		free(app_id);
-		free_strv(argv);
-		free_strv(envs);
 		reply_error(conn, msg, "Unsupported flags enabled");
-		return;
+		return false;
 	}
 	if ((flags & (FLAG_EXPOSE_PIDS | FLAG_SHARE_PIDS)) != 0)
 		fpkg_infof("spawn from %s: expose/share-pids accepted "
@@ -704,39 +666,30 @@ static void handle_spawn(DBusConnection* conn, DBusMessage* msg) {
 		fpkg_warnf("spawn from %s: cwd '%s' ignored "
 			   "(flatpkg run has no --cwd)",
 			   app_id, cwd);
+	return true;
+}
 
-	// Per-spawn nonce: --env=FLATPKG_SPAWN_NONCE=<nonce> lands in the
-	// sandbox env. The pid-file candidate is verified against it.
-	char nonce[80];
-	snprintf(nonce, sizeof(nonce), "FLATPKG_SPAWN_NONCE=%lx%lx%lx",
+// Per-spawn nonce: --env=FLATPKG_SPAWN_NONCE=<nonce> lands in the sandbox
+// env, and the pid-file candidate is verified against it.
+static void spawn_make_nonce(char* out, size_t n, DBusMessage* msg) {
+	snprintf(out, n, "FLATPKG_SPAWN_NONCE=%lx%lx%lx",
 		 (unsigned long)getpid(), (unsigned long)time(NULL),
 		 (unsigned long)(uintptr_t)msg ^ arc4random());
+}
 
-	char bin[PATH_MAX];
-	if (!flatpkg_bin_path(bin, sizeof(bin))) {
-		fpkg_errorf("spawn from %s: flatpkg binary not found", app_id);
-		free(app_id);
-		free_strv(argv);
-		free_strv(envs);
-		reply_error(conn, msg, "flatpkg binary not found");
-		return;
-	}
-
-	// Build the re-exec argv in one pass; the nonce must be in the request
-	// frame. Every entry is malloc'd (free_strv must not touch a literal).
+// Build the re-exec argv in one pass; the nonce must be in the request
+// frame.  Every entry is malloc'd (free_strv must not touch a literal).
+static char** spawn_build_run(const char* bin, const char* app_id,
+			      char** argv, char** envs, dbus_uint32_t flags,
+			      const char* nonce) {
 	size_t nargs = 0;
+
 	while (argv[nargs]) nargs++;
 	size_t nrun = 3 + 3 + 1 + 1;
 	for (int i = 0; envs && envs[i]; i++) nrun++;
 	nrun += 1 + nargs + 1;
 	char** run = calloc(nrun, sizeof(char*));
-	if (!run) {
-		free(app_id);
-		free_strv(argv);
-		free_strv(envs);
-		reply_error(conn, msg, "out of memory");
-		return;
-	}
+	if (!run) return NULL;
 	size_t r = 0;
 	run[r++] = xstrdup(bin);
 	run[r++] = xstrdup("run");
@@ -752,10 +705,217 @@ static void handle_spawn(DBusConnection* conn, DBusMessage* msg) {
 	run[r++] = xstrdup("--");
 	for (size_t i = 1; i < nargs; i++) run[r++] = xstrdup(argv[i]);
 	run[r] = NULL;
+	return run;
+}
 
-	// The table must have room before the fork: otherwise the caller gets
-	// a pid it could never SpawnSignal or hear SpawnExited for, behind a
-	// reply that says ok.
+static void spawn_child_exec(const char* bin, char** run, const int* fd_map) {
+	char keep[512];
+	size_t k = 0;
+
+	keep[0] = '\0';
+	for (int i = 0; i < SPAWN_MAX_FDS; i++) {
+		if (fd_map[i] < 0) continue;
+		if (fd_map[i] != i) {
+			if (dup2(fd_map[i], i) < 0) continue;
+			close(fd_map[i]);
+		}
+		if (i >= 3 && k + 8 < sizeof(keep))
+			k += (size_t)snprintf(keep + k, sizeof(keep) - k, "%s%d",
+					      k ? "," : "", i);
+	}
+	close_unforwarded_fds(keep);
+	if (k > 0) setenv("FLATPKG_FORWARD_FDS", keep, 1);
+	// Its own process group, as sessionhelper.c does: killpg() reads its
+	// argument as a group id, so a pid leading no group fails with ESRCH.
+	setsid();
+	setpgid(0, 0);
+	execv(bin, run);
+	_exit(127);
+}
+
+static void spawn_track_child(pid_t child, const char* sender,
+			      dbus_uint32_t flags) {
+	spawn_child_t* c = &children[nchildren++];
+
+	memset(c, 0, sizeof(*c));
+	c->client_pid = child;
+	c->app_pid = -1;
+	c->sender = xstrdup(sender);
+	c->notify_start = (flags & FLAG_NOTIFY_START) != 0;
+}
+
+// The table filled between the check and the fork: the child is already
+// running, so kill it rather than return a pid nothing can manage.
+static void spawn_discard_child(pid_t child) {
+	fpkg_errorf("spawn child table full after the fork;"
+		    " killing %ld rather than returning an untrackable pid",
+		    (long)child);
+	kill(child, SIGTERM);
+	waitpid(child, NULL, 0);
+}
+
+// One new instance dir: true when it names this app, carries this spawn's nonce
+// and has a pid file. A candidate that never gets there is reported, since the reply waits for it.
+static bool spawn_candidate_matches(const char* base, const char* id,
+				    const char* app_id, const char* nonce,
+				    long long deadline) {
+	char info[PATH_MAX], noncef[PATH_MAX];
+	bool cand_info = false, cand_name = false, cand_nonce = false;
+	bool matched = false;
+
+	snprintf(info, sizeof(info), "%s/%s/info", base, id);
+	snprintf(noncef, sizeof(noncef), "%s/%s/spawn-nonce", base, id);
+	long long cand_deadline = now_ms() + 2000;
+	if (cand_deadline > deadline) cand_deadline = deadline;
+	while (!matched && now_ms() < cand_deadline) {
+		char name[256];
+		int jid = -1;
+		if (read_instance_info(info, name, sizeof(name), &jid) == 0) {
+			cand_info = true;
+			if (strcmp(name, app_id) == 0) {
+				cand_name = true;
+				bool nonce_ok = false;
+				FILE* nf = fopen(noncef, "r");
+				if (nf) {
+					char nb[160];
+					if (fgets(nb, sizeof(nb), nf)) {
+						nb[strcspn(nb, "\r\n")] = '\0';
+						nonce_ok =
+							(strcmp(nb, nonce) == 0);
+					}
+					fclose(nf);
+				}
+				if (nonce_ok) {
+					cand_nonce = true;
+					char pidf[PATH_MAX];
+					long p = 0;
+					long long pd = now_ms() + 1000;
+
+					snprintf(pidf, sizeof(pidf), "%s/%s/pid",
+						 base, id);
+					if (pd > cand_deadline)
+						pd = cand_deadline;
+					while (now_ms() < pd) {
+						FILE* pf = fopen(pidf, "r");
+						if (pf) {
+							if (fscanf(pf, "%ld", &p) ==
+								    1 &&
+							    p > 0) {
+								fclose(pf);
+								matched = true;
+								break;
+							}
+							fclose(pf);
+						}
+						usleep(2000);
+					}
+				}
+			}
+		}
+		if (!matched) usleep(2000);
+	}
+	if (!matched && cand_info)
+		fpkg_warnf("poll cand %s: info=%d name=%d nonce=%d", id,
+			   cand_info, cand_name, cand_nonce);
+	return matched;
+}
+
+// Poll for the instance dir the re-exec'd child creates.  The reply pid is
+// the re-exec'd child, not the app's, matching SpawnStarted.
+static dbus_uint32_t spawn_wait_for_instance(DBusConnection* conn,
+					     const char* app_id, char** snap,
+					     const char* nonce, pid_t child) {
+	long long deadline = now_ms() + SPAWN_TIMEOUT_MS;
+
+	while (now_ms() < deadline) {
+		char base[PATH_MAX];
+		instance_base(base, sizeof(base));
+		DIR* d = opendir(base);
+		if (d) {
+			struct dirent* de;
+			while ((de = readdir(d)) != NULL) {
+				if (de->d_name[0] == '.' || !de->d_name[0])
+					continue;
+				bool numeric = true;
+				for (const char* p = de->d_name; *p; p++)
+					if (*p < '0' || *p > '9')
+						numeric = false;
+				if (!numeric) continue;
+				if (in_snapshot(snap, de->d_name)) continue;
+				if (spawn_candidate_matches(base, de->d_name,
+							    app_id, nonce,
+							    deadline)) {
+					closedir(d);
+					return (dbus_uint32_t)child;
+				}
+			}
+			closedir(d);
+		}
+		serve_queries_during_spawn(conn);
+		dbus_connection_read_write(conn, SPAWN_POLL_MS);
+	}
+	return 0;
+}
+
+static void spawn_set_app_pid(DBusConnection* conn, pid_t child,
+			      dbus_uint32_t app_pid) {
+	for (size_t i = 0; i < nchildren; i++) {
+		if (children[i].client_pid == child) {
+			children[i].app_pid = (pid_t)app_pid;
+			emit_spawn_started(conn, &children[i]);
+			break;
+		}
+	}
+}
+
+static void handle_spawn(DBusConnection* conn, DBusMessage* msg) {
+	const char* sender = dbus_message_get_sender(msg);
+	if (!sender) return;
+
+	char* app_id = resolve_app_id(conn, sender);
+	if (!app_id) {
+		reply_error(conn, msg,
+			    PORTAL_IFACE ".Spawn only works in a flatpak");
+		return;
+	}
+
+	char cwd[PATH_MAX];
+	char **argv = NULL, **envs = NULL;
+	dbus_uint32_t flags = 0;
+	int fd_map[SPAWN_MAX_FDS];
+	if (!spawn_parse_request(conn, msg, cwd, sizeof(cwd), &argv, &envs,
+				 &flags, fd_map) ||
+	    !spawn_validate_request(conn, msg, app_id, flags, cwd)) {
+		free(app_id);
+		free_strv(argv);
+		free_strv(envs);
+		return;
+	}
+
+	char nonce[80];
+	spawn_make_nonce(nonce, sizeof(nonce), msg);
+
+	char bin[PATH_MAX];
+	if (!flatpkg_bin_path(bin, sizeof(bin))) {
+		fpkg_errorf("spawn from %s: flatpkg binary not found", app_id);
+		free(app_id);
+		free_strv(argv);
+		free_strv(envs);
+		reply_error(conn, msg, "flatpkg binary not found");
+		return;
+	}
+
+	char** run = spawn_build_run(bin, app_id, argv, envs, flags, nonce);
+	if (!run) {
+		free(app_id);
+		free_strv(argv);
+		free_strv(envs);
+		reply_error(conn, msg, "out of memory");
+		return;
+	}
+
+	// The table must have room before the fork: otherwise the caller gets a pid it
+	// could never SpawnSignal or hear SpawnExited for, behind a reply that says ok.
 	if (nchildren >= MAX_SPAWN_CHILDREN) {
 		fpkg_warnf("spawn from %s: %d children already tracked,"
 			   " refusing rather than returning a pid that could"
@@ -780,56 +940,18 @@ static void handle_spawn(DBusConnection* conn, DBusMessage* msg) {
 		reply_error(conn, msg, "fork failed");
 		return;
 	}
-	if (child == 0) {
-		// Child: run the sandbox via the daemon. Put every forwarded fd
-		// on the number asked for, then drop the rest; the target list
-		// travels in FLATPKG_FORWARD_FDS.
-		char keep[512];
-		size_t k = 0;
-		keep[0] = '\0';
-		for (int i = 0; i < SPAWN_MAX_FDS; i++) {
-			if (fd_map[i] < 0) continue;
-			if (fd_map[i] != i) {
-				if (dup2(fd_map[i], i) < 0) continue;
-				close(fd_map[i]);
-			}
-			if (i >= 3 && k + 8 < sizeof(keep))
-				k += (size_t)snprintf(keep + k,
-						      sizeof(keep) - k, "%s%d",
-						      k ? "," : "", i);
-		}
-		close_unforwarded_fds(keep);
-		if (k > 0) setenv("FLATPKG_FORWARD_FDS", keep, 1);
-		// Its own process group, as sessionhelper.c does: killpg()
-		// reads its argument as a group id, so a pid leading no group
-		// fails with ESRCH.
-		setsid();
-		setpgid(0, 0);
-		execv(bin, run);
-		_exit(127);
-	}
+	if (child == 0) spawn_child_exec(bin, run, fd_map);
 	free_strv(run);
 	free_strv(argv);
 	free_strv(envs);
 
-	// The room was checked before the fork, so this cannot be full; if it
-	// somehow is, the child is running, so kill it rather than return an
-	// untrackable pid.
+	// The room was checked before the fork; if it is somehow full the child is
+	// running, so kill it rather than return an untrackable pid.
 	if (nchildren < MAX_SPAWN_CHILDREN) {
-		spawn_child_t* c = &children[nchildren++];
-		memset(c, 0, sizeof(*c));
-		c->client_pid = child;
-		c->app_pid = -1;
-		c->sender = xstrdup(sender);
-		c->notify_start = (flags & FLAG_NOTIFY_START) != 0;
+		spawn_track_child(child, sender, flags);
 	} else {
-		fpkg_errorf(
-			"spawn child table full after the fork;"
-			" killing %ld rather than returning an untrackable pid",
-			(long)child);
-		kill(child, SIGTERM);
-		waitpid(child, NULL, 0);
-		free(snap);
+		spawn_discard_child(child);
+		free_snapshot(snap);
 		free(app_id);
 		reply_error(conn, msg,
 			    "internal error: the spawn"
@@ -837,131 +959,11 @@ static void handle_spawn(DBusConnection* conn, DBusMessage* msg) {
 		return;
 	}
 
-	dbus_uint32_t result_pid = 0;
-	bool found = false;
-	long long deadline = now_ms() + SPAWN_TIMEOUT_MS;
-	while (!found && now_ms() < deadline) {
-		// New instance dir of the same app? Skip non-numeric names (the
-		// base also holds per-app dirs). Scan first: an
-		// instantly-exiting command can finish in one tick.
-		char base[PATH_MAX];
-		instance_base(base, sizeof(base));
-		DIR* d = opendir(base);
-		if (d) {
-			struct dirent* de;
-			while ((de = readdir(d)) != NULL) {
-				if (de->d_name[0] == '.' || !de->d_name[0])
-					continue;
-				bool numeric = true;
-				for (const char* p = de->d_name; *p; p++)
-					if (*p < '0' || *p > '9')
-						numeric = false;
-				if (!numeric) continue;
-				if (in_snapshot(snap, de->d_name)) continue;
-				char info[PATH_MAX], pidf[PATH_MAX];
-				snprintf(info, sizeof(info), "%s/%s/info", base,
-					 de->d_name);
-				char noncef[PATH_MAX];
-				snprintf(noncef, sizeof(noncef),
-					 "%s/%s/spawn-nonce", base, de->d_name);
-				bool cand_info = false;
-				bool cand_name = false;
-				bool cand_nonce = false;
-				long long cand_deadline = now_ms() + 2000;
-				if (cand_deadline > deadline)
-					cand_deadline = deadline;
-				while (!found && now_ms() < cand_deadline) {
-					bool got = false;
-					char name[256];
-					int jid = -1;
-					if (read_instance_info(info, name,
-							       sizeof(name),
-							       &jid) == 0) {
-						cand_info = true;
-						if (strcmp(name, app_id) == 0) {
-							cand_name = true;
-							bool nonce_ok = false;
-							FILE* nf = fopen(noncef,
-									 "r");
-							if (nf) {
-								char nb[160];
-								if (fgets(nb,
-									  sizeof(nb),
-									  nf)) {
-									nb[strcspn(
-										nb,
-										"\r\n")] =
-										'\0';
-									nonce_ok =
-										(strcmp(nb,
-											nonce) ==
-										 0);
-								}
-								fclose(nf);
-							}
-							if (nonce_ok) {
-								cand_nonce =
-									true;
-								snprintf(
-									pidf,
-									sizeof(pidf),
-									"%s/%s/"
-									"pid",
-									base,
-									de->d_name);
-								long p = 0;
-								long long pd =
-									now_ms() +
-									1000;
-								if (pd >
-								    cand_deadline)
-									pd = cand_deadline;
-								while (now_ms() <
-								       pd) {
-									FILE* pf = fopen(
-										pidf,
-										"r");
-									if (pf) {
-										if (fscanf(pf,
-											   "%ld",
-											   &p) ==
-											    1 &&
-										    p > 0) {
-											fclose(pf);
-											result_pid = (dbus_uint32_t)
-												child;
-											got = true;
-											break;
-										}
-										fclose(pf);
-									}
-									usleep(2000);
-								}
-							}
-						}
-					}
-					if (got) {
-						found = true;
-						break;
-					}
-					usleep(2000);
-				}
-				if (!found && cand_info)
-					fpkg_warnf("poll cand %s: info=%d "
-						   "name=%d nonce=%d",
-						   de->d_name, cand_info,
-						   cand_name, cand_nonce);
-			}
-			closedir(d);
-		}
-		if (found) break;
-
-		serve_queries_during_spawn(conn);
-		dbus_connection_read_write(conn, SPAWN_POLL_MS);
-	}
+	dbus_uint32_t result_pid =
+		spawn_wait_for_instance(conn, app_id, snap, nonce, child);
 	free_snapshot(snap);
 
-	if (!found) {
+	if (result_pid == 0) {
 		fpkg_warnf("spawn for %s: no instance appeared within %d ms",
 			   sender, SPAWN_TIMEOUT_MS);
 		free(app_id);
@@ -969,13 +971,7 @@ static void handle_spawn(DBusConnection* conn, DBusMessage* msg) {
 		return;
 	}
 
-	for (size_t i = 0; i < nchildren; i++) {
-		if (children[i].client_pid == child) {
-			children[i].app_pid = (pid_t)result_pid;
-			emit_spawn_started(conn, &children[i]);
-			break;
-		}
-	}
+	spawn_set_app_pid(conn, child, result_pid);
 	fpkg_infof("spawned %s pid=%u (via %s)", app_id, (unsigned)result_pid,
 		   sender);
 	free(app_id);
@@ -1084,8 +1080,6 @@ static void emit_progress(DBusConnection* conn, const char* handle,
 
 static DBusHandlerResult name_owner_filter(DBusConnection* conn,
 					   DBusMessage* msg, void* ud) {
-	(void)conn;
-	(void)ud;
 	if (dbus_message_is_signal(msg, DBUS_INTERFACE_DBUS,
 				   "NameOwnerChanged")) {
 		const char *name = NULL, *old_owner = NULL, *new_owner = NULL;
@@ -1349,7 +1343,7 @@ static void handle_create_update_monitor(DBusConnection* conn,
 static void reply_property_get(DBusConnection* conn, DBusMessage* msg,
 			       const char* prop) {
 	dbus_uint32_t v;
-	(void)msg;
+
 	if (strcmp(prop, "version") == 0) v = PORTAL_VERSION;
 	else if (strcmp(prop, "supports") == 0)
 		v = 1; // FreeBSD pids are global, so expose/share-pids work
@@ -1390,7 +1384,6 @@ static void reply_property_get_all(DBusConnection* conn, DBusMessage* msg) {
 	dbus_message_unref(reply);
 }
 
-// Properties.GetAll on the Settings interface; version is its one property.
 static void reply_settings_version(DBusConnection* conn, DBusMessage* msg) {
 	DBusMessage* reply = dbus_message_new_method_return(msg);
 	DBusMessageIter it, arr;
@@ -1477,7 +1470,6 @@ static void reply_introspect(DBusConnection* conn, DBusMessage* msg) {
 
 static DBusHandlerResult handle_message(DBusConnection* conn, DBusMessage* msg,
 					void* ud) {
-	(void)ud;
 	if (dbus_message_get_type(msg) != DBUS_MESSAGE_TYPE_METHOD_CALL)
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 
@@ -1520,7 +1512,6 @@ static DBusHandlerResult handle_message(DBusConnection* conn, DBusMessage* msg,
 			if (dbus_message_get_args(msg, NULL, DBUS_TYPE_STRING,
 						  &in_iface, DBUS_TYPE_STRING,
 						  &prop, DBUS_TYPE_INVALID)) {
-				(void)in_iface;
 				reply_property_get(conn, msg, prop);
 			}
 			return DBUS_HANDLER_RESULT_HANDLED;
@@ -1582,8 +1573,6 @@ static fc_request_t* fc_track(pid_t pid, const char* path, const char* sender,
 	return e;
 }
 
-// Fold a filter list (a struct of name and pattern structs) into the
-// "name | pattern ..." strings the request carries.
 static void fc_parse_filters(DBusMessageIter* v, char*** filters,
 			     size_t* nfilters) {
 	DBusMessageIter arr;
@@ -2030,7 +2019,6 @@ static bool settings_append_variant(GVariant* v, DBusMessageIter* it) {
 	return dbus_message_iter_close_container(it, &var);
 }
 
-// Append one {sv} entry from a GVariant, the shape ReadAll carries.
 static bool dict_add_settings(DBusMessageIter* arr, const char* key,
 			      GVariant* v) {
 	DBusMessageIter de, var;
@@ -2049,7 +2037,6 @@ static bool dict_add_settings(DBusMessageIter* arr, const char* key,
 	return dbus_message_iter_close_container(arr, &de);
 }
 
-// Open one {sa{sv}} entry; the caller fills `inner` and closes both.
 static void dict_open_subdict(DBusMessageIter* dict, const char* key,
 			      DBusMessageIter* de, DBusMessageIter* inner) {
 	dbus_message_iter_open_container(dict, DBUS_TYPE_DICT_ENTRY, NULL, de);
@@ -2427,7 +2414,6 @@ static void sweep_stale_instances(void) {
 }
 
 int portal_main(int argc, char* argv[]) {
-	(void)argc;
 	if (argv[0] && argv[0][0])
 		snprintf(portal_argv0, sizeof(portal_argv0), "%s", argv[0]);
 

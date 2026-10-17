@@ -8,7 +8,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-SRC="$ROOT/src/daemon/sandbox.c"
+SRC="$ROOT/src/daemon/sandbox_exec.c"
 
 pass=0
 fail=0

@@ -40,8 +40,8 @@ check() {
 }
 
 # The remote-name sinks.
-check ostree.c cmd_remote_add            remote
-check ostree.c cmd_remote_delete         remote
+check ostree_cmds.c cmd_remote_add       remote
+check ostree_cmds.c cmd_remote_delete    remote
 # The app-id sink: the one in a bare snprintf, not store_path.
 check overrides.c overrides_path         remote
 # The instance id: a jail id, not a name, so digits.
@@ -53,9 +53,9 @@ n_sites=0
 n_guarded=0
 # cmd_remote_add writes keys/%s.gpg and must validate the name.
 for fn in cmd_remote_add; do
-	body=$(tmp=$(mktemp /tmp/.fpkg-carve.XXXXXX); strip_comments < "$ROOT/src/ostree.c" > "$tmp"; carve_function "^""$fn""" "$tmp"; rm -f "$tmp")
+	body=$(tmp=$(mktemp /tmp/.fpkg-carve.XXXXXX); strip_comments < "$ROOT/src/ostree_cmds.c" > "$tmp"; carve_function "^""$fn""" "$tmp"; rm -f "$tmp")
 	if [ -z "$body" ]; then
-		note "$fn() is gone from ostree.c - re-run the survey"
+		note "$fn() is gone from ostree_cmds.c - re-run the survey"
 		continue
 	fi
 	n_sites=$((n_sites + 1))

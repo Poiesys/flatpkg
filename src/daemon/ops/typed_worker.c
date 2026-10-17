@@ -1,7 +1,3 @@
-// One worker per connection, forked by daemon.c: decode a request, ack it, run
-// the primitive and report the result as events on "op/<op_id>".  The requester
-// listens to its own operation by being the requester.
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pwd.h>
@@ -39,15 +35,13 @@ typedef struct {
 	size_t nclient_files;
 	bool dead; // the client went away; keep going, stop writing
 	int stdio[FP_STDIO_FDS]; // the caller's stdin, stdout, stderr
-				 // (FP_REQ_STDIO)
 	bool have_stdio;
 	uint32_t pending_sub;	  // request waiting for the broker's ack
 	uint32_t pending_cancel;
 } wctx_t;
 
-// The worker runs as root, so a name a caller sends is a name root's tools
-// would read: nothing that picks a program to execute (PATH, LD_PRELOAD) or a
-// directory the daemon trusts (HOME, FLATPKG_STORE) crosses.
+// The worker runs as root, so a caller-sent name is one root's tools read:
+// no PATH, LD_PRELOAD, HOME or FLATPKG_STORE crosses.
 static const char* const env_allow[] = {"XDG_RUNTIME_DIR",
 					"XDG_CURRENT_DESKTOP",
 					"DISPLAY",
@@ -95,24 +89,21 @@ static void worker_env_apply(char* const* vars, size_t n, uid_t uid) {
 		for (const char* const* a = env_allow; *a != NULL; a++) {
 			if (strlen(*a) != nl || strncmp(*a, vars[i], nl) != 0)
 				continue;
-			if (env_value_ok(eq + 1, uid, *a))
-				(void)setenv(*a, eq + 1, 1);
+			if (env_value_ok(eq + 1, uid, *a) &&
+			    setenv(*a, eq + 1, 1) != 0)
+				fpkg_warnf("cannot set %s: %s", *a,
+					   strerror(errno));
 			break;
 		}
 	}
 }
 
-// The broker asks the owner to stop.  The flag is polled by the long
-// operations (solver transaction, prefetch and the apply loop).
+// Broker cancel: the flag is polled by the long operations.
 static void on_cancel(int sig) {
-	(void)sig;
 	fpkg_cancel_flag = 1;
 }
 
-// The monitor sends this when the client's socket closes: the app's relay
-// must stop reading a terminal the shell has taken back.
 static void on_client_gone(int sig) {
-	(void)sig;
 	fpkg_client_mark_gone();
 }
 
@@ -163,9 +154,8 @@ static void ack_err(wctx_t* c, uint32_t id, uint32_t code, const char* msg) {
 	send_ack(c, id, &a);
 }
 
-// Refuse a connection before the HELLO exchange (a caller outside the
-// flatpkg group): the client gets the same error frame a handler would send,
-// not a raw string it cannot decode.
+// Refuse before HELLO (caller outside the flatpkg group) with a decodable
+// error frame, not a raw string the client cannot parse.
 void typed_refuse(int conn, const char* msg) {
 	fp_ack_t a;
 	fp_wbuf_t w;
@@ -175,12 +165,12 @@ void typed_refuse(int conn, const char* msg) {
 	a.code = FP_E_DENIED;
 	a.message = (char*)msg;
 	fp_w_init(&w);
-	if (fp_ack_encode(&w, 0, &a) == 0)
-		(void)fp_frame_write(conn, w.p, w.len);
+	if (fp_ack_encode(&w, 0, &a) == 0 &&
+	    fp_frame_write(conn, w.p, w.len) != FP_P_OK)
+		fpkg_debugf("cannot send the refusal: %s", strerror(errno));
 	fp_w_free(&w);
 }
 
-// Events borrow their strings: they are encoded here and not kept.
 static void send_event(wctx_t* c, fp_event_t* ev) {
 	char topic[FP_PROTO_MAX_TOPIC + 1];
 	snprintf(topic, sizeof(topic), "op/%llu", (unsigned long long)c->op_id);
@@ -194,7 +184,6 @@ static void send_event(wctx_t* c, fp_event_t* ev) {
 	}
 	if (!c->dead && fp_frame_write(c->conn, w.p, w.len) != FP_P_OK)
 		c->dead = true;
-	// The requester already has it; this is for everyone else watching.
 	(void)bus_publish(topic, w.p, w.len);
 	// `op` is the firehose: a watcher that does not yet know an op id can
 	// follow every operation, which is what a status bar wants.
@@ -224,9 +213,6 @@ static void sink_progress(void* ctx, const char* stage, uint64_t cur,
 	send_event(ctx, &ev);
 }
 
-// A table the privileged code printed, as an event: the client draws it.  One
-// too big for the protocol (more than FP_PROTO_MAX_LIST cells or
-// FP_PROTO_MAX_COLS columns) is declined and goes out as lines.
 static bool sink_table(void* ctx, const char* const* headers, size_t ncols,
 		       const char* const* const* rows, size_t nrows) {
 	if (ncols == 0 || ncols > FP_PROTO_MAX_COLS ||
@@ -295,9 +281,8 @@ static const char* nz(const char* s) {
 	return (s != NULL && *s != '\0') ? s : NULL;
 }
 
-// The bundle arrives as an open descriptor: it is copied into a file only root
-// can read and installed from there, so what is installed is what was handed
-// over whatever the caller does next, and no caller-chosen name is opened.
+// The bundle is copied from the descriptor into a root-only file and installed
+// from there: what is installed is what was handed over, and no caller name is opened.
 
 #define BUNDLE_MAX_BYTES ((off_t)16 << 30)
 
@@ -357,9 +342,8 @@ done:
 	return rc;
 }
 
-// RUN: the app's stdio are the caller's own descriptors (FP_REQ_STDIO, made
-// 0-2), so what it prints never goes through the daemon; forwarded descriptors
-// keep the numbers the caller named.
+// run: the app's stdio are the caller's descriptors (FP_REQ_STDIO, made 0-2),
+// so its output never goes through the daemon; forwarded fds keep their numbers.
 
 // The app must not outlive the request: this watcher sends the worker SIGHUP
 // when the client's end closes, and cmd_run turns that into termination.
@@ -367,8 +351,7 @@ static pid_t watch_client(int conn) {
 	const pid_t wpid = getpid();
 	pid_t mon = fork();
 	if (mon != 0) return mon;
-	// Only the connection is watched here: an inherited copy of the
-	// caller's terminal, a pty end or a forwarded descriptor is a second
+	// Only the connection is watched: an inherited terminal or pty end is another
 	// holder when the app exits, and FreeBSD then loses queued output.
 	for (int fd = 0; fd < conn; fd++) close(fd);
 	closefrom(conn + 1);
@@ -406,9 +389,8 @@ static bool forward_parse(const char* s, int* targets, size_t* n) {
 	return true;
 }
 
-// Which of the caller's three stdio descriptors are terminals (bit i for
-// descriptor i).  Decided here, on the descriptors themselves: a client that
-// says "no terminal" and hands over its own tty must not get it to the app.
+// Which of the caller's stdio descriptors are terminals (bit i for descriptor i),
+// decided on the descriptors: a client cannot hand over a tty it denies having.
 static unsigned stdio_tty_mask(const wctx_t* c) {
 	unsigned m = 0;
 	for (int i = 0; i < FP_STDIO_FDS; i++)
@@ -416,9 +398,8 @@ static unsigned stdio_tty_mask(const wctx_t* c) {
 	return m;
 }
 
-// The app's terminal when the caller has one: a pty of the daemon's own
-// (FLATPKG_APP_TTY / FLATPKG_APP_MASTER), so the app never holds the user's
-// terminal and cannot push input into it with TIOCSTI.
+// The app's terminal when the caller has one: a pty of ours (FLATPKG_APP_TTY /
+// FLATPKG_APP_MASTER), so the app cannot push into the user's with TIOCSTI.
 static int open_app_pty(int* master, int* slave, int size_from) {
 	int m = posix_openpt(O_RDWR | O_NOCTTY);
 	if (m < 0) return -1;
@@ -454,9 +435,8 @@ static int open_app_pty(int* master, int* slave, int size_from) {
 	return 0;
 }
 
-// Put the caller's stdio on this worker's own 0-2 for one request.  The
-// worker's own are saved above every forwarded target, so restoring cannot
-// pick up an app descriptor; a closed one stays closed.
+// Put the caller's stdio on the worker's 0-2 for one request. The worker's own
+// are saved above every target, so restoring cannot pick up an app descriptor.
 static int stdio_adopt(wctx_t* c, int saved[FP_STDIO_FDS]) {
 	for (int i = 0; i < FP_STDIO_FDS; i++) {
 		saved[i] = fcntl(i, F_DUPFD_CLOEXEC, FP_MAX_FDS);
@@ -465,7 +445,11 @@ static int stdio_adopt(wctx_t* c, int saved[FP_STDIO_FDS]) {
 				    strerror(errno));
 			return -1;
 		}
-		(void)dup2(c->stdio[i], i);
+		if (c->stdio[i] >= 0 && dup2(c->stdio[i], i) < 0) {
+			fpkg_errorf("cannot adopt descriptor %d: %s", i,
+				    strerror(errno));
+			return -1;
+		}
 	}
 	return 0;
 }
@@ -475,7 +459,9 @@ static void stdio_release(wctx_t* c, int saved[FP_STDIO_FDS]) {
 		if (c->stdio[i] >= 0) close(c->stdio[i]);
 		c->stdio[i] = -1;
 		if (saved[i] >= 0) {
-			(void)dup2(saved[i], i);
+			if (dup2(saved[i], i) < 0)
+				fpkg_warnf("cannot restore descriptor %d: %s",
+					   i, strerror(errno));
 			close(saved[i]);
 		} else {
 			// It was closed before the request; leave it that way.
@@ -485,9 +471,8 @@ static void stdio_release(wctx_t* c, int saved[FP_STDIO_FDS]) {
 	c->have_stdio = false;
 }
 
-// The terminal of one request whose caller has one: a pty of ours, named to
-// the relaying code.  The value after the colon says which of the app's
-// descriptors are this terminal; a mixture keeps its file or pipe elsewhere.
+// The terminal of one request whose caller has one: a pty of ours, with the mask
+// after the colon saying which app descriptors are it; a mixture keeps its file elsewhere.
 static int terminal_open(int* master, int* slave, unsigned mask) {
 	int size_fd = -1;
 	char fds[8];
@@ -506,23 +491,41 @@ static int terminal_open(int* master, int* slave, unsigned mask) {
 		return -1;
 	}
 	snprintf(num, sizeof(num), "%d:%s", *slave, fds);
-	(void)setenv("FLATPKG_APP_TTY", num, 1);
+	if (setenv("FLATPKG_APP_TTY", num, 1) != 0) {
+		fpkg_errorf("cannot name the app terminal: %s",
+			    strerror(errno));
+		close(*slave);
+		*slave = -1;
+		return -1;
+	}
 	snprintf(num, sizeof(num), "%d", *master);
-	(void)setenv("FLATPKG_APP_MASTER", num, 1);
+	if (setenv("FLATPKG_APP_MASTER", num, 1) != 0) {
+		fpkg_errorf("cannot name the app terminal: %s",
+			    strerror(errno));
+		return -1;
+	}
 	return 0;
 }
 
 // The next request on this connection must not find this one's terminal.
 static void terminal_close(int master, int slave) {
-	// sandbox_release_app_tty() closes the slave once the app has its own
-	// copy and unsets the variable; it is still ours only when the launch
-	// never got as far as the fork.
+	// sandbox_release_app_tty() closes the slave once the app has its own copy and
+	// unsets the variable, so it is ours only when the launch never forked.
 	const char* unreleased = cli_getenv("FLATPKG_APP_TTY");
 	bool slave_is_ours = unreleased != NULL && *unreleased != '\0';
 	(void)unsetenv("FLATPKG_APP_TTY");
 	(void)unsetenv("FLATPKG_APP_MASTER");
 	if (master >= 0) close(master);
 	if (slave >= 0 && slave_is_ours) close(slave);
+}
+
+static void watcher_stop(pid_t mon) {
+	if (mon <= 0) return;
+	// ESRCH: the watcher already saw the client go and exited.
+	if (kill(mon, SIGTERM) != 0 && errno != ESRCH)
+		fpkg_warnf("cannot stop the client watcher: %s",
+			   strerror(errno));
+	(void)waitpid(mon, NULL, 0);
 }
 
 // run_app takes ownership of fds[] (the descriptors received on the RUN frame)
@@ -534,8 +537,6 @@ static int run_app(wctx_t* c, const fp_req_t* r, const int* targets,
 	char** argv = NULL;
 	int saved[FP_STDIO_FDS] = {-1, -1, -1};
 	int pty_master = -1, pty_slave = -1;
-	// run_request() has already refused a caller with no stdio, so this is
-	// however many of the three are terminals.
 	const unsigned tty_mask = stdio_tty_mask(c);
 	int rc = 1;
 
@@ -561,9 +562,8 @@ static int run_app(wctx_t* c, const fp_req_t* r, const int* targets,
 
 	if (stdio_adopt(c, saved) != 0) goto out;
 
-	// Move each source above the saved stdio before applying any target:
-	// otherwise putting descriptor 5 on its target could close the source
-	// another target still needs.
+	// Move every source above the saved stdio before applying any target, or one
+	// target's dup2 could close a source another target still needs.
 	for (size_t i = 0; i < ntargets; i++) {
 		if (fds[i] == targets[i]) continue;
 		int h = fcntl(fds[i], F_DUPFD_CLOEXEC,
@@ -587,38 +587,35 @@ static int run_app(wctx_t* c, const fp_req_t* r, const int* targets,
 		fds[i] = targets[i];
 	}
 
-	if (ntargets > 0)
-		(void)setenv("FLATPKG_FORWARD_FDS", r->u.run.forward, 1);
-	else
+	if (ntargets > 0) {
+		if (setenv("FLATPKG_FORWARD_FDS", r->u.run.forward, 1) != 0) {
+			fpkg_errorf("cannot set the forwarded descriptors: %s",
+				    strerror(errno));
+			goto out;
+		}
+	} else {
 		(void)unsetenv("FLATPKG_FORWARD_FDS");
+	}
 
-	// Started before the pty exists so it cannot inherit the slave: a copy
-	// held there is another holder when the app, a session leader on that
-	// pty, exits, and FreeBSD then drops output still queued in it.
+	// Started before the pty exists so it cannot inherit the slave: a copy held there
+	// is another holder when the session leader exits and FreeBSD drops queued output.
 	pid_t mon = watch_client(c->conn);
 	if (tty_mask != 0 &&
 	    terminal_open(&pty_master, &pty_slave, tty_mask) != 0) {
-		if (mon > 0) {
-			(void)kill(mon, SIGTERM);
-			(void)waitpid(mon, NULL, 0);
-		}
+		watcher_stop(mon);
 		goto out;
 	}
 	emit_instance(true, r->u.run.app_id);
 	rc = cmd_run(r->u.run.app_id, argv, &ro);
 	emit_instance(false, r->u.run.app_id);
-	if (mon > 0) {
-		(void)kill(mon, SIGTERM);
-		(void)waitpid(mon, NULL, 0);
-	}
+	watcher_stop(mon);
 out:
 	fflush(stdout);
 	fflush(stderr);
 	(void)unsetenv("FLATPKG_FORWARD_FDS");
 	terminal_close(pty_master, pty_slave);
-	// The app has its own copy across the exec; these are ours to close.  A
-	// target may be on a number a stdio descriptor also uses, so retire
-	// that slot first and never close a number twice.
+	// The app has its own copy across the exec; these are ours. A target may use a
+	// stdio number, so retire that slot first and never close a number twice.
 	for (size_t i = 0; i < ntargets; i++) {
 		if (fds[i] < 0) continue;
 		for (int k = 0; k < FP_STDIO_FDS; k++)
@@ -631,9 +628,6 @@ out:
 	return rc;
 }
 
-// enter: a command in a running instance's jail, stdio the way run has it -
-// handed over as it is where it is not a terminal, a pty of ours where it is.
-// It carries no forwarded descriptors.
 static int enter_app(wctx_t* c, const fp_req_t* r) {
 	int saved[FP_STDIO_FDS] = {-1, -1, -1};
 	int pty_master = -1, pty_slave = -1;
@@ -650,17 +644,11 @@ static int enter_app(wctx_t* c, const fp_req_t* r) {
 	pid_t mon = watch_client(c->conn);
 	if (tty_mask != 0 &&
 	    terminal_open(&pty_master, &pty_slave, tty_mask) != 0) {
-		if (mon > 0) {
-			(void)kill(mon, SIGTERM);
-			(void)waitpid(mon, NULL, 0);
-		}
+		watcher_stop(mon);
 		goto out;
 	}
 	rc = cmd_enter(r->u.enter.instance, argv);
-	if (mon > 0) {
-		(void)kill(mon, SIGTERM);
-		(void)waitpid(mon, NULL, 0);
-	}
+	watcher_stop(mon);
 out:
 	fflush(stdout);
 	fflush(stderr);
@@ -698,9 +686,8 @@ static void run_request(wctx_t* c, uint32_t id, fp_req_t* r, int* fds,
 			"run needs the caller's stdio first (STDIO)");
 		return;
 	}
-	// Each of the three is handled on its own: one that is a terminal gets
-	// a pty of ours (the caller's own is relayed to it, never handed
-	// over), and one that is a file or pipe is handed over as it is.
+	// A terminal gets a pty of ours (the caller's own is relayed, never handed over);
+	// a file or pipe is handed over as it is.
 	if (!forward_parse(r->u.run.forward, targets, &ntargets) ||
 	    ntargets != nfds) {
 		for (size_t i = 0; i < nfds; i++) close(fds[i]);
@@ -746,353 +733,412 @@ static void emit_instance(bool started, const char* app_id) {
 	(void)bus_emit_event(topic, &ev);
 }
 
-static void handle(wctx_t* c, uint32_t id, fp_req_t* r) {
-	int rc;
+static void hello_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	if (r->u.hello.version != FP_PROTO_VERSION) {
+		ack_err(c, id, FP_E_UNSUPPORTED,
+			"unsupported protocol version");
+		return;
+	}
+	if (r->u.hello.client == NULL ||
+	    !flatpkg_client_name_ok(r->u.hello.client)) {
+		ack_err(c, id, FP_E_INVALID, "invalid client name");
+		return;
+	}
+	snprintf(c->client, sizeof(c->client), "%s", r->u.hello.client);
+	c->hello = true;
+	ack_ok(c, id, 0);
+}
 
+static void env_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	worker_env_apply(r->u.env.vars, r->u.env.nvars, c->uid);
+	ack_ok(c, id, 0);
+}
+
+static void subscribe_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	if (!fp_topic_valid(r->u.sub.topic) ||
+	    bus_subscribe(r->u.sub.topic) != 0)
+		ack_err(c, id, FP_E_INVALID, "cannot follow that topic");
+	else
+		c->pending_sub = id;
+}
+
+static void unsubscribe_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	if (!fp_topic_valid(r->u.sub.topic) ||
+	    bus_unsubscribe(r->u.sub.topic) != 0)
+		ack_err(c, id, FP_E_INVALID, "cannot drop that topic");
+	else
+		ack_ok(c, id, 0);
+}
+
+static void cancel_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	if (bus_cancel(r->u.cancel.op_id) != 0)
+		ack_err(c, id, FP_E_INTERNAL, "cannot reach the broker");
+	else
+		c->pending_cancel = id;
+}
+
+static void changeset_build(const fp_req_t* r, flatpkg_changeset_t* cs) {
+	memset(cs, 0, sizeof(*cs));
+	if (r->u.apply.nrows == 0) return;
+	cs->items = calloc(r->u.apply.nrows, sizeof(*cs->items));
+	if (cs->items == NULL) return;
+	cs->count = r->u.apply.nrows;
+	for (size_t k = 0; k < cs->count; k++) {
+		const fp_change_row_t* row = &r->u.apply.rows[k];
+		cs->items[k].type = (flatpkg_change_type_t)row->type;
+		cs->items[k].ref = strdup(row->ref);
+		cs->items[k].old_version = row->old_version != NULL
+						   ? strdup(row->old_version)
+						   : NULL;
+		cs->items[k].new_version = row->new_version != NULL
+						   ? strdup(row->new_version)
+						   : NULL;
+	}
+}
+
+static void changeset_rows_free(flatpkg_changeset_t* cs) {
+	if (cs->items == NULL) return;
+	for (size_t k = 0; k < cs->count; k++) {
+		free(cs->items[k].ref);
+		free(cs->items[k].old_version);
+		free(cs->items[k].new_version);
+	}
+	free(cs->items);
+}
+
+static void changeset_announce(const flatpkg_changeset_t* cs) {
+	for (size_t k = 0; k < cs->count; k++) {
+		const flatpkg_change_t* row = &cs->items[k];
+		const char* action = NULL;
+		switch (row->type) {
+		case FP_CHANGE_INSTALL: action = "install"; break;
+		case FP_CHANGE_UPGRADE: action = "upgrade"; break;
+		case FP_CHANGE_DOWNGRADE: action = "downgrade"; break;
+		case FP_CHANGE_REMOVE: action = "remove"; break;
+		case FP_CHANGE_REINSTALL: action = "reinstall"; break;
+		default: break;
+		}
+		if (action != NULL) emit_store(action, row->ref);
+	}
+}
+
+static void apply_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	flatpkg_changeset_t cs;
+	int rc = 1;
+
+	op_start(c, id, 14, "apply");
+	changeset_build(r, &cs);
+	if (r->u.apply.nrows > 0 && cs.items == NULL) {
+		fpkg_errorf("out of memory");
+		goto out;
+	}
+	flatpkg_lock();
+	if (changeset_apply(&cs, nz(r->u.apply.remote)) != 0) {
+		flatpkg_unlock();
+		goto out;
+	}
+	changeset_announce(&cs);
+	flatpkg_unlock();
+	rc = 0;
+out:
+	changeset_rows_free(&cs);
+	op_finish(c, rc, "apply failed");
+}
+
+static void prefetch_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	int rc = 0;
+
+	op_start(c, id, 15, "prefetch");
+	for (size_t k = 0; k < r->u.prefetch.nrefs; k++) {
+		char* commit = NULL;
+		char* meta = NULL;
+		if (ostree_fetch_ref_metadata(nz(r->u.prefetch.remote),
+					      r->u.prefetch.refs[k], &commit,
+					      &meta) != 0) {
+			rc = 1;
+			continue;
+		}
+		fp_event_t ev;
+		memset(&ev, 0, sizeof(ev));
+		ev.type = FP_EV_META;
+		ev.u.meta.ref = r->u.prefetch.refs[k];
+		ev.u.meta.commit = commit;
+		ev.u.meta.metadata = meta;
+		send_event(c, &ev);
+		free(commit);
+		free(meta);
+	}
+	op_finish(c, rc, "prefetch failed");
+}
+
+// The client's state namespace is created on first use, never named by the
+// caller.
+static bool client_state_dir(const wctx_t* c) {
+	char dir[PATH_MAX];
+
+	snprintf(dir, sizeof(dir), "%s/clients", store_root());
+	if (mkdir(dir, 0755) != 0 && errno != EEXIST) return false;
+	snprintf(dir, sizeof(dir), "%s/clients/%s", store_root(), c->client);
+	return mkdir(dir, 0755) == 0 || errno == EEXIST;
+}
+
+static void client_declare_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	if (!c->hello) {
+		ack_err(c, id, FP_E_INVALID, "HELLO first");
+		return;
+	}
+	for (size_t k = 0; k < c->nclient_files; k++)
+		free(c->client_files[k]);
+	c->nclient_files = 0;
+	for (size_t k = 0; k < r->u.client_declare.nnames; k++) {
+		const char* name = r->u.client_declare.names[k];
+		char path[PATH_MAX];
+		if (flatpkg_client_path(c->client, name, path,
+					sizeof(path)) != 0) {
+			ack_err(c, id, FP_E_INVALID, "invalid state name");
+			return;
+		}
+		c->client_files[c->nclient_files++] = strdup(name);
+	}
+	if (!client_state_dir(c)) {
+		ack_err(c, id, FP_E_INTERNAL,
+			"cannot create the client state");
+		return;
+	}
+	ack_ok(c, id, 0);
+}
+
+static bool client_file_declared(const wctx_t* c, const char* name) {
+	for (size_t k = 0; k < c->nclient_files; k++)
+		if (strcmp(c->client_files[k], name) == 0) return true;
+	return false;
+}
+
+static void client_state_write(wctx_t* c, uint32_t id, const fp_req_t* r,
+			       const char* path) {
+	if (!client_state_dir(c)) {
+		ack_err(c, id, FP_E_INTERNAL, "cannot create the client state");
+		return;
+	}
+	char tmp[PATH_MAX];
+	snprintf(tmp, sizeof(tmp), "%s.tmp.%u", path, (unsigned)getpid());
+	FILE* f = fopen(tmp, "w");
+	if (f == NULL) {
+		ack_err(c, id, FP_E_INTERNAL, "cannot write the client state");
+		return;
+	}
+	const char* data = r->u.client_state.data;
+	size_t len = strlen(data);
+	bool ok = fwrite(data, 1, len, f) == len;
+	ok = fflush(f) == 0 && ok;
+	ok = fsync(fileno(f)) == 0 && ok;
+	ok = fclose(f) == 0 && ok;
+	if (!ok || rename(tmp, path) != 0) {
+		unlink(tmp);
+		ack_err(c, id, FP_E_INTERNAL, "cannot store the client state");
+		return;
+	}
+	ack_ok(c, id, 0);
+}
+
+static void client_state_read(wctx_t* c, uint32_t id, const fp_req_t* r,
+			      const char* path) {
+	op_start(c, id, 16, "state");
+	int rc = 0;
+	char* data = NULL;
+	FILE* f = fopen(path, "r");
+	if (f != NULL) {
+		if (fseek(f, 0, SEEK_END) == 0) {
+			long n = ftell(f);
+			if (n >= 0 && n <= 1024 * 1024 &&
+			    fseek(f, 0, SEEK_SET) == 0) {
+				data = calloc((size_t)n + 1, 1);
+				if (data != NULL &&
+				    fread(data, 1, (size_t)n, f) !=
+					    (size_t)n) {
+					free(data);
+					data = NULL;
+				}
+			}
+		}
+		fclose(f);
+	}
+	if (data == NULL && errno != ENOENT) rc = 1;
+	fp_event_t ev;
+	memset(&ev, 0, sizeof(ev));
+	ev.type = FP_EV_CLIENT_STATE;
+	ev.u.client_state.name = r->u.client_state.name;
+	ev.u.client_state.data = data != NULL ? data : (char*)"";
+	send_event(c, &ev);
+	free(data);
+	op_finish(c, rc, "state read failed");
+}
+
+static void client_state_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	char path[PATH_MAX];
+
+	if (!c->hello ||
+	    flatpkg_client_path(c->client, r->u.client_state.name, path,
+				sizeof(path)) != 0) {
+		ack_err(c, id, FP_E_INVALID, "invalid state name");
+		return;
+	}
+	if (!client_file_declared(c, r->u.client_state.name)) {
+		ack_err(c, id, FP_E_INVALID, "state file was not declared");
+		return;
+	}
+	if (r->u.client_state.flags & FP_CLIENT_STATE_WRITE)
+		client_state_write(c, id, r, path);
+	else
+		client_state_read(c, id, r, path);
+}
+
+static void rollback_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	op_start(c, id, 5, "rollback");
+	int rc = cmd_rollback(r->u.rollback.ref, nz(r->u.rollback.commit));
+	if (rc == 0) emit_store("rollback", r->u.rollback.ref);
+	op_finish(c, rc, "rollback failed");
+}
+
+static void kill_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	op_start(c, id, 7, "kill");
+	int rc = cmd_kill(r->u.kill.instance);
+	if (rc == 0) emit_instance(false, r->u.kill.instance);
+	op_finish(c, rc, "kill failed");
+}
+
+static void import_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	op_start(c, id, 8, "import");
+	int rc = cmd_import(r->u.import.path);
+	if (rc == 0) emit_store("import", r->u.import.path);
+	op_finish(c, rc, "import failed");
+}
+
+static void remote_add_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	op_start(c, id, 9, "remote-add");
+	int rc = cmd_remote_add(r->u.remote_add.name,
+				nz(r->u.remote_add.url),
+				nz(r->u.remote_add.from));
+	if (rc == 0) emit_remote(r->u.remote_add.name);
+	op_finish(c, rc, "remote-add failed");
+}
+
+static void remote_delete_request(wctx_t* c, uint32_t id,
+				  const fp_req_t* r) {
+	op_start(c, id, 10, "remote-delete");
+	int rc = cmd_remote_delete(r->u.remote_delete.name);
+	if (rc == 0) emit_remote(r->u.remote_delete.name);
+	op_finish(c, rc, "remote-delete failed");
+}
+
+static void override_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	op_start(c, id, 10, "override");
+	int rc = cmd_override_system(r->u.override.app_id,
+				     r->u.override.flags,
+				     r->u.override.changes);
+	op_finish(c, rc, "override failed");
+}
+
+static void exports_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	op_start(c, id, 13, "exports");
+	int rc = cmd_exports();
+	op_finish(c, rc, "exports failed");
+}
+
+static void appstream_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	const char* arch = nz(r->u.appstream.arch);
+	const char* remote = nz(r->u.appstream.remote);
+	char** remotes = NULL;
+	size_t nrem = 0;
+
+	if (arch == NULL) arch = "x86_64";
+	if (remote != NULL) {
+		remotes = malloc(sizeof(*remotes));
+		if (remotes == NULL) {
+			ack_err(c, id, FP_E_INTERNAL, "out of memory");
+			return;
+		}
+		remotes[0] = strdup(remote);
+		nrem = 1;
+	} else {
+		remotes = ostree_remote_names(&nrem);
+	}
+	op_start(c, id, 4, "appstream");
+	int rc = 0;
+	for (size_t i = 0; i < nrem; i++) {
+		if (ostree_appstream_deploy(remotes[i], arch) != 0 ||
+		    ostree_appstream_extract(remotes[i], arch) != 0) {
+			rc = -1;
+			break;
+		}
+	}
+	for (size_t i = 0; i < nrem; i++) free(remotes[i]);
+	free(remotes);
+	op_finish(c, rc, "appstream failed");
+}
+
+static void handle(wctx_t* c, uint32_t id, fp_req_t* r) {
 	if (!c->hello && r->type != FP_REQ_HELLO) {
 		ack_err(c, id, FP_E_INVALID, "the first request must be HELLO");
 		return;
 	}
 	switch (r->type) {
 	case FP_REQ_HELLO:
-		if (r->u.hello.version != FP_PROTO_VERSION) {
-			ack_err(c, id, FP_E_UNSUPPORTED,
-				"unsupported protocol version");
-			return;
-		}
-		if (r->u.hello.client == NULL ||
-		    !flatpkg_client_name_ok(r->u.hello.client)) {
-			ack_err(c, id, FP_E_INVALID, "invalid client name");
-			return;
-		}
-		snprintf(c->client, sizeof(c->client), "%s",
-			 r->u.hello.client);
-		c->hello = true;
-		ack_ok(c, id, 0);
+		hello_request(c, id, r);
 		return;
 	case FP_REQ_ENV:
-		worker_env_apply(r->u.env.vars, r->u.env.nvars, c->uid);
-		ack_ok(c, id, 0);
+		env_request(c, id, r);
 		return;
 	case FP_REQ_SUBSCRIBE:
-		if (!fp_topic_valid(r->u.sub.topic) ||
-		    bus_subscribe(r->u.sub.topic) != 0)
-			ack_err(c, id, FP_E_INVALID, "cannot follow that topic");
-		else
-			c->pending_sub = id;
+		subscribe_request(c, id, r);
 		return;
 	case FP_REQ_UNSUBSCRIBE:
-		if (!fp_topic_valid(r->u.sub.topic) ||
-		    bus_unsubscribe(r->u.sub.topic) != 0)
-			ack_err(c, id, FP_E_INVALID, "cannot drop that topic");
-		else
-			ack_ok(c, id, 0);
+		unsubscribe_request(c, id, r);
 		return;
 	case FP_REQ_CANCEL:
-		// Best effort: the broker signals the worker that owns the
-		// operation; the finished event says what happened.
-		if (bus_cancel(r->u.cancel.op_id) != 0)
-			ack_err(c, id, FP_E_INTERNAL, "cannot reach the broker");
-		else
-			c->pending_cancel = id;
+		cancel_request(c, id, r);
 		return;
-	case FP_REQ_APPLY: {
-		// A solved changeset from the caller: this side executes rows, it
-		// does not decide what they should be.
-		flatpkg_changeset_t cs;
-		memset(&cs, 0, sizeof(cs));
-		op_start(c, id, 14, "apply");
-		rc = 1;
-		if (r->u.apply.nrows > 0) {
-			cs.items = calloc(r->u.apply.nrows, sizeof(*cs.items));
-			if (cs.items == NULL) {
-				fpkg_errorf("out of memory");
-				goto apply_out;
-			}
-			cs.count = r->u.apply.nrows;
-			for (size_t k = 0; k < cs.count; k++) {
-				const fp_change_row_t* row = &r->u.apply.rows[k];
-				cs.items[k].type =
-					(flatpkg_change_type_t)row->type;
-				cs.items[k].ref = strdup(row->ref);
-				cs.items[k].old_version =
-					row->old_version != NULL
-						? strdup(row->old_version)
-						: NULL;
-				cs.items[k].new_version =
-					row->new_version != NULL
-						? strdup(row->new_version)
-						: NULL;
-			}
-		}
-		flatpkg_lock();
-		if (changeset_apply(&cs, nz(r->u.apply.remote)) != 0) {
-			flatpkg_unlock();
-			goto apply_out;
-		}
-		for (size_t k = 0; k < cs.count; k++) {
-			const flatpkg_change_t* row = &cs.items[k];
-			const char* action = NULL;
-			switch (row->type) {
-			case FP_CHANGE_INSTALL:
-				action = "install";
-				break;
-			case FP_CHANGE_UPGRADE:
-				action = "upgrade";
-				break;
-			case FP_CHANGE_DOWNGRADE:
-				action = "downgrade";
-				break;
-			case FP_CHANGE_REMOVE:
-				action = "remove";
-				break;
-			case FP_CHANGE_REINSTALL:
-				action = "reinstall";
-				break;
-			default:
-				break;
-			}
-			if (action != NULL) emit_store(action, row->ref);
-		}
-		flatpkg_unlock();
-		rc = 0;
-apply_out:
-		if (cs.items != NULL) {
-			for (size_t k = 0; k < cs.count; k++) {
-				free(cs.items[k].ref);
-				free(cs.items[k].old_version);
-				free(cs.items[k].new_version);
-			}
-			free(cs.items);
-		}
-		op_finish(c, rc, "apply failed");
+	case FP_REQ_APPLY:
+		apply_request(c, id, r);
 		return;
-	}
-	case FP_REQ_PREFETCH: {
-		op_start(c, id, 15, "prefetch");
-		rc = 0;
-		for (size_t k = 0; k < r->u.prefetch.nrefs; k++) {
-			char* commit = NULL;
-			char* meta = NULL;
-			if (ostree_fetch_ref_metadata(
-				    nz(r->u.prefetch.remote),
-				    r->u.prefetch.refs[k], &commit, &meta) !=
-			    0) {
-				rc = 1;
-				continue;
-			}
-			fp_event_t ev;
-			memset(&ev, 0, sizeof(ev));
-			ev.type = FP_EV_META;
-			ev.u.meta.ref = r->u.prefetch.refs[k];
-			ev.u.meta.commit = commit;
-			ev.u.meta.metadata = meta;
-			send_event(c, &ev);
-			free(commit);
-			free(meta);
-		}
-		op_finish(c, rc, "prefetch failed");
+	case FP_REQ_PREFETCH:
+		prefetch_request(c, id, r);
 		return;
-	}
-	case FP_REQ_CLIENT_DECLARE: {
-		char dir[PATH_MAX];
-		if (!c->hello) {
-			ack_err(c, id, FP_E_INVALID, "HELLO first");
-			return;
-		}
-		for (size_t k = 0; k < c->nclient_files; k++)
-			free(c->client_files[k]);
-		c->nclient_files = 0;
-		for (size_t k = 0; k < r->u.client_declare.nnames; k++) {
-			const char* name = r->u.client_declare.names[k];
-			char path[PATH_MAX];
-			if (flatpkg_client_path(c->client, name, path,
-						sizeof(path)) != 0) {
-				ack_err(c, id, FP_E_INVALID,
-					"invalid state name");
-				return;
-			}
-			c->client_files[c->nclient_files++] = strdup(name);
-		}
-		snprintf(dir, sizeof(dir), "%s/clients", store_root());
-		(void)mkdir(dir, 0755);
-		snprintf(dir, sizeof(dir), "%s/clients/%s", store_root(),
-			 c->client);
-		if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
-			ack_err(c, id, FP_E_INTERNAL,
-				"cannot create the client state");
-			return;
-		}
-		ack_ok(c, id, 0);
+	case FP_REQ_CLIENT_DECLARE:
+		client_declare_request(c, id, r);
 		return;
-	}
-	case FP_REQ_CLIENT_STATE: {
-		char path[PATH_MAX];
-		bool declared = false;
-		if (!c->hello ||
-		    flatpkg_client_path(c->client, r->u.client_state.name,
-					path, sizeof(path)) != 0) {
-			ack_err(c, id, FP_E_INVALID, "invalid state name");
-			return;
-		}
-		for (size_t k = 0; k < c->nclient_files; k++)
-			if (strcmp(c->client_files[k],
-				   r->u.client_state.name) == 0)
-				declared = true;
-		if (!declared) {
-			ack_err(c, id, FP_E_INVALID,
-				"state file was not declared");
-			return;
-		}
-		if (r->u.client_state.flags & FP_CLIENT_STATE_WRITE) {
-			char dir[PATH_MAX];
-			snprintf(dir, sizeof(dir), "%s/clients", store_root());
-			(void)mkdir(dir, 0755);
-			snprintf(dir, sizeof(dir), "%s/clients/%s",
-				 store_root(), c->client);
-			if (mkdir(dir, 0755) != 0 && errno != EEXIST) {
-				ack_err(c, id, FP_E_INTERNAL,
-					"cannot create the client state");
-				return;
-			}
-			char tmp[PATH_MAX];
-			snprintf(tmp, sizeof(tmp), "%s.tmp.%u", path,
-				 (unsigned)getpid());
-			FILE* f = fopen(tmp, "w");
-			if (f == NULL) {
-				ack_err(c, id, FP_E_INTERNAL,
-					"cannot write the client state");
-				return;
-			}
-			const char* data = r->u.client_state.data;
-			size_t len = strlen(data);
-			bool ok = fwrite(data, 1, len, f) == len;
-			ok = fflush(f) == 0 && ok;
-			ok = fsync(fileno(f)) == 0 && ok;
-			ok = fclose(f) == 0 && ok;
-			if (!ok || rename(tmp, path) != 0) {
-				unlink(tmp);
-				ack_err(c, id, FP_E_INTERNAL,
-					"cannot store the client state");
-				return;
-			}
-			ack_ok(c, id, 0);
-			return;
-		}
-		op_start(c, id, 16, "state");
-		int rc = 0;
-		char* data = NULL;
-		FILE* f = fopen(path, "r");
-		if (f != NULL) {
-			if (fseek(f, 0, SEEK_END) == 0) {
-				long n = ftell(f);
-				if (n >= 0 && n <= 1024 * 1024 &&
-				    fseek(f, 0, SEEK_SET) == 0) {
-					data = calloc((size_t)n + 1, 1);
-					if (data != NULL &&
-					    fread(data, 1, (size_t)n, f) !=
-						    (size_t)n) {
-						free(data);
-						data = NULL;
-					}
-				}
-			}
-			fclose(f);
-		}
-		if (data == NULL && errno != ENOENT) rc = 1;
-		fp_event_t ev;
-		memset(&ev, 0, sizeof(ev));
-		ev.type = FP_EV_CLIENT_STATE;
-		ev.u.client_state.name = r->u.client_state.name;
-		ev.u.client_state.data = data != NULL ? data : (char*)"";
-		send_event(c, &ev);
-		free(data);
-		op_finish(c, rc, "state read failed");
+	case FP_REQ_CLIENT_STATE:
+		client_state_request(c, id, r);
 		return;
-	}
 	case FP_REQ_ROLLBACK:
-		op_start(c, id, 5, "rollback");
-		rc = cmd_rollback(r->u.rollback.ref, nz(r->u.rollback.commit));
-		if (rc == 0)
-			emit_store("rollback", r->u.rollback.ref);
-		op_finish(c, rc, "rollback failed");
+		rollback_request(c, id, r);
 		return;
 	case FP_REQ_KILL:
-		op_start(c, id, 7, "kill");
-		rc = cmd_kill(r->u.kill.instance);
-		if (rc == 0) emit_instance(false, r->u.kill.instance);
-		op_finish(c, rc, "kill failed");
+		kill_request(c, id, r);
 		return;
 	case FP_REQ_IMPORT:
-		op_start(c, id, 8, "import");
-		rc = cmd_import(r->u.import.path);
-		if (rc == 0) emit_store("import", r->u.import.path);
-		op_finish(c, rc, "import failed");
+		import_request(c, id, r);
 		return;
 	case FP_REQ_REMOTE_ADD:
-		op_start(c, id, 9, "remote-add");
-		rc = cmd_remote_add(r->u.remote_add.name,
-				    nz(r->u.remote_add.url),
-				    nz(r->u.remote_add.from));
-		if (rc == 0) emit_remote(r->u.remote_add.name);
-		op_finish(c, rc, "remote-add failed");
+		remote_add_request(c, id, r);
 		return;
 	case FP_REQ_REMOTE_DELETE:
-		op_start(c, id, 10, "remote-delete");
-		rc = cmd_remote_delete(r->u.remote_delete.name);
-		if (rc == 0) emit_remote(r->u.remote_delete.name);
-		op_finish(c, rc, "remote-delete failed");
+		remote_delete_request(c, id, r);
 		return;
 	case FP_REQ_OVERRIDE:
-		op_start(c, id, 10, "override");
-		rc = cmd_override_system(r->u.override.app_id,
-					 r->u.override.flags,
-					 r->u.override.changes);
-		op_finish(c, rc, "override failed");
+		override_request(c, id, r);
 		return;
 	case FP_REQ_EXPORTS:
-		op_start(c, id, 13, "exports");
-		rc = cmd_exports();
-		op_finish(c, rc, "exports failed");
+		exports_request(c, id, r);
 		return;
-	case FP_REQ_APPSTREAM: {
-		const char* arch = nz(r->u.appstream.arch);
-		if (*arch == '\0') arch = "x86_64";
-		char** remotes = NULL;
-		size_t nrem = 0;
-		if (*nz(r->u.appstream.remote) != '\0') {
-			remotes = malloc(sizeof(*remotes));
-			if (remotes == NULL) {
-				ack_err(c, id, FP_E_INTERNAL, "out of memory");
-				return;
-			}
-			remotes[0] = strdup(r->u.appstream.remote);
-			nrem = 1;
-		} else {
-			remotes = ostree_remote_names(&nrem);
-		}
-		op_start(c, id, 4, "appstream");
-		rc = 0;
-		for (size_t i = 0; i < nrem; i++) {
-			if (ostree_appstream_deploy(remotes[i], arch) != 0 ||
-			    ostree_appstream_extract(remotes[i], arch) != 0) {
-				rc = -1;
-				break;
-			}
-		}
-		for (size_t i = 0; i < nrem; i++) free(remotes[i]);
-		free(remotes);
-		op_finish(c, rc, "appstream failed");
+	case FP_REQ_APPSTREAM:
+		appstream_request(c, id, r);
 		return;
-	}
 	case FP_REQ_INSTALL_BUNDLE:
 	case FP_REQ_STDIO:
-		// handled where the descriptors are received
 		ack_err(c, id, FP_E_INVALID, "no descriptors came with it");
 		return;
 	case FP_REQ_RUN:
-		// run_request() serves it with the frame's descriptors;
-		// reaching here means they were not passed on.
 		ack_err(c, id, FP_E_INTERNAL,
 			"run reached the wrong dispatcher");
 		return;
@@ -1105,8 +1151,6 @@ apply_out:
 	}
 }
 
-// Write every message the broker forwarded to this connection, and answer
-// the subscription/cancel requests whose acknowledgement it carries.
 static int pump_bus(wctx_t* c) {
 	char frame[BUS_MAX_MSG];
 	size_t len;
@@ -1139,9 +1183,8 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 	(void)signal(SIGUSR1, on_cancel);
 	(void)signal(SIGHUP, on_client_gone);
 	bus_worker_init(bus_fd);
-	// Move the control socket out of the range a forwarded descriptor may
-	// land in (see FP_MAX_FDS): a dup2 onto the caller's target must not
-	// overwrite the connection this worker answers on.
+	// Move the control socket out of the forwarded-descriptor range (FP_MAX_FDS): a
+	// dup2 onto a caller target must not overwrite the connection this worker answers on.
 	int high = fcntl(conn, F_DUPFD_CLOEXEC, FP_MAX_FDS);
 	if (high < 0) {
 		fpkg_errorf("cannot move the control socket: %s",
@@ -1174,7 +1217,6 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 	// value the caller exported cannot survive.
 	unsetenv("FLATPKG_APP_TTY");
 	unsetenv("FLATPKG_APP_MASTER");
-	// Nobody to ask: the client asks first and sends a decided request.
 	setenv("FLATPKG_INTERACTIVE", "0", 1);
 
 	// The tools the primitives start must not inherit the socket or read
@@ -1182,7 +1224,9 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 	(void)fcntl(conn, F_SETFD, FD_CLOEXEC);
 	int dn = open("/dev/null", O_RDONLY);
 	if (dn >= 0) {
-		(void)dup2(dn, STDIN_FILENO);
+		if (dup2(dn, STDIN_FILENO) < 0)
+			fpkg_warnf("cannot redirect stdin: %s",
+				   strerror(errno));
 		if (dn > 2) close(dn);
 	}
 	(void)signal(SIGCHLD, SIG_DFL);
@@ -1270,7 +1314,6 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 			if (c.dead) break;
 			continue;
 		}
-		// Descriptors on any other request are not wanted.
 		for (size_t i = 0; i < nfds; i++) close(fds[i]);
 		handle(&c, hdr.id, &req);
 		fp_req_free(&req);

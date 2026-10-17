@@ -57,7 +57,15 @@ cc -O0 -Wall -Wextra -I"$tmp" -o "$tmp/subext" "$HARNESS"
 # leaves the real ref pinning every object of the removed extension.
 . "$(dirname "$0")/commentlib.sh"
 
-OSTREE="$(dirname "$0")/../src/ostree.c"
+# The backend is split across units; discover the one that defines it.
+OSTREE=
+for f in "$(dirname "$0")"/../src/ostree*.c; do
+	if grep -q '^static void uninstall_deploy' "$f"; then
+		OSTREE=$f
+		break
+	fi
+done
+[ -n "$OSTREE" ] || { echo "FAIL: uninstall_deploy() is in no ostree unit"; exit 1; }
 
 # Every call site, in either spelling: two literals (checked directly) or ONE
 # identifier twice, which is only right if the function has already dealt with
@@ -109,7 +117,7 @@ fi
 # and would be disabled by deleting the comment.
 defn=$(carve_function '^uninstall_deploy' "$OSTREE" || true)
 if [ -z "$defn" ]; then
-	echo "FAIL: uninstall_deploy()'s definition was not found in ostree.c."
+	echo "FAIL: uninstall_deploy()'s definition was not found in the ostree units."
 	exit 1
 fi
 # Match the PARAMETER LIST, not the whole carve: the body still says ref_kind, so a
@@ -137,8 +145,9 @@ echo "ok   every uninstall_deploy() call site passes a ref_kind the store has"
 # report the violation at the wrong line.  A call after a trailing /* ... */ is missed.
 code_grep() { grep -n "$@" | grep -vE '^[0-9]+:[[:space:]]*(\*|/\*|//)' || true; }
 
-NDATA=$(code_grep 'write_deploy_data(' "$OSTREE" | wc -l | tr -d ' ')
-passing_deploy=$(code_grep 'write_deploy_data(deploy' "$OSTREE")
+OSTREE_UNITS=$(ls "$(dirname "$0")"/../src/ostree*.c)
+NDATA=$(code_grep 'write_deploy_data(' $OSTREE_UNITS | wc -l | tr -d ' ')
+passing_deploy=$(code_grep 'write_deploy_data(deploy' $OSTREE_UNITS)
 if [ -n "$passing_deploy" ]; then
 	echo "FAIL: write_deploy_data() called with \"deploy\", which is the COMMIT"
 	echo "      dir deploy_checkout() fills.  The function appends the commit"
@@ -153,7 +162,7 @@ fi
 # that introduced the bug tripped the floor instead ("found 6, expected 5") and sent
 # the reader to a count.  5 = declaration, definition, three call sites.
 if [ "${NDATA:-0}" -ne 5 ]; then
-	echo "FAIL: found $NDATA write_deploy_data() references in $OSTREE, expected 5"
+	echo "FAIL: found $NDATA write_deploy_data() references in src/ostree*.c, expected 5"
 	echo "      (the forward declaration, the definition, and three call"
 	echo "      sites).  If they moved, update this check - do not delete it,"
 	echo "      or it stops testing anything."

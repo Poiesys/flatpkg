@@ -109,12 +109,6 @@ static void on_name_owner_changed(GDBusConnection* connection,
 	gpointer value;
 	GList *list = NULL, *l;
 
-	(void)connection;
-	(void)sender_name;
-	(void)object_path;
-	(void)interface_name;
-	(void)signal_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(&s&s&s)", &name, &from, &to);
 	if (name[0] != ':' || strcmp(name, from) != 0 || to[0] != '\0') return;
@@ -174,10 +168,6 @@ static void handle_host_command(GDBusConnection* connection,
 	FdMapEntry* fd_map = NULL;
 	gchar* cwd;
 
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	// Who is asking, before anything else: without this any client on a
 	// private session bus gets a process. The same question the portal's
@@ -353,11 +343,6 @@ static void handle_host_command_signal(
 	guint32 pid = 0, signal_num = 0;
 	gboolean to_pgroup = FALSE;
 
-	(void)connection;
-	(void)object_path;
-	(void)interface_name;
-	(void)method_name;
-	(void)user_data;
 
 	g_variant_get(parameters, "(uub)", &pid, &signal_num, &to_pgroup);
 	if (!host_command_signal_allowed(sender, (pid_t)pid)) {
@@ -379,11 +364,6 @@ static GVariant* dev_get_property(GDBusConnection* connection,
 				  const gchar* interface_name,
 				  const gchar* property_name, GError** error,
 				  gpointer user_data) {
-	(void)connection;
-	(void)sender;
-	(void)object_path;
-	(void)interface_name;
-	(void)user_data;
 
 	if (g_strcmp0(property_name, "version") == 0)
 		return g_variant_new_uint32(HELPER_DEV_VERSION);
@@ -449,8 +429,6 @@ static void on_bus_acquired(GDBusConnection* connection, const gchar* name,
 	GError* error = NULL;
 	guint id;
 
-	(void)name;
-	(void)user_data;
 
 	session_bus = connection;
 	info = g_dbus_node_info_new_for_xml(dev_xml, &error);
@@ -480,8 +458,6 @@ static void on_bus_acquired(GDBusConnection* connection, const gchar* name,
 
 static void on_name_lost(GDBusConnection* connection, const gchar* name,
 			 gpointer user_data) {
-	(void)connection;
-	(void)user_data;
 	dprintf(2,
 		"flatpkg session-helper: cannot own %s (another "
 		"session helper?)\n",
@@ -492,8 +468,6 @@ static void on_name_lost(GDBusConnection* connection, const gchar* name,
 int session_helper_main(int argc, char* argv[]) {
 	GMainLoop* loop;
 
-	(void)argc;
-	(void)argv;
 
 	original_environ = g_get_environ();
 	client_pid_data_hash = g_hash_table_new_full(

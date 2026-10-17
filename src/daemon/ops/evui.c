@@ -1,6 +1,3 @@
-// The privileged code calls the fplog names; the daemon links no terminal
-// library, so they are answered here as plain data and handed to the
-// operation's sink.  Nothing here colours, translates or asks a question.
 #include "flatpkg.h"
 #define FPKG_MODULE "daemon"
 #include "fpkglog.h"
@@ -52,7 +49,6 @@ void fp_vlogf(const char* scope, const char* desc, int level, const char* fmt,
 	char msg[FP_MAX_MSG];
 	char line[FP_MAX_MSG + 128];
 
-	(void)desc;
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	if (g_have_sink && g_sink.log != NULL) {
 		g_sink.log(g_sink.ctx, level, scope ? scope : "daemon", msg);
@@ -128,13 +124,10 @@ void fp_set_prefix(const char* prefix) {
 bool fp_get_verbose(void) { return false; }
 bool fp_is_tty(void) { return false; }
 bool fp_fd_is_tty(int fd) {
-	(void)fd;
 	return false;
 }
 size_t fp_term_cols(void) { return 80; }
 void fp_set_terminal_size(int rows, int cols) {
-	(void)rows;
-	(void)cols;
 }
 
 void fp_out(const char* fmt, ...) {
@@ -164,7 +157,6 @@ void fp_err_raw(const char* s, size_t n) {
 
 bool fp_bar_can_pin(void) { return false; }
 bool fp_bar_pinned(const fp_bar_t* b) {
-	(void)b;
 	return false;
 }
 void fp_bar_dismiss(fp_bar_t* b) { (void)b; }
@@ -218,7 +210,6 @@ fp_spin_t fp_spin_init(const char* scope, const char* desc, const char* label) {
 }
 
 void fp_spin_tick(fp_spin_t* s) {
-	(void)s;
 }
 
 void fp_spin_dismiss(fp_spin_t* s) { (void)s; }
@@ -252,40 +243,31 @@ static void table_as_lines(const char* const* headers, size_t ncols,
 		}
 		if (line[0] != '\0') fp_outl("%s", line);
 	}
-	(void)headers;
 }
 
 void fp_print_table(const char* const* headers, size_t ncols,
 		    const char* const* const* rows, size_t nrows,
 		    fp_table_sink_t sink) {
-	(void)sink;
 	if (fp_record_table(headers, ncols, rows, nrows)) return;
 	table_as_lines(headers, ncols, rows, nrows);
 }
 
-// The daemon has no terminal and must never answer for the caller: a prompt
-// returns its own default, a menu nothing.
+// No terminal here: a prompt returns its own default, a menu nothing.
 
 bool fp_prompt_confirm_default(const char* question, bool dflt) {
-	(void)question;
 	return dflt;
 }
 
 int fp_prompt_menu(const char* title, const char* const* items, size_t n) {
-	(void)title;
-	(void)items;
-	(void)n;
 	return -1;
 }
 
-// The worker's environment has already been filtered by typed_worker.c's
-// allowlist; this is not a second reader of arbitrary caller variables.
+// The worker's environment is already allowlisted; this is no second reader.
 const char* cli_getenv(const char* name) { return getenv(name); }
 
 const char* get_string(const char* msgid) { return msgid; }
 
-// The solver's transaction bar reads the monotonic clock and logs through
-// fp_logf(); both are the CLI's terminal library on the other side.
+// fp_now_ns/fp_logf: the CLI's terminal library on the other side.
 int64_t fp_now_ns(void) {
 	struct timespec ts;
 	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;

@@ -133,7 +133,6 @@ static void tb_emit(tbbuf* t) {
 	fp_out_unlock();
 }
 
-// Cursor is hidden while progress draws.
 static void cursor_hide(void) {
 	char buf[16];
 	tbbuf t;
@@ -235,9 +234,8 @@ static size_t write_left(tbbuf* t, const char* scope_name, const char* desc) {
 
 	if (prefix != NULL && prefix[0] != '\0') {
 		char full[sizeof(base) + 64];
-		// The prefix is the app id, so it belongs in the SCOPE field
-		// and the module in the description: a launch reads "gimp:
-		// export".
+		// The prefix is the app id, so it goes in SCOPE and the module in the
+		// description: a launch reads "gimp: export".
 		snprintf(full, sizeof(full), "%s: %s", prefix, base);
 		raw = full;
 		raw_len = fp_utf8_prefix(raw, budget);
@@ -576,8 +574,6 @@ static bool bar_is_bottom(size_t i) {
 	return strcmp(g_bar_slots[i].scope_name, TB_SCOPE_TRANSACTION) == 0;
 }
 
-// 1-based place of slot i in drawing order: the top bars in registration
-// order, then the bottom one.
 static size_t bar_rank(size_t i) {
 	bool bot = bar_is_bottom(i);
 	size_t rank = 0;

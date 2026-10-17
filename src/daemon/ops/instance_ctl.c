@@ -34,8 +34,6 @@
 
 static fp_logger_t log = {.scope = "instance", .desc = ""};
 
-// Control half of the instance registry: register/unregister, the run-environ
-// snapshot, kill and enter.  The read side is src/shared/instance.c.
 
 static fpkg_error_t write_file(const char* path, const char* content,
 			       mode_t mode) {
@@ -184,13 +182,10 @@ static void extract_arch_branch(const char* app_files_dir, char* arch,
 	snprintf(arch, archlen, "%s", p + 1);
 }
 
-// NUL-separated snapshot of the app's environment.
-// Written from sandbox_exec(), where the environment becomes the app's.
 static int write_run_environ(const char* path, const char* snapshot,
 			     size_t len) {
 	assert(path != NULL);
 	assert(snapshot != NULL || len == 0);
-	// NUL-separated K=V list.
 	(void)unlink(path);
 	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0400);
 	if (fd < 0) return -1;
@@ -312,8 +307,6 @@ void instance_write_bwrapinfo(const char* inst_dir, const char* container_path,
 		fpkg_warnf("write %s: %s", bi_path, strerror(errno));
 }
 
-// Allocate the instance id and host dirs, write the info keyfile and the
-// run-environ snapshot, and hold the .ref flock.
 static void rmdir_contents(const char* dir);
 
 int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
@@ -615,8 +608,6 @@ static int snapshot_env(char** out, size_t* outlen, const fp_metadata_t* meta,
 			const sandbox_plan_t* plan) {
 	assert(out != NULL);
 	assert(outlen != NULL);
-	// meta/plan are optional (loops below NULL-check); only out/outlen
-	// are preconditions.
 	size_t cap = 64, n = 0, total = 1;
 	const char** kv = calloc(cap, sizeof(*kv));
 	char *buf, *p;
@@ -774,9 +765,8 @@ static int require_flatpkg_jail(int jid) {
 	return -1;
 }
 
-// The uid recorded in the jail's `meta` parameter by sandbox_create_jail(), or
-// -1 when there is none (a kernel without the parameter, or not our jail).
-// The kernel keeps it with the jail, so it cannot be edited like a dir.
+// The uid sandbox_create_jail() recorded in the jail's `meta` parameter, or -1
+// (no parameter, or not our jail). The kernel holds it, so a dir cannot fake it.
 static long jail_owner_uid(int jid) {
 	assert(jid > 0);
 	struct jailparam p[2];
@@ -809,9 +799,6 @@ static long jail_owner_uid(int jid) {
 	return owner;
 }
 
-// Who is asking: the uid the daemon read from the connection (FLATPKG_APP_UID,
-// set by the worker from the peer credentials, never from the request), or
-// root when absent.  An unreadable value matches no owner.
 static uid_t caller_uid(void) {
 	const char* s = cli_getenv("FLATPKG_APP_UID");
 	if (s == NULL || *s == '\0') return 0;
@@ -822,9 +809,8 @@ static uid_t caller_uid(void) {
 	return (uid_t)v;
 }
 
-// enter and kill act with root's privileges on a jail, so only for the user the
-// jail was made for (or root).  A jail with no recorded owner cannot be shown to
-// be theirs, so only root may act on it.
+// enter and kill act as root, so only for the user the jail was made for (or root).
+// A jail with no recorded owner cannot be shown to be theirs, so only root acts.
 static int require_jail_owner(int jid) {
 	assert(jid > 0);
 	uid_t me = caller_uid();
@@ -900,9 +886,8 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 			gid = (gid_t)strtoul(cg, NULL, 10);
 	}
 
-	// As in sandbox_exec(): the command must not start while this process
-	// still holds a copy of the pty slave, or FreeBSD drops output queued
-	// when it exits.  The child waits; the parent drops it and opens the gate.
+	// As in sandbox_exec(): the command must not start while this process still holds
+	// a pty slave, or FreeBSD drops queued output. The child waits; the parent drops it.
 	int gate[2];
 	if (pipe(gate) != 0) {
 		fpkg_errorf("pipe: %s", strerror(errno));
@@ -920,9 +905,8 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 	}
 	if (pid == 0) {
 		close(gate[1]);
-		// FLATPKG_APP_TTY (made for a caller on a terminal): the
-		// command gets the pty slave as stdio and controlling terminal,
-		// never the caller's own - before closefrom(), above descriptor 2.
+		// FLATPKG_APP_TTY (caller on a terminal): the command gets the pty slave as stdio
+		// and controlling terminal, never the caller's own, before closefrom().
 		int ttyfd = -1;
 		unsigned ttymask = 0;
 		if (sandbox_app_tty(&ttyfd, &ttymask) && ttyfd >= 0) {
@@ -944,7 +928,6 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 			close(gate[0]);
 		}
 
-		// Rebinds the process root to the jailroot.
 		if (gid != 0) (void)setgroups(1, &gid);
 
 		closefrom(3);
@@ -1018,9 +1001,8 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 	int status = 0;
 	const char* master_s = cli_getenv("FLATPKG_APP_MASTER");
 	if (master_s != NULL && *master_s != '\0') {
-		// A terminal was made for this: carry the caller's keys and
-		// window to it, and its output back, until the command ends.
-		// The caller going away ends the command too.
+		// Carry the caller's keys and window to the pty and its output back until the
+		// command ends; the caller going away ends it too.
 		const int in_fd = (ttymask & 1u) ? 0 : -1;
 		const int out_fd =
 			(ttymask & 2u) ? 1 : ((ttymask & 4u) ? 2 : -1);
