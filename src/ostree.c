@@ -791,41 +791,6 @@ static int tool_ok_bar(char* const argv[], const char* what,
 	return tool_ok_bar_q(argv, what, label, false);
 }
 void spinner_tick_cb(void* arg) { fp_spin_tick((fp_spin_t*)arg); }
-static int tool_ok_spin(char* const argv[], const char* what,
-			const char* label) {
-	tool_res_t res;
-	fp_spin_t sp = fp_spin_init(FPKG_MODULE, "", label);
-	// The spinner line is replaced by its result, so on a terminal there is
-	// nothing for a "started" line to add; a log still wants it.
-	if (!fp_is_tty()) fpkg_infof("Started %s", label);
-	if (ostree_run_cb(argv, &res, NULL, NULL, spinner_tick_cb, &sp) != 0) {
-		fp_spin_finishf(&sp, 0, "failed");
-		fpkg_errorf("%s: could not run the ostree tool", what);
-		tool_res_free(&res);
-		return -1;
-	}
-	if (res.rc != 0) {
-		fp_spin_finishf(&sp, 0, "failed");
-		log_tool_stderr(&res);
-		char* err = res.err;
-		if (err && *err) {
-			trim(err);
-			char* last = strrchr(err, '\n');
-			fpkg_errorf("%s failed: %s", what,
-				    last ? last + 1 : err);
-		} else {
-			fpkg_errorf("%s failed (rc %d)", what, res.rc);
-		}
-		tool_res_free(&res);
-		return -1;
-	}
-	// Inside a transaction the operation's own result line says it all.
-	if (flatpkg_txn_active()) fp_spin_dismiss(&sp);
-	else
-		fp_spin_finishf(&sp, 1, "Finished %s", label);
-	tool_res_free(&res);
-	return 0;
-}
 static int tool_ok(char* const argv[], const char* what) {
 	assert(argv != NULL);
 	assert(what != NULL);
@@ -1146,9 +1111,15 @@ int deploy_checkout(const tool_ctx_t* tc, const char* type,
 			(char*)commit, jail_deploy,    NULL};
 	// -U = OSTREE_REPO_CHECKOUT_MODE_USER: skip the chown/xattr init
 	// that, as root, would make the deploy unreadable by the app.
+	// A bar, not a spinner: the worker's spinner never reaches the caller,
+	// and the bar at least names the phase.  This ostree prints no
+	// "Checking out files:" percentage, so it reads 0% until the
+	// transaction's own result line.
 	char label[320];
-	snprintf(label, sizeof(label), "Checking out %s", ref->id);
-	if (tool_ok_spin(argv, "ostree checkout", label) != 0) return -1;
+	snprintf(label, sizeof(label), "Installing %s", ref->id);
+	if (tool_ok_bar_q(argv, "ostree checkout", label,
+			  flatpkg_txn_active()) != 0)
+		return -1;
 
 	if (deploy_out) snprintf(deploy_out, outlen, "%s", host_deploy);
 	return 0;
@@ -1421,7 +1392,7 @@ int ostree_fetch_ref_metadata(const char* remote, const char* request,
 		body = summary_ref_metadata_text(rem, refstr);
 	tool_ctx_t tc;
 	tool_ctx_init(&tc);
-	if (tool_rev_parse(&tc, refstr, mcommit, sizeof(mcommit)) != 0) {
+	if (tool_rev_probe(&tc, refstr, mcommit, sizeof(mcommit)) != 0) {
 		// The summary has what a plan needs; a commit is optional.  If
 		// there is no summary entry either, pull it as root.
 		if (body == NULL) {

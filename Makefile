@@ -61,7 +61,6 @@ all: $(BIN_CLI) $(BIN_DAEMON) $(SHLIB) $(SHIM) $(SECCOMP_SHIM) $(DEVT_SHIM) \
 SHLIB_OBJS=     $(OBJDIR)/shared/metadata.o \
 		$(OBJDIR)/shared/permissions.o \
 		$(OBJDIR)/shared/overrides.o \
-		$(OBJDIR)/shared/extensions.o \
 		$(OBJDIR)/shared/history.o \
 		$(OBJDIR)/shared/profile.o \
 		$(OBJDIR)/shared/dbus.o \
@@ -90,6 +89,7 @@ CLI_OBJS=       $(OBJDIR)/cli/dispatch.o \
 # Daemon binary objects
 DAEMON_OBJS=    $(OBJDIR)/daemon/daemon.o \
 		$(OBJDIR)/daemon/bus.o \
+		$(OBJDIR)/daemon/extensions.o \
 		$(OBJDIR)/daemon/sandbox.o \
 		$(OBJDIR)/daemon/sandbox_root.o \
 		$(OBJDIR)/daemon/sandbox_exec.o \
@@ -114,9 +114,13 @@ POLICY_OBJS=    $(OBJDIR)/cli/solver.o
 DAEMON_LINK=    $(DAEMON_OBJS) $(LEGACY_OBJS) $(POLICY_OBJS) \
 		$(OBJDIR)/daemon/ops/evui.o
 
+# The CLI links no daemon object: `flatpkg daemon` is gone, and the system
+# helper is flatpkgd's entry point.
+CLI_LINK=       $(ENTRY_CLI) $(CLI_OBJS) $(LEGACY_OBJS)
+
 # Shared library
-$(SHLIB): $(SHLIB_OBJS)
-	$(CC) -shared -o $@ $^ $(LDLIBS)
+$(SHLIB): $(SHLIB_OBJS) Makefile
+	$(CC) -shared -o $@ $(SHLIB_OBJS) $(LDLIBS)
 
 # The two binaries no longer share a dispatcher: the daemon's worker speaks
 # only the framed protocol, and the CLI's argv path never runs privileged.
@@ -126,8 +130,8 @@ ENTRY_CLI=      $(OBJDIR)/cli/entry.o
 ENTRY_DAEMON=   $(OBJDIR)/daemon/main.o
 RPATH=          -Wl,-z,origin -Wl,-rpath,'$$ORIGIN:$(PREFIX)/lib' -Wl,--gc-sections
 
-$(BIN_CLI): $(ENTRY_CLI) $(CLI_OBJS) $(LEGACY_OBJS) $(DAEMON_OBJS) $(SHLIB) Makefile
-	$(CC) $(CFLAGS) -o $@ $(ENTRY_CLI) $(CLI_OBJS) $(LEGACY_OBJS) $(DAEMON_OBJS) \
+$(BIN_CLI): $(CLI_LINK) $(SHLIB) Makefile
+	$(CC) $(CFLAGS) -o $@ $(CLI_LINK) \
 	    -L$(BUILD) -lflatpkg_shared $(RPATH) $(LDLIBS)
 
 $(BIN_DAEMON): $(ENTRY_DAEMON) $(DAEMON_LINK) $(SHLIB) Makefile
@@ -158,9 +162,9 @@ $(OBJDIR)/shared/overrides.o: src/shared/overrides.c
 	@mkdir -p $(OBJDIR)/shared
 	$(CC) $(CFLAGS) $(NOENV) -fPIC -MMD -MP -c -o $@ src/shared/overrides.c
 
-$(OBJDIR)/shared/extensions.o: src/shared/extensions.c
-	@mkdir -p $(OBJDIR)/shared
-	$(CC) $(CFLAGS) $(NOENV) -fPIC -MMD -MP -c -o $@ src/shared/extensions.c
+$(OBJDIR)/daemon/extensions.o: src/daemon/extensions.c
+	@mkdir -p $(OBJDIR)/daemon
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/extensions.c
 
 $(OBJDIR)/shared/history.o: src/shared/history.c
 	@mkdir -p $(OBJDIR)/shared
@@ -367,7 +371,7 @@ sinclude $(OBJDIR)/daemon/systemhelper.d
 sinclude $(OBJDIR)/shared/metadata.d
 sinclude $(OBJDIR)/shared/permissions.d
 sinclude $(OBJDIR)/shared/overrides.d
-sinclude $(OBJDIR)/shared/extensions.d
+sinclude $(OBJDIR)/daemon/extensions.d
 sinclude $(OBJDIR)/shared/history.d
 sinclude $(OBJDIR)/shared/profile.d
 sinclude $(OBJDIR)/shared/dbus.d

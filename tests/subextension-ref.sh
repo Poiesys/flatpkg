@@ -220,14 +220,14 @@ fi
 # ---- the launch-time half: enable-if= warns once per GROUP ------------
 # `enable-if=` is parsed and read nowhere, so flatpkg says it ignores it: once per group,
 # not per (target, version).  Three claims below.  commentlib.sh is sourced, never run.
-EXT="$ROOT/src/shared/extensions.c"
+EXT="$ROOT/src/daemon/extensions.c"
 sb=$(strip_comments < "$EXT")
 
 # 1. ONE copy of the sentence.  Zero is a regression (the key is silently
 #    ignored again); two is the defect returning in a second place.
 n=$(printf '%s\n' "$sb" | grep -c 'download-if= instead' || true)
 [ "${n:-0}" -eq 1 ] || {
-	echo "FAIL src/shared/extensions.c has $n copies of the enable-if= warning;"
+	echo "FAIL src/daemon/extensions.c has $n copies of the enable-if= warning;"
 	echo "       one, because it is one rule about one key (round 104)."
 	exit 1
 }

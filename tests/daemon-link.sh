@@ -62,8 +62,28 @@ for want in build/obj/cli/cli.o build/obj/cli/tb_core.o; do
 		note "the CLI no longer links $want"
 done
 
+# The mirror, and the reason `flatpkg daemon` is gone: the CLI carries no
+# daemon object, so it cannot become the daemon even by accident.
+cli_all=$(make -s -C "$ROOT" -V CLI_LINK 2>/dev/null || true)
+[ -n "$cli_all" ] || {
+	echo "FAIL: make -V CLI_LINK printed nothing; the Makefile shape moved"
+	exit 1
+}
+n_cli=$(printf '%s\n' $cli_all | wc -l | tr -d ' ')
+[ "$n_cli" -ge 10 ] ||
+	note "the CLI link has only $n_cli objects; the variable moved"
+cli_bad=$(printf '%s\n' $cli_all |
+	grep -E '/daemon/(daemon|bus|extensions|sandbox|sandbox_root|sandbox_exec|systemhelper)\.o$' ||
+	true)
+[ -z "$cli_bad" ] ||
+	note "the CLI links daemon objects: $(printf '%s' "$cli_bad" | tr '\n' ' ')"
+printf '%s\n' "build/obj/daemon/sandbox_root.o" |
+	grep -qE '/daemon/(daemon|bus|extensions|sandbox|sandbox_root|sandbox_exec|systemhelper)\.o$' ||
+	note "the daemon-object pattern does not recognise sandbox_root.o"
+
 if [ "$fail" -ne 0 ]; then exit 1; fi
 echo "PASS: flatpkgd links the daemon, not the CLI: no cli.o, tb_*.o,"
 echo "      translations.o, client*.o, upgrade.o or main.o; evui.o is its"
-echo "      replacement"
+echo "      replacement.  The CLI links no daemon object, so it has no way"
+echo "      to become the daemon."
 exit 0

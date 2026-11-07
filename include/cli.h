@@ -83,14 +83,25 @@ typedef enum {
 	CMD_REMOTE_LIST,
 	CMD_REMOTE_DELETE,
 	CMD_COMPLETE,
-	CMD_HELP,
-	CMD_DAEMON
+	CMD_HELP
 } cli_cmd_id_t;
 
 // Read argv and the environment into *req.
 int cli_parse(int argc, char* const* argv, cli_req_t* req);
 void cli_req_free(cli_req_t* req);
 cli_cmd_id_t cli_req_cmd(const cli_req_t* req);
+
+// The program entry points that are not commands: `flatpkg portal` and
+// `flatpkg session-helper`, the two per-user D-Bus services.  cli.c owns
+// argv, so it matches the word and keeps the program name for the portal.
+typedef enum {
+	CLI_SERVICE_NONE = 0,
+	CLI_SERVICE_PORTAL,
+	CLI_SERVICE_SESSION_HELPER,
+} cli_service_t;
+
+cli_service_t cli_service_entry(int argc, char* const* argv);
+const char* cli_argv0(void);
 
 // cmd_* handlers.  cmd_run is the daemon's, the rest are the CLI's.
 int cmd_override(const cli_req_t* r);

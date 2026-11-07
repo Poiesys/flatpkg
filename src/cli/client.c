@@ -73,6 +73,11 @@ void client_enter_raw_stdin(void) {
 	g_saved_term.c_lflag |= ICANON | ECHO | ECHOE | ECHOKE | ECHOCTL |
 				ISIG | IEXTEN;
 	g_saved_term.c_oflag |= OPOST | ONLCR;
+	// The app reads raw bytes: ICRNL would turn the caller's Enter into LF
+	// (a TUI reads that as Ctrl-J) and IXON would eat Ctrl-Q.  Output is
+	// still postprocessed, because this end writes the app's text.
+	t.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR |
+		       ICRNL | IXON);
 	t.c_lflag &= ~(ICANON | ECHO | IEXTEN);
 	t.c_cc[VMIN] = 1;
 	t.c_cc[VTIME] = 0;

@@ -47,9 +47,7 @@ and per-syscall filtering
 are not implemented; the source tree documents the exact boundary and the
 gap list against upstream.
 .Pp
-Every command except
-.Cm daemon
-is served by the system daemon over
+Every command is served by the system daemon over
 .Pa /var/run/flatpkg/control.sock
 when it is running.
 The client is never setuid: a setuid client would hand the daemon peer
@@ -332,12 +330,6 @@ makes re-adding a known remote an error instead of a change.
 List the configured remotes.
 .It Cm remote-delete Ar name
 Remove a remote.
-.It Cm daemon
-Run the system service in the foreground.
-Started by
-.Xr rc 8
-as
-.Pa flatpkgd_enable=YES .
 .It Cm help Op Ar command
 Print the main help page, or the page for
 .Ar command .

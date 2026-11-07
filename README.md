@@ -10,6 +10,8 @@
 
 </div>
 
+![flatpkg demo](.gh/demo.gif)
+
 Run **[Flatpak](https://github.com/flatpak/flatpak) Linux applications** on FreeBSD, end to end: install them
 from Flatpak remotes, and run them sandboxed inside a per-launch
 `jail(8)` built from the same primitives Flatpak's own launcher builds

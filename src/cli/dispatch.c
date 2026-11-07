@@ -20,12 +20,15 @@
 
 static fp_logger_t log = {.scope = "run", .desc = ""};
 
-static void kv_row(const char*** rows, const char* (*cells)[2], size_t* m,
-		   const char* key, const char* val) {
+// A property/value table: both `info` tables are keyed pairs.
+enum { KV_COLS = 2, KV_ROWS_MAX = 64 };
+
+static void kv_row(const char*** rows, const char* (*cells)[KV_COLS],
+		   size_t* m, const char* key, const char* val) {
 	assert(rows != NULL);
 	assert(cells != NULL);
 	assert(m != NULL);
-	if (*m >= 64) return;
+	if (*m >= KV_ROWS_MAX) return;
 	cells[*m][0] = key;
 	cells[*m][1] = val;
 	rows[*m] = (const char**)cells[*m];
@@ -44,8 +47,8 @@ int cmd_info(const char* app_id) {
 
 	char v_appid[256], v_runtime[256], v_cmd[256];
 	char v_app_files[PATH_MAX], v_runtime_files[PATH_MAX];
-	const char* cells[64][2];
-	const char** rows[64];
+	const char* cells[KV_ROWS_MAX][KV_COLS];
+	const char** rows[KV_ROWS_MAX];
 	size_t m = 0;
 	snprintf(v_appid, sizeof(v_appid), "%s",
 		 meta.app_id ? meta.app_id : "(none)");
@@ -61,8 +64,8 @@ int cmd_info(const char* app_id) {
 	kv_row(rows, cells, &m, "command", v_cmd);
 	kv_row(rows, cells, &m, "app files", v_app_files);
 	kv_row(rows, cells, &m, "runtime files", v_runtime_files);
-	fp_print_table(headers1, 2, (const char* const* const*)rows, m,
-		       FP_TABLE_OUTPUT);
+	fp_print_table(headers1, FP_TABLE_COLS(headers1),
+		       (const char* const* const*)rows, m, FP_TABLE_OUTPUT);
 
 	fp_out("\n");
 
@@ -77,8 +80,8 @@ int cmd_info(const char* app_id) {
 	for (size_t i = 0; i < meta.filesystems.count; i++)
 		kv_row(rows, cells, &m, "filesystems",
 		       meta.filesystems.items[i]);
-	fp_print_table(headers2, 2, (const char* const* const*)rows, m,
-		       FP_TABLE_OUTPUT);
+	fp_print_table(headers2, FP_TABLE_COLS(headers2),
+		       (const char* const* const*)rows, m, FP_TABLE_OUTPUT);
 
 	fp_metadata_free(&meta);
 	free(sb.app_id);
@@ -157,14 +160,19 @@ int cmd_list(void) {
 		store_list_all_free(entries, n);
 		return 0;
 	}
-	if (n > 128) {
-		fpkg_warnf("listing the first 128 of %zu entries", n);
-		n = 128;
+	const char* headers[] = {"Kind", "Name", "ID", "Version", "Branch",
+				 "Remote"};
+	enum {
+		LIST_SOURCE_MAX = 128,
+		LIST_ROWS_MAX = 1024,
+		LIST_COLS = FP_TABLE_COLS(headers),
+	};
+	if (n > LIST_SOURCE_MAX) {
+		fpkg_warnf("listing the first %d of %zu entries",
+			   LIST_SOURCE_MAX, n);
+		n = LIST_SOURCE_MAX;
 	}
-	const char* headers[] = {"Kind",   "Name",   "ID",	    "Version",
-				 "Branch", "Remote", "Installation"};
-	enum { LIST_ROWS_MAX = 1024 };
-	char* cells[LIST_ROWS_MAX][7];
+	char* cells[LIST_ROWS_MAX][LIST_COLS];
 	const char** rows[LIST_ROWS_MAX];
 	size_t m = 0;
 	bool truncated = false;
@@ -333,17 +341,16 @@ int cmd_list(void) {
 		cells[m][3] = strdup(version);
 		cells[m][4] = strdup(branch);
 		cells[m][5] = strdup(remote);
-		cells[m][6] = strdup("system");
 		rows[m] = (const char**)cells[m];
 		m++;
 	}
-	fp_print_table(headers, 7, (const char* const* const*)rows, m,
+	fp_print_table(headers, LIST_COLS, (const char* const* const*)rows, m,
 		       FP_TABLE_OUTPUT);
 	if (truncated)
 		fpkg_warnf("more than %d entries; not all are listed",
 			   LIST_ROWS_MAX);
 	for (size_t i = 0; i < m; i++)
-		for (int c = 0; c < 7; c++) free(cells[i][c]);
+		for (size_t c = 0; c < LIST_COLS; c++) free(cells[i][c]);
 	store_list_all_free(entries, n);
 	return 0;
 }
@@ -590,21 +597,17 @@ int flatpkg_main(int argc, char* argv[]) {
 }
 
 int cli_entry(int argc, char* argv[]) {
-	// Service entry points: one fixed word, no CLI.  `daemon` takes no argv
-	// at all; the D-Bus helpers pass theirs straight to GLib.
-	if (argc == 2) {
-		static const struct {
-			const char* name;
-			int (*run)(int, char**);
-		} subs[] = {
-			{"portal", portal_main},
-			{"session-helper", session_helper_main},
-			{"system-helper", system_helper_main},
-		};
-		if (strcmp(argv[1], "daemon") == 0) return daemon_main();
-		for (size_t k = 0; k < sizeof(subs) / sizeof(subs[0]); k++)
-			if (strcmp(argv[1], subs[k].name) == 0)
-				return subs[k].run(argc, argv);
+	// The per-user D-Bus services are the CLI's entry points.  cli.c owns
+	// argv, so it is the one that matches the word; this only dispatches.
+	// The daemon and the system helper are flatpkgd's, so no root service
+	// starts here.
+	switch (cli_service_entry(argc, argv)) {
+	case CLI_SERVICE_PORTAL:
+		return portal_main();
+	case CLI_SERVICE_SESSION_HELPER:
+		return session_helper_main();
+	case CLI_SERVICE_NONE:
+		break;
 	}
 
 	// What needs no daemon is decided by the real parser: help, --version, a usage

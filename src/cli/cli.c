@@ -390,6 +390,30 @@ const char* cli_getenv(const char* name) {
 
 char** cli_environ(void) { return environ; }
 
+// The two per-user D-Bus services are program entry points, not commands:
+// the word after `flatpkg` selects one, and this is the only file that reads
+// it.  The program name is kept because the portal re-execs flatpkg.
+static char g_argv0[PATH_MAX];
+
+const char* cli_argv0(void) { return g_argv0; }
+
+cli_service_t cli_service_entry(int argc, char* const* argv) {
+	static const struct {
+		const char* name;
+		cli_service_t svc;
+	} subs[] = {
+		{"portal", CLI_SERVICE_PORTAL},
+		{"session-helper", CLI_SERVICE_SESSION_HELPER},
+	};
+
+	if (argv == NULL || argc < 1) return CLI_SERVICE_NONE;
+	snprintf(g_argv0, sizeof(g_argv0), "%s", argv[0] ? argv[0] : "");
+	if (argc != 2) return CLI_SERVICE_NONE;
+	for (size_t i = 0; i < sizeof(subs) / sizeof(subs[0]); i++)
+		if (strcmp(argv[1], subs[i].name) == 0) return subs[i].svc;
+	return CLI_SERVICE_NONE;
+}
+
 #define G_INSTALL "Application installation and removal"
 #define G_MAINT "System maintenance"
 #define G_QUERY "Querying application information"
@@ -405,9 +429,8 @@ static const char* const groups[] = {G_INSTALL, G_MAINT, G_QUERY, G_RUN,
 	(1u << 1)		  // app's arguments follow the first operand
 #define CLI_CMD_LITERAL (1u << 2) // a leading '-' is the user's text
 #define CLI_CMD_HIDDEN (1u << 3)  // not in the help
-#define CLI_CMD_SERVICE (1u << 4) // `flatpkg daemon`: argv[1] only
 #define CLI_CMD_LOCAL                                                          \
-	(1u << 5) // runs in the unprivileged CLI, no daemon needed
+	(1u << 4) // runs in the unprivileged CLI, no daemon needed
 
 struct cli_cmd {
 	cli_cmd_id_t id;
@@ -544,13 +567,6 @@ static const cli_cmd_t commands[] = {
 	 "environment. `flatpkg COMMAND --help` shows the same page as "
 	 "`flatpkg help COMMAND`.",
 	 no_opts, 0, 1, 0},
-	{CMD_DAEMON, "daemon", NULL, G_MISC,
-	 "Run the system service (root only)", NULL,
-	 "Serve every command over /var/run/flatpkg/control.sock to members "
-	 "of the flatpkg group; the application itself runs as the caller. "
-	 "Normally started by the flatpkgd rc.d script. It must be the only "
-	 "argument.",
-	 no_opts, 0, 0, CLI_CMD_SERVICE},
 	{CMD_COMPLETE, "complete", NULL, G_MISC, "List completion candidates",
 	 "KIND [ARG]",
 	 "KIND is apps, refs, runtimes, world, remotes, instances or "
@@ -598,7 +614,6 @@ static bool refuses_simulate(const char* typed) {
 
 void cli_complete_commands(void) {
 	for (const cli_cmd_t* c = commands; c->name; c++) {
-		if (c->flags & CLI_CMD_SERVICE) continue;
 		fp_outl("%s", c->name);
 		if (c->alias) fp_outl("%s", c->alias);
 	}
@@ -1440,11 +1455,6 @@ int cli_parse(int argc, char* const* argv, cli_req_t* r) {
 			    r->name, r->name);
 		return 1;
 	}
-	if (c->flags & CLI_CMD_SERVICE) {
-		cli_fail(c, "'%s' must be the only argument", c->name);
-		return 1;
-	}
-
 	cli_it_t it;
 	cli_it_init(&it, c, argc, argv, r->g.cmd + 1, false);
 	int o;

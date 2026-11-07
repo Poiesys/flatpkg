@@ -465,7 +465,7 @@ static void on_name_lost(GDBusConnection* connection, const gchar* name,
 	_exit(1);
 }
 
-int session_helper_main(int argc, char* argv[]) {
+int session_helper_main(void) {
 	GMainLoop* loop;
 
 

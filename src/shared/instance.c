@@ -349,8 +349,11 @@ int cmd_ps(const char* columns) {
 
 	const char* headers[] = {"Instance", "PID", "Application", "Jail",
 				 "Root"};
-	enum { PS_ROWS_MAX = 512 };
-	char* cells[PS_ROWS_MAX][5];
+	enum {
+		PS_ROWS_MAX = 512,
+		PS_COLS = FP_TABLE_COLS(headers),
+	};
+	char* cells[PS_ROWS_MAX][PS_COLS];
 	const char** rows[PS_ROWS_MAX];
 	size_t m = 0;
 	bool truncated = false;
@@ -412,7 +415,7 @@ int cmd_ps(const char* columns) {
 	closedir(d);
 
 	if (columns != NULL && *columns != '\0') {
-		static const char* all_names[5] = {
+		static const char* all_names[PS_COLS] = {
 			"instance", "pid", "application", "jail", "root"};
 		int sel[32];
 		int nsel = 0;
@@ -429,12 +432,12 @@ int cmd_ps(const char* columns) {
 					"too many ps columns (max %d)",
 					(int)(sizeof(sel) / sizeof(sel[0])));
 				for (size_t i = 0; i < m; i++)
-					for (int c = 0; c < 5; c++)
+					for (int c = 0; c < PS_COLS; c++)
 						free(cells[i][c]);
 				return 1;
 			}
 			int idx = -1;
-			for (int c = 0; c < 5; c++)
+			for (int c = 0; c < PS_COLS; c++)
 				if (strlen(all_names[c]) == len &&
 				    strncmp(all_names[c], p, len) == 0) {
 					idx = c;
@@ -447,7 +450,7 @@ int cmd_ps(const char* columns) {
 					"root)",
 					(int)len, p);
 				for (size_t i = 0; i < m; i++)
-					for (int c = 0; c < 5; c++)
+					for (int c = 0; c < PS_COLS; c++)
 						free(cells[i][c]);
 				return 1;
 			}
@@ -462,12 +465,13 @@ int cmd_ps(const char* columns) {
 			if (nsel == 0) fp_outl("%s", "");
 		}
 		for (size_t i = 0; i < m; i++)
-			for (int c = 0; c < 5; c++) free(cells[i][c]);
+			for (int c = 0; c < PS_COLS; c++) free(cells[i][c]);
 		return 0;
 	}
 
 	if (m > 0) {
-		fp_print_table(headers, 5, (const char* const* const*)rows, m,
+		fp_print_table(headers, PS_COLS,
+			       (const char* const* const*)rows, m,
 			       FP_TABLE_OUTPUT);
 	} else {
 		fpkg_infof("no running instances");
@@ -476,6 +480,6 @@ int cmd_ps(const char* columns) {
 		fpkg_warnf("more than %d instances; not all are listed",
 			   PS_ROWS_MAX);
 	for (size_t i = 0; i < m; i++)
-		for (int c = 0; c < 5; c++) free(cells[i][c]);
+		for (int c = 0; c < PS_COLS; c++) free(cells[i][c]);
 	return 0;
 }

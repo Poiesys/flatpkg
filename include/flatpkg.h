@@ -708,7 +708,7 @@ void client_leave_raw_stdin(void);
 int daemon_unreachable(int err);
 int flatpkg_main(int argc, char* argv[]);
 
-int portal_main(int argc, char* argv[]);
+int portal_main(void);
 
 #define FLATPAK_HELPER_DEPLOY_FLAGS_UPDATE (1u << 0)
 #define FLATPAK_HELPER_DEPLOY_FLAGS_NO_DEPLOY (1u << 1)
@@ -775,7 +775,7 @@ int ostree_appstream_extract(const char* remote, const char* arch);
 
 int ostree_appstream_deploy(const char* remote, const char* arch);
 
-int session_helper_main(int argc, char* argv[]);
+int session_helper_main(void);
 
 int system_helper_main(int argc, char* argv[]);
 

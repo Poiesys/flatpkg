@@ -30,6 +30,7 @@
 #include <unistd.h>
 
 #include "flatpkg.h"
+#include "cli.h"
 #define FPKG_MODULE "portal"
 #include "fpkglog.h"
 
@@ -2413,9 +2414,11 @@ static void sweep_stale_instances(void) {
 	closedir(d);
 }
 
-int portal_main(int argc, char* argv[]) {
-	if (argv[0] && argv[0][0])
-		snprintf(portal_argv0, sizeof(portal_argv0), "%s", argv[0]);
+int portal_main(void) {
+	const char* argv0 = cli_argv0();
+
+	if (argv0[0])
+		snprintf(portal_argv0, sizeof(portal_argv0), "%s", argv0);
 
 	DBusError err;
 	dbus_error_init(&err);

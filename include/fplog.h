@@ -136,6 +136,10 @@ typedef enum {
 	FP_TABLE_OUTPUT = 1,
 } fp_table_sink_t;
 
+// A table's column count follows from the headers it names: one array, so a
+// header cannot be added without every count and cell loop following.
+#define FP_TABLE_COLS(headers) (sizeof(headers) / sizeof((headers)[0]))
+
 void fp_print_table(const char* const* headers, size_t ncols,
 		    const char* const* const* rows, size_t nrows,
 		    fp_table_sink_t sink);

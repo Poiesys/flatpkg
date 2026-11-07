@@ -196,6 +196,11 @@ void fp_bar_finishf(fp_bar_t* b, int success, const char* fmt, ...) {
 	vsnprintf(msg, sizeof(msg), fmt, ap);
 	va_end(ap);
 	b->finished = 1;
+	// The caller's bar is mirrored from progress events, so without this last
+	// one it stops wherever the tool happened to be when the work ended; the
+	// result line says the work is over, not that the bar got there.
+	if (success && b->total > 0)
+		(void)fp_record_progress(b->label, b->total, b->total);
 	emit_line(b->scope[0] ? b->scope : "daemon", b->desc,
 		  success ? FP_LEVEL_OKAY : FP_LEVEL_ERROR, "%s", msg);
 }

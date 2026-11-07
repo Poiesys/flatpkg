@@ -446,8 +446,11 @@ int cmd_remote_list(void) {
 	}
 	const char* headers[] = {"Name", "URL", "GPG verify", "GPG summary",
 				 "Default branch"};
-	enum { REMOTE_ROWS_MAX = 256 };
-	char* cells[REMOTE_ROWS_MAX][5];
+	enum {
+		REMOTE_ROWS_MAX = 256,
+		REMOTE_COLS = FP_TABLE_COLS(headers),
+	};
+	char* cells[REMOTE_ROWS_MAX][REMOTE_COLS];
 	const char** rows[REMOTE_ROWS_MAX];
 	size_t m = 0;
 	bool truncated = false;
@@ -478,7 +481,8 @@ int cmd_remote_list(void) {
 	}
 	free(remotes);
 	if (m > 0)
-		fp_print_table(headers, 5, (const char* const* const*)rows, m,
+		fp_print_table(headers, REMOTE_COLS,
+			       (const char* const* const*)rows, m,
 			       FP_TABLE_OUTPUT);
 	if (truncated)
 		fpkg_warnf("more than %d remotes; not all are listed",
@@ -713,8 +717,11 @@ int cmd_search(const char* text) {
 		needle[i] = (char)tolower((unsigned char)needle[i]);
 
 	const char* headers[] = {"Kind", "ID", "Arch", "Branch"};
-	enum { SEARCH_ROWS_MAX = 512 };
-	char* cells[SEARCH_ROWS_MAX][4];
+	enum {
+		SEARCH_ROWS_MAX = 512,
+		SEARCH_COLS = FP_TABLE_COLS(headers),
+	};
+	char* cells[SEARCH_ROWS_MAX][SEARCH_COLS];
 	const char** rows[SEARCH_ROWS_MAX];
 	size_t m = 0;
 	bool truncated = false;
@@ -768,7 +775,7 @@ int cmd_search(const char* text) {
 		fpkg_errorf("no matches for '%s'", text);
 		return 1;
 	}
-	fp_print_table(headers, 4, (const char* const* const*)rows, m,
+	fp_print_table(headers, SEARCH_COLS, (const char* const* const*)rows, m,
 		       FP_TABLE_OUTPUT);
 	if (truncated)
 		fpkg_warnf("more than %d matches; refine the search term",

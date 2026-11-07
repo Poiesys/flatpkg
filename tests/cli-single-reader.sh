@@ -1,7 +1,10 @@
 #!/bin/sh
-# cli-single-reader.sh - only cli.o may name getenv/getopt/environ; every
-# other non-shim object rule must carry $(NOENV).  src/daemon/ops/evui.c is
-# the one named exception, named so a second unpoisoned rule cannot hide.
+# cli-single-reader.sh - cli.c is the only reader of the environment and the
+# only comparer of a command-line token.  For the environment: only cli.o may
+# name getenv/getopt/environ, and every other non-shim object rule must carry
+# $(NOENV); src/daemon/ops/evui.c is the one named exception, named so a
+# second unpoisoned rule cannot hide.  For argv: no other file may compare a
+# token, because that is how a command word grew a second parser.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 fail=0
@@ -40,6 +43,31 @@ done
     fail=1
 }
 
+# The argv half.  dispatch.c used to match the service words with
+# strcmp(argv[1], ...), which is exactly the second parser this file exists
+# to prevent; cli_service_entry() moved it into cli.c.  The daemon's own
+# entry point is the one exemption: flatpkgd links no CLI, and its single
+# word is its contract.
+bad=$(grep -rnE 'strn?cmp\(argv\[' "$ROOT/src" --include='*.c' |
+    grep -v 'src/cli/cli.c' | grep -v 'src/daemon/main.c' || true)
+if [ -n "$bad" ]; then
+    echo "FAIL a command-line token is compared outside cli.c:"
+    printf '%s\n' "$bad" | sed 's/^/       /'
+    fail=1
+fi
+# cli.c must still do the matching, or the exemption above covers an empty
+# tree and the check cannot fail.
+own=$(grep -cE 'strn?cmp\(argv\[' "$ROOT/src/cli/cli.c" || true)
+[ "$own" -ge 1 ] || {
+    echo "FAIL cli.c compares no command-line token at all; the carve moved"
+    fail=1
+}
+# And the matcher itself can see the shape it was written for.
+printf '%s\n' 'src/cli/dispatch.c: strcmp(argv[1], "portal")' |
+    grep -qE 'strn?cmp\(argv\[' ||
+    { echo "FAIL the matcher does not recognise an argv comparison"; fail=1; }
+
 if [ "$fail" -ne 0 ]; then exit 1; fi
-echo "PASS: cli is the only reader of the environment, evui excepted"
+echo "PASS: cli is the only reader of the environment, evui excepted, and"
+echo "      the only comparer of a command-line token"
 exit 0

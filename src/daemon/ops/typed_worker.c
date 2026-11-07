@@ -52,6 +52,10 @@ static const char* const env_allow[] = {"XDG_RUNTIME_DIR",
 					"LC_ALL",
 					"LC_MESSAGES",
 					"LANG",
+					// A TUI wants the caller's terminal and colour
+					// capability, not a terminfo-less default.
+					"TERM",
+					"COLORTERM",
 					"SSH_AUTH_SOCK",
 					"PULSE_SERVER",
 					"PULSE_RUNTIME_PATH",

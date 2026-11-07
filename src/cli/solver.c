@@ -822,8 +822,12 @@ void flatpkg_txn_begin(flatpkg_txn_t* t, size_t total) {
 }
 
 static void txn_took(const flatpkg_txn_t* t, char* out, size_t len) {
-	double sec = (double)(fp_now_ns() - t->start_ns) / 1e9;
+	// A no-op change list begins no timer: flatpkg_txn_begin() returns before
+	// it starts one, and the zero would read as "took 55 years".
+	double sec = 0.0;
 
+	if (t->start_ns != 0)
+		sec = (double)(fp_now_ns() - t->start_ns) / 1e9;
 	if (sec < 60.0) snprintf(out, len, "%.1fs", sec);
 	else
 		snprintf(out, len, "%dm %ds", (int)(sec / 60.0), (int)sec % 60);

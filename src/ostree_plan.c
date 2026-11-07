@@ -465,7 +465,7 @@ static void perms_print(const fp_metadata_t* m) {
 		"Shared",   "Sockets",	   "Devices",	 "Filesystems",
 		"Features", "Session bus", "System bus", "Persistent",
 	};
-	char* kvals[8];
+	char* kvals[FP_TABLE_COLS(klabels)];
 	size_t np = 0;
 
 	kvals[np] = perms_join(&m->shared);
@@ -488,8 +488,9 @@ static void perms_print(const fp_metadata_t* m) {
 	if (!np) return;
 
 	const char* headers[] = {"Permission", "Access"};
+	enum { PERM_KEY, PERM_VAL, PERM_COLS = FP_TABLE_COLS(headers) };
 	char*** rows = calloc(np, sizeof(char**));
-	char** cells = calloc(np * 2, sizeof(char*));
+	char** cells = calloc(np * PERM_COLS, sizeof(char*));
 	if (!rows || !cells) {
 		for (size_t i = 0; i < np; i++) free(kvals[i]);
 		free(rows);
@@ -497,27 +498,39 @@ static void perms_print(const fp_metadata_t* m) {
 		return;
 	}
 	for (size_t i = 0; i < np; i++) {
-		rows[i] = &cells[i * 2];
-		cells[i * 2 + 0] = xstrdup(klabels[i]);
-		cells[i * 2 + 1] = kvals[i];
+		rows[i] = &cells[i * PERM_COLS];
+		cells[i * PERM_COLS + PERM_KEY] = xstrdup(klabels[i]);
+		cells[i * PERM_COLS + PERM_VAL] = kvals[i];
 	}
-	fp_print_table(headers, 2, (const char* const* const*)rows, np,
+	fp_print_table(headers, PERM_COLS, (const char* const* const*)rows, np,
 		       FP_TABLE_OUTPUT);
-	for (size_t i = 0; i < np * 2; i++) free(cells[i]);
+	for (size_t i = 0; i < np * PERM_COLS; i++) free(cells[i]);
 	free(rows);
 	free(cells);
 }
 void changeset_show_full(const flatpkg_changeset_t* cs, const char* remote) {
 	assert(cs != NULL);
 
-	const char* headers[] = {"ID", "Arch", "Branch", "Operation", "Remote"};
+	enum {
+		CH_ID,
+		CH_ARCH,
+		CH_BRANCH,
+		CH_OP,
+		CH_REMOTE,
+		CH_COLS,
+	};
+	const char* headers[CH_COLS] = {
+		[CH_ID] = "ID",	      [CH_ARCH] = "Arch",
+		[CH_BRANCH] = "Branch", [CH_OP] = "Operation",
+		[CH_REMOTE] = "Remote",
+	};
 	char*** rows = NULL;
 	char** cells = NULL;
 	size_t nrows = cs->count;
 	size_t nr = 0;
 
 	rows = calloc(nrows, sizeof(char**));
-	cells = calloc(nrows * 5, sizeof(char*));
+	cells = calloc(nrows * CH_COLS, sizeof(char*));
 	if (!rows || !cells) {
 		free(rows);
 		free(cells);
@@ -561,22 +574,26 @@ void changeset_show_full(const flatpkg_changeset_t* cs, const char* remote) {
 			break;
 		}
 
-		rows[nr] = &cells[nr * 5];
-		cells[nr * 5 + 0] = xstrdup(r.id);
-		cells[nr * 5 + 1] = xstrdup(r.arch ? r.arch : "");
-		cells[nr * 5 + 2] = xstrdup(r.branch ? r.branch : "");
-		cells[nr * 5 + 3] = xstrdup(op);
-		cells[nr * 5 + 4] = xstrdup(remote ? remote : "-");
+		rows[nr] = &cells[nr * CH_COLS];
+		cells[nr * CH_COLS + CH_ID] = xstrdup(r.id);
+		cells[nr * CH_COLS + CH_ARCH] =
+			xstrdup(r.arch ? r.arch : "");
+		cells[nr * CH_COLS + CH_BRANCH] =
+			xstrdup(r.branch ? r.branch : "");
+		cells[nr * CH_COLS + CH_OP] = xstrdup(op);
+		cells[nr * CH_COLS + CH_REMOTE] =
+			xstrdup(remote ? remote : "-");
 		nr++;
 		ref_free(&r);
 	}
 
 	if (nr > 0) {
-		fp_print_table(headers, 5, (const char* const* const*)rows, nr,
+		fp_print_table(headers, CH_COLS,
+			       (const char* const* const*)rows, nr,
 			       FP_TABLE_OUTPUT);
 	}
 
-	for (size_t i = 0; i < nr * 5; i++) free(cells[i]);
+	for (size_t i = 0; i < nr * CH_COLS; i++) free(cells[i]);
 	free(cells);
 	free(rows);
 }
