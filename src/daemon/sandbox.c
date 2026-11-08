@@ -208,16 +208,26 @@ static void chown_dev_nodes(sandbox_t* sb, const sandbox_plan_t* plan) {
 			 subdirs[i]);
 		DIR* d = opendir(dir);
 		if (d == NULL) continue;
+		int dfd = dirfd(d);
+		if (dfd < 0) {
+			closedir(d);
+			continue;
+		}
 		struct dirent* de;
 		while ((de = readdir(d)) != NULL) {
 			if (de->d_name[0] == '.') continue;
 			char node[PATH_MAX];
 			snprintf(node, sizeof(node), "%s/%s", dir, de->d_name);
 			struct stat st;
-			if (lstat(node, &st) != 0 ||
+			// Both operations are relative to the open directory and
+			// neither follows a symlink, so a swapped path cannot
+			// redirect the chown.
+			if (fstatat(dfd, de->d_name, &st,
+				    AT_SYMLINK_NOFOLLOW) != 0 ||
 			    !(S_ISCHR(st.st_mode) || S_ISBLK(st.st_mode)))
 				continue;
-			if (chown(node, (uid_t)-1, plan->gid) != 0)
+			if (fchownat(dfd, de->d_name, (uid_t)-1, plan->gid,
+				     AT_SYMLINK_NOFOLLOW) != 0)
 				fpkg_warnf("chown %s: %s", node,
 					   strerror(errno));
 		}
@@ -228,11 +238,22 @@ static void chown_dev_nodes(sandbox_t* sb, const sandbox_plan_t* plan) {
 // The per-launch tree is the app's: everything flatpkg created goes to the
 // caller, who is who the app runs as. A bind-mounted path keeps the source's
 // owner.
-static void own_tree_dir(sandbox_t* sb, uid_t uid, gid_t gid, const char* dir) {
+// The walk holds the directory open: the entry that is opened for chown is
+// the entry that is descended into, so there is no path to swap underneath.
+static void own_tree_dir_at(sandbox_t* sb, uid_t uid, gid_t gid, int fd,
+			    const char* dir) {
 	assert(sb != NULL);
 	assert(dir != NULL);
-	DIR* d = opendir(dir);
-	if (d == NULL) return;
+	DIR* d = fdopendir(fd);
+	if (d == NULL) {
+		close(fd);
+		return;
+	}
+	int dfd = dirfd(d);
+	if (dfd < 0) {
+		closedir(d);
+		return;
+	}
 	struct dirent* de;
 	while ((de = readdir(d)) != NULL) {
 		if (de->d_name[0] == '.' &&
@@ -241,8 +262,6 @@ static void own_tree_dir(sandbox_t* sb, uid_t uid, gid_t gid, const char* dir) {
 			continue;
 		char child[PATH_MAX];
 		snprintf(child, sizeof(child), "%s/%s", dir, de->d_name);
-		struct stat st;
-		if (lstat(child, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
 		bool bound = false;
 		for (size_t i = 0; i < sb->nmounts; i++) {
 			if (sb->mounts[i].to == NULL ||
@@ -251,13 +270,24 @@ static void own_tree_dir(sandbox_t* sb, uid_t uid, gid_t gid, const char* dir) {
 			bound = strcmp(sb->mounts[i].fstype, "tmpfs") != 0;
 		}
 		if (bound) continue;
-		if (chown(child, uid, gid) != 0) {
+		int cfd = openat(dfd, de->d_name,
+				 O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+		if (cfd < 0) continue;
+		if (fchown(cfd, uid, gid) != 0) {
 			fpkg_debugf("chown %s: %s", child, strerror(errno));
+			close(cfd);
 			continue;
 		}
-		own_tree_dir(sb, uid, gid, child);
+		own_tree_dir_at(sb, uid, gid, cfd, child);
 	}
 	closedir(d);
+}
+
+static void own_tree_dir(sandbox_t* sb, uid_t uid, gid_t gid, const char* dir) {
+	assert(sb != NULL);
+	assert(dir != NULL);
+	int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd >= 0) own_tree_dir_at(sb, uid, gid, fd, dir);
 }
 
 int drm_devt_map(char* out, size_t outlen) {

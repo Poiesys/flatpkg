@@ -68,6 +68,51 @@ static fpkg_error_t write_file(const char* path, const char* content,
 	return FPKG_OK;
 }
 
+// Copy `from` into a new `to` owned by uid:gid.  O_EXCL makes "the caller
+// wanted this file created" one decision: an existing file is left alone, and
+// the owner is set through the descriptor rather than a second name lookup.
+static fpkg_error_t copy_file_owned(const char* from, const char* to,
+				    mode_t mode, uid_t uid, gid_t gid) {
+	int in = open(from, O_RDONLY);
+	if (in < 0) return fpkg_error_from_errno(errno);
+	int out = open(to, O_WRONLY | O_CREAT | O_EXCL, mode);
+	if (out < 0) {
+		int e = errno;
+		close(in);
+		errno = e;
+		return fpkg_error_from_errno(e);
+	}
+	char buf[16384];
+	int e = 0;
+	while (e == 0) {
+		ssize_t n = read(in, buf, sizeof(buf));
+		if (n == 0) break;
+		if (n < 0) {
+			if (errno == EINTR) continue;
+			e = errno;
+			break;
+		}
+		for (ssize_t off = 0; off < n;) {
+			ssize_t w = write(out, buf + off, (size_t)(n - off));
+			if (w < 0) {
+				if (errno == EINTR) continue;
+				e = errno;
+				break;
+			}
+			off += w;
+		}
+	}
+	close(in);
+	if (e == 0 && fchown(out, uid, gid) != 0) e = errno;
+	close(out);
+	if (e != 0) {
+		(void)unlink(to);
+		errno = e;
+		return fpkg_error_from_errno(e);
+	}
+	return FPKG_OK;
+}
+
 static int make_symlink(const char* target, const char* linkpath) {
 	assert(target != NULL);
 	assert(linkpath != NULL);
@@ -1330,14 +1375,10 @@ static void stage_dconf_migration(sandbox_t* sb, const sandbox_plan_t* plan) {
 	} else {
 		if (chown(kf_dir, plan->uid, plan->gid) != 0)
 			fpkg_warnf("chown %s: %s", kf_dir, strerror(errno));
-		if (access(kf_path, F_OK) != 0) {
-			if (copy_file(dump_path, kf_path, 0644) != FPKG_OK)
-				fpkg_warnf("copy %s: %s", kf_path,
-					   strerror(errno));
-			else if (chown(kf_path, plan->uid, plan->gid) != 0)
-				fpkg_warnf("chown %s: %s", kf_path,
-					   strerror(errno));
-		}
+		if (copy_file_owned(dump_path, kf_path, 0644, plan->uid,
+				    plan->gid) != FPKG_OK &&
+		    errno != EEXIST)
+			fpkg_warnf("copy %s: %s", kf_path, strerror(errno));
 	}
 
 	char app_fc[PATH_MAX];
@@ -1371,13 +1412,14 @@ static int build_etc(sandbox_t* sb, const sandbox_plan_t* plan) {
 	}
 
 	snprintf(path, sizeof(path), "%s/passwd", etc);
-	char passwd[2048];
-	snprintf(passwd, sizeof(passwd),
+	// This is the jail's /etc/passwd entry: written as a file, never sent.
+	char passwd_file[2048];
+	snprintf(passwd_file, sizeof(passwd_file),
 		 "%s:x:%u:%u:%s:%s:/bin/sh\n"
 		 "nfsnobody:x:65534:65534:Unmapped user:/:/sbin/nologin\n",
 		 plan->user_name, (unsigned)plan->uid, (unsigned)plan->gid,
 		 plan->real_name, plan->home_dir);
-	if (write_file(path, passwd, 0644) != 0) {
+	if (write_file(path, passwd_file, 0644) != 0) {
 		fpkg_errorf("write %s: %s", path, strerror(errno));
 		return -1;
 	}
@@ -1948,6 +1990,9 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 	}
 	free(buf);
 	free(recs);
+	// The owner is set while the file is still open, before rename(2) gives
+	// it its final name.
+	if (wrote && fchown(out, uid, gid) != 0) wrote = false;
 	close(out);
 	if (!wrote) {
 		(void)unlink(tmp);
@@ -1957,7 +2002,7 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 		(void)unlink(tmp);
 		return false;
 	}
-	return chown(dst, uid, gid) == 0;
+	return true;
 }
 
 static bool dir_writable(const char* dir) {

@@ -88,8 +88,16 @@ out=$("$FLATPKG" list 2>/dev/null || true)
 [ -n "$out" ] || note "flatpkg list put nothing on stdout: a table is the command's OUTPUT, not a diagnostic"
 err=$("$FLATPKG" list 2>&1 1>/dev/null || true)
 [ -z "$err" ] || note "flatpkg list also wrote to stderr: $(printf '%s' "$err" | head -1)"
-out=$("$FLATPKG" info io.github.kolunmi.Bazaar 2>/dev/null || true)
-[ -n "$out" ] || note "flatpkg info put nothing on stdout (is io.github.kolunmi.Bazaar installed? this store's, not a claim)"
+# `info` needs an app, and this store is the user's: take one of its own rather
+# than naming an id that may not be installed, which turned a stream check into
+# a store check.
+app=$("$FLATPKG" complete apps 2>/dev/null | head -1)
+if [ -n "$app" ]; then
+	out=$("$FLATPKG" info "$app" 2>/dev/null || true)
+	[ -n "$out" ] || note "flatpkg info $app put nothing on stdout"
+else
+	echo "note  no app is installed; the info stream check had no subject"
+fi
 
 # 6. `--version` is bare output too, and is read by scripts.
 v=$("$FLATPKG" --version 2>/dev/null || true)

@@ -159,8 +159,16 @@ static char* armor_gpg_key(const char* key) {
 	crc_b64[3] = b64_alphabet[crc & 63];
 	crc_b64[4] = '\0';
 
-	// Fold at 64 columns, like gpg.
-	size_t outlen = 41 + b64len + b64len / 64 + 8;
+	// Fold at 64 columns, like gpg.  The armor is assembled by its exact
+	// lengths: deriving a size argument from snprintf's return value lets a
+	// truncated conversion underflow it.
+	static const char armor_head[] =
+		"-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n";
+	static const char armor_tail[] = "-----END PGP PUBLIC KEY BLOCK-----\n";
+	size_t headlen = sizeof(armor_head) - 1;
+	size_t taillen = sizeof(armor_tail) - 1;
+	size_t lines = (b64len + 63) / 64;
+	size_t outlen = headlen + b64len + lines + 1 + 4 + 1 + taillen + 1;
 	char* out = malloc(outlen);
 	if (!out) {
 		free(b64);
@@ -168,15 +176,21 @@ static char* armor_gpg_key(const char* key) {
 		exit(1);
 	}
 	size_t n = 0;
-	n += (size_t)snprintf(out + n, outlen - n,
-			      "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\n");
+	memcpy(out + n, armor_head, headlen);
+	n += headlen;
 	for (size_t i = 0; i < b64len; i += 64) {
-		n += (size_t)snprintf(
-			out + n, outlen - n, "%.*s\n",
-			(int)((b64len - i < 64) ? b64len - i : 64), b64 + i);
+		size_t chunk = b64len - i < 64 ? b64len - i : 64;
+		memcpy(out + n, b64 + i, chunk);
+		n += chunk;
+		out[n++] = '\n';
 	}
-	snprintf(out + n, outlen - n,
-		 "=%s\n-----END PGP PUBLIC KEY BLOCK-----\n", crc_b64);
+	out[n++] = '=';
+	memcpy(out + n, crc_b64, 4);
+	n += 4;
+	out[n++] = '\n';
+	memcpy(out + n, armor_tail, taillen);
+	n += taillen;
+	out[n] = '\0';
 	free(b64);
 	return out;
 }
@@ -1235,12 +1249,17 @@ int ostree_appstream_extract(const char* remote, const char* arch) {
 		char xml[PATH_MAX], gz[PATH_MAX];
 		snprintf(xml, sizeof(xml), "%s/appstream.xml", tmpdir);
 		snprintf(gz, sizeof(gz), "%s/appstream.xml.gz", tmpdir);
-		if (access(gz, F_OK) != 0 && access(xml, F_OK) == 0) {
-			int out = open(gz, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		// O_EXCL keeps an existing .gz, as the old existence check did,
+		// without a second name lookup that could be raced.
+		int out = open(gz, O_WRONLY | O_CREAT | O_EXCL, 0644);
+		if (out >= 0) {
 			char* argv[] = {"/usr/bin/gzip", "-c", xml, NULL};
-			int rc = out >= 0 ? run_program(argv, -1, out, -1) : -1;
-			if (out >= 0) close(out);
-			if (rc != 0) fpkg_warnf("could not compress %s", xml);
+			int rc = run_program(argv, -1, out, -1);
+			close(out);
+			if (rc != 0) {
+				fpkg_warnf("could not compress %s", xml);
+				(void)unlink(gz);
+			}
 		}
 	}
 
@@ -1248,17 +1267,19 @@ int ostree_appstream_extract(const char* remote, const char* arch) {
 		char gz[PATH_MAX], xml[PATH_MAX];
 		snprintf(gz, sizeof(gz), "%s/appstream.xml.gz", tmpdir);
 		snprintf(xml, sizeof(xml), "%s/appstream.xml", tmpdir);
-		if (access(xml, F_OK) != 0 && access(gz, F_OK) == 0) {
-			int in = open(gz, O_RDONLY);
-			int out = open(xml, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		int in = open(gz, O_RDONLY);
+		int out = in >= 0 ? open(xml, O_WRONLY | O_CREAT | O_EXCL, 0644)
+				  : -1;
+		if (in >= 0 && out >= 0) {
 			char* argv[] = {"/usr/bin/gzip", "-dc", NULL};
-			int rc = (in >= 0 && out >= 0)
-					 ? run_program(argv, in, out, -1)
-					 : -1;
-			if (in >= 0) close(in);
-			if (out >= 0) close(out);
-			if (rc != 0) fpkg_warnf("could not decompress %s", gz);
+			int rc = run_program(argv, in, out, -1);
+			if (rc != 0) {
+				fpkg_warnf("could not decompress %s", gz);
+				(void)unlink(xml);
+			}
 		}
+		if (in >= 0) close(in);
+		if (out >= 0) close(out);
 	}
 
 	if (rename(tmpdir, final) != 0) {

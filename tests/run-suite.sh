@@ -26,23 +26,36 @@ manifest() {
 SOURCED='shimtest.sh commentlib.sh probelib.sh capturelib.sh scratchd.sh'
 NOT_GUARDS='run-suite.sh'
 
-# -- preflight: the guards must run the binary this tree describes -----------
-# A *missing* binary is a note; a stale one is exit 2, never a failure.  The input
-# list is the build's, not "the repository": editing a doc must not block a run.
+# -- preflight: the guards must run the binaries this tree describes ---------
+# A *missing* binary is a note; a stale one is exit 2, never a failure.  Ask
+# make rather than the file mtimes: the tree builds two binaries, and a source
+# only the daemon links is older than flatpkgd but not flatpkg by design.  A doc
+# is not a prerequisite, so editing one must not block a run.
 if [ -x "$ROOT/${BUILD_DIR}/flatpkg" ]; then
-	# **Only the sources the binary is built from.**  `find src` also matches
-	# the seven `*_shim.c` files, which are separate Linux ELFs and NOT in
-	# `OBJS`, so editing one called a current binary stale.
-	shims=$(ls "$ROOT"/src/*_shim.c 2>/dev/null | sed "s|^$ROOT/||")
-	stale=$(find "$ROOT/src" "$ROOT/include" "$ROOT/Makefile" \
-	    "$ROOT/usage.hlp" -type f -newer "$ROOT/${BUILD_DIR}/flatpkg" 2>/dev/null |
-	    sed "s|^$ROOT/||" |
-	    grep -vxF -e "$shims" 2>/dev/null | sort)
-	if [ -n "$stale" ]; then
-		echo "FAIL  ${BUILD_DIR}/flatpkg is older than sources in this tree, so"
+	stale_bin=
+	make -s -C "$ROOT" -q "${BUILD_DIR}/flatpkg" >/dev/null 2>&1 ||
+		stale_bin="${BUILD_DIR}/flatpkg"
+	if [ -x "$ROOT/${BUILD_DIR}/flatpkgd" ] &&
+	    ! make -s -C "$ROOT" -q "${BUILD_DIR}/flatpkgd" >/dev/null 2>&1; then
+		stale_bin="$stale_bin ${BUILD_DIR}/flatpkgd"
+	fi
+	if [ -n "$stale_bin" ]; then
+		echo "FAIL  $stale_bin is older than sources in this tree, so"
 		echo "      every guard that runs it is testing a build the tree"
 		echo "      does not describe:"
-		printf '%s\n' "$stale" | head -8 | sed 's/^/        /'
+		# A hint, not the verdict: everything changed since the older
+		# binary.  `find src` also matches the seven `*_shim.c` files,
+		# which are separate Linux ELFs and no binary's input.
+		oldest="$ROOT/${BUILD_DIR}/flatpkg"
+		if [ -x "$ROOT/${BUILD_DIR}/flatpkgd" ] &&
+		    [ "$oldest" -nt "$ROOT/${BUILD_DIR}/flatpkgd" ]; then
+			oldest="$ROOT/${BUILD_DIR}/flatpkgd"
+		fi
+		shims=$(ls "$ROOT"/src/*_shim.c 2>/dev/null | sed "s|^$ROOT/||")
+		find "$ROOT/src" "$ROOT/include" "$ROOT/Makefile" -type f \
+		    -newer "$oldest" 2>/dev/null | sed "s|^$ROOT/||" |
+		    grep -vxF -e "$shims" 2>/dev/null | sort |
+		    head -8 | sed 's/^/        /'
 		echo
 		echo "      make && \\"
 		echo "      sh tests/run-suite.sh"

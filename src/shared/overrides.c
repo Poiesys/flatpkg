@@ -325,14 +325,9 @@ int overrides_save(bool user, const char* app_id, const fp_metadata_t* ctx) {
 
 	overrides_write(fp, ctx);
 
-	if (fclose(fp) != 0) {
-		fpkg_errorf("write %s: %s", path, strerror(errno));
-		free(path);
-		return -1;
-	}
-
 	// Hand the file back to the user: the worker runs as root, so it would
-	// otherwise land root-owned and be uneditable.
+	// otherwise land root-owned and be uneditable.  The descriptor is used
+	// rather than the name, so what was written is what gets chowned.
 	if (user) {
 		const char* eu = cli_getenv("FLATPKG_APP_UID");
 		const char* eg = cli_getenv("FLATPKG_APP_GID");
@@ -341,7 +336,7 @@ int overrides_save(bool user, const char* app_id, const fp_metadata_t* ctx) {
 			gid_t gid = (eg != NULL && *eg != '\0')
 					    ? (gid_t)strtoul(eg, NULL, 10)
 					    : uid;
-			if (chown(path, uid, gid) != 0)
+			if (fchown(fileno(fp), uid, gid) != 0)
 				fpkg_warnf(
 					"%s is %s-owned after writing; "
 					"the user will not be able to edit it: "
@@ -350,6 +345,12 @@ int overrides_save(bool user, const char* app_id, const fp_metadata_t* ctx) {
 					uid == 0 ? "still root" : "wrongly",
 					strerror(errno));
 		}
+	}
+
+	if (fclose(fp) != 0) {
+		fpkg_errorf("write %s: %s", path, strerror(errno));
+		free(path);
+		return -1;
 	}
 
 	fpkg_okf("wrote %s", path);

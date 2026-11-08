@@ -418,6 +418,18 @@ static bool summary_has(char** srefs, size_t nsrefs, const char* ref) {
 	}
 	return false;
 }
+// Append one item to a ", "-joined buffer sized by the caller.
+static size_t perms_append(char* s, size_t off, const char* item, bool first) {
+	assert(s != NULL);
+	assert(item != NULL);
+	if (!first) {
+		memcpy(s + off, ", ", 2);
+		off += 2;
+	}
+	size_t len = strlen(item);
+	memcpy(s + off, item, len);
+	return off + len;
+}
 // Join a strlist into a heap-allocated ", "-separated string; NULL if empty.
 static char* perms_join(const strlist_t* l) {
 	if (!l || !l->count) return NULL;
@@ -426,10 +438,9 @@ static char* perms_join(const strlist_t* l) {
 	char* s = malloc(sz);
 	if (!s) return NULL;
 	size_t off = 0;
-	for (size_t i = 0; i < l->count; i++) {
-		if (i) off += (size_t)snprintf(s + off, sz - off, ", ");
-		off += (size_t)snprintf(s + off, sz - off, "%s", l->items[i]);
-	}
+	for (size_t i = 0; i < l->count; i++)
+		off = perms_append(s, off, l->items[i], i == 0);
+	s[off] = '\0';
 	return s;
 }
 // Join two strlists into one heap-allocated ", "-separated string.
@@ -445,15 +456,14 @@ static char* perms_join2(const strlist_t* a, const strlist_t* b) {
 	size_t off = 0;
 	bool first = true;
 	for (size_t i = 0; i < na; i++) {
-		if (!first) off += (size_t)snprintf(s + off, sz - off, ", ");
-		off += (size_t)snprintf(s + off, sz - off, "%s", a->items[i]);
+		off = perms_append(s, off, a->items[i], first);
 		first = false;
 	}
 	for (size_t i = 0; i < nb; i++) {
-		if (!first) off += (size_t)snprintf(s + off, sz - off, ", ");
-		off += (size_t)snprintf(s + off, sz - off, "%s", b->items[i]);
+		off = perms_append(s, off, b->items[i], first);
 		first = false;
 	}
+	s[off] = '\0';
 	return s;
 }
 // The permissions an app's metadata declares, as a 2-column table

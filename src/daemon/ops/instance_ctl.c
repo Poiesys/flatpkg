@@ -541,13 +541,20 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 	chown(inst_dir, plan->uid, plan->gid);
 	chown(priv_dir, plan->uid, plan->gid);
 	chown(info_path, plan->uid, plan->gid);
-	chown(ref_path, plan->uid, plan->gid);
+	// .ref is still open: chown the descriptor, not the name.
+	(void)fchown(lock_fd, plan->uid, plan->gid);
 	{
 		char nonce_path[PATH_MAX];
+		int nfd;
 		snprintf(nonce_path, sizeof(nonce_path), "%s/spawn-nonce",
 			 inst_dir);
-		if (access(nonce_path, F_OK) == 0)
-			chown(nonce_path, plan->uid, plan->gid);
+		// inst_dir is the caller's by now, so a symlink planted there
+		// must not turn this into a root chown of its target.
+		nfd = open(nonce_path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+		if (nfd >= 0) {
+			(void)fchown(nfd, plan->uid, plan->gid);
+			close(nfd);
+		}
 	}
 
 	sb->instance_id = xstrdup(id);

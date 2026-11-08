@@ -21,6 +21,7 @@
 #include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/param.h>
 #include <sys/stat.h>
 #include <dirent.h>
 #include <stdlib.h>
@@ -455,14 +456,14 @@ try_libdrm(void)
                 int (*get_device2)(int, unsigned, void **) =
                     (int (*)(int, unsigned, void **))dlsym(drm,
                     "drmGetDevice2");
-                char real[512];
+                char real[PATH_MAX];
                 int fd;
 
                 if (realpath("/sys/dev/char/226:128/device", real) == NULL)
                         snprintf(real, sizeof(real), "(realpath failed)");
                 printf("libdrm: realpath(device)=%s\n", real);
                 {
-                        char up[600];
+                        char up[PATH_MAX + 8];
                         FILE *fp;
 
                         snprintf(up, sizeof(up), "%s/uevent", real);

@@ -2,6 +2,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <fts.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -522,6 +523,11 @@ static int prune_dangling(const char* dir) {
 	assert(dir != NULL);
 	DIR* d = opendir(dir);
 	if (!d) return -1;
+	int dfd = dirfd(d);
+	if (dfd < 0) {
+		closedir(d);
+		return -1;
+	}
 	struct dirent* de;
 	while ((de = readdir(d)) != NULL) {
 		if (strcmp(de->d_name, ".") == 0 ||
@@ -530,13 +536,16 @@ static int prune_dangling(const char* dir) {
 		char path[PATH_MAX];
 		snprintf(path, sizeof(path), "%s/%s", dir, de->d_name);
 		struct stat st;
-		if (lstat(path, &st) != 0) continue;
+		if (fstatat(dfd, de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+			continue;
 		if (S_ISDIR(st.st_mode)) {
 			prune_dangling(path);
 			continue;
 		}
-		if (S_ISLNK(st.st_mode) && access(path, F_OK) != 0)
-			unlink(path);
+		// A symlink whose target no longer resolves: drop the link, not the
+		// path it names, and keep both operations on the open directory.
+		if (S_ISLNK(st.st_mode) && fstatat(dfd, de->d_name, &st, 0) != 0)
+			(void)unlinkat(dfd, de->d_name, 0);
 	}
 	closedir(d);
 	return 0;
