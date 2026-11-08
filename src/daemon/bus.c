@@ -11,10 +11,6 @@
 
 #include "protocol.h"
 
-volatile sig_atomic_t fpkg_cancel_flag;
-
-int fpkg_cancel_requested(void) { return fpkg_cancel_flag != 0; }
-
 typedef struct {
 	int fd;
 	pid_t pid;

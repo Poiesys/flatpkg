@@ -97,13 +97,20 @@ DAEMON_OBJS=    $(OBJDIR)/daemon/daemon.o \
 		$(OBJDIR)/daemon/ops/typed_worker.o \
 		$(OBJDIR)/daemon/ops/run.o
 
-# Legacy objects still in src/ root (need to be moved)
+# Legacy objects still in src/ root (need to be moved).  These are the ones
+# both binaries link: the OSTree backend and the store primitives.
 LEGACY_OBJS=    $(OBJDIR)/ostree.o \
 		$(OBJDIR)/ostree_plan.o \
 		$(OBJDIR)/ostree_cmds.o \
-		$(OBJDIR)/daemon/ops/dbus_proxy.o \
-		$(OBJDIR)/daemon/ops/instance_ctl.o \
 		$(OBJDIR)/daemon/ops/store_write.o
+
+# Daemon-only ops.  They carry CLI-shaped entry points (cmd_enter, cmd_kill,
+# cmd_exports) that only the daemon's typed worker calls, so --gc-sections
+# normally drops them from the CLI link.  Relying on that hid an undefined
+# reference to the daemon whenever GC kept the sections, so they are listed
+# here instead of in LEGACY_OBJS.
+DAEMON_OPS_OBJS=$(OBJDIR)/daemon/ops/dbus_proxy.o \
+		$(OBJDIR)/daemon/ops/instance_ctl.o
 
 # Policy the daemon still runs in process (the solver and upgrade planner).
 # Phase 2 moves it to the CLI; until then it is the one CLI-side object set
@@ -111,8 +118,8 @@ LEGACY_OBJS=    $(OBJDIR)/ostree.o \
 # call.
 POLICY_OBJS=    $(OBJDIR)/cli/solver.o
 
-DAEMON_LINK=    $(DAEMON_OBJS) $(LEGACY_OBJS) $(POLICY_OBJS) \
-		$(OBJDIR)/daemon/ops/evui.o
+DAEMON_LINK=    $(DAEMON_OBJS) $(LEGACY_OBJS) $(DAEMON_OPS_OBJS) \
+		$(POLICY_OBJS) $(OBJDIR)/daemon/ops/evui.o
 
 # The CLI links no daemon object: `flatpkg daemon` is gone, and the system
 # helper is flatpkgd's entry point.

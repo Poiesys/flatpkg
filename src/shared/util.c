@@ -1,5 +1,6 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,6 +13,10 @@
 #include "flatpkg.h"
 #define FPKG_MODULE "util"
 #include "fpkglog.h"
+
+volatile sig_atomic_t fpkg_cancel_flag;
+
+int fpkg_cancel_requested(void) { return fpkg_cancel_flag != 0; }
 
 char* xstrdup(const char* s) {
 	char* r = strdup(s ? s : "");

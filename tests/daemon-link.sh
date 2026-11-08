@@ -72,14 +72,27 @@ cli_all=$(make -s -C "$ROOT" -V CLI_LINK 2>/dev/null || true)
 n_cli=$(printf '%s\n' $cli_all | wc -l | tr -d ' ')
 [ "$n_cli" -ge 10 ] ||
 	note "the CLI link has only $n_cli objects; the variable moved"
+# The ops split: dbus_proxy.c and instance_ctl.c have CLI-shaped entry
+# points only the typed worker calls, so they belong to the daemon alone.
+# Linked into both, --gc-sections hides the extra daemon references until a
+# build keeps the sections and the CLI link goes undefined.
+for want in build/obj/daemon/ops/dbus_proxy.o \
+    build/obj/daemon/ops/instance_ctl.o; do
+	printf '%s\n' $link | grep -qx "$want" ||
+		note "the daemon does not link $want"
+done
+
 cli_bad=$(printf '%s\n' $cli_all |
-	grep -E '/daemon/(daemon|bus|extensions|sandbox|sandbox_root|sandbox_exec|systemhelper)\.o$' ||
+	grep -E '/daemon/(daemon|bus|extensions|sandbox|sandbox_root|sandbox_exec|systemhelper|ops/(dbus_proxy|instance_ctl))\.o$' ||
 	true)
 [ -z "$cli_bad" ] ||
 	note "the CLI links daemon objects: $(printf '%s' "$cli_bad" | tr '\n' ' ')"
-printf '%s\n' "build/obj/daemon/sandbox_root.o" |
-	grep -qE '/daemon/(daemon|bus|extensions|sandbox|sandbox_root|sandbox_exec|systemhelper)\.o$' ||
-	note "the daemon-object pattern does not recognise sandbox_root.o"
+for plant in build/obj/daemon/sandbox_root.o \
+    build/obj/daemon/ops/instance_ctl.o; do
+	printf '%s\n' "$plant" |
+		grep -qE '/daemon/(daemon|bus|extensions|sandbox|sandbox_root|sandbox_exec|systemhelper|ops/(dbus_proxy|instance_ctl))\.o$' ||
+		note "the daemon-object pattern does not recognise $plant"
+done
 
 if [ "$fail" -ne 0 ]; then exit 1; fi
 echo "PASS: flatpkgd links the daemon, not the CLI: no cli.o, tb_*.o,"

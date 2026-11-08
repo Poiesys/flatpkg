@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -27,6 +28,10 @@
 #define FLATPKG_MAX_LIST 256
 
 #define FLATPKG_KEEP_DEPLOYS 3
+
+// The owner worker sets this from SIGUSR1; long operations poll it.  The
+// definition is shared, so the CLI's copy is simply always false.
+extern volatile sig_atomic_t fpkg_cancel_flag;
 
 // True after the broker asked this worker to stop (FP_REQ_CANCEL).
 int fpkg_cancel_requested(void);

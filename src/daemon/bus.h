@@ -49,7 +49,4 @@ int bus_cancel(uint64_t op_id);
 int bus_next(void* buf, size_t cap, size_t* len, uint32_t* type);
 int bus_emit_event(const char* topic, const fp_event_t* ev);
 
-// The owner worker sets this from SIGUSR1; long operations poll it.
-extern volatile sig_atomic_t fpkg_cancel_flag;
-
 #endif

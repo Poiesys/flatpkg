@@ -44,7 +44,7 @@ if [ -x "$ROOT/${BUILD_DIR}/flatpkg" ]; then
 		echo "      does not describe:"
 		printf '%s\n' "$stale" | head -8 | sed 's/^/        /'
 		echo
-		echo "      make HELPLANG_DIR=\${HELPLANG_DIR:-$HELPLANG_DIR} && \\"
+		echo "      make && \\"
 		echo "      sh tests/run-suite.sh"
 		exit 2
 	fi
