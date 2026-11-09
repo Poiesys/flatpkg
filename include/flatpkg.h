@@ -356,6 +356,10 @@ typedef struct {
 	char* instance_dir;
 	int instance_lock_fd;
 
+	// Held from mkdtemp() to teardown(): a root with no jail but a held lock
+	// is a launch in progress, not a leak.
+	int root_lock_fd;
+
 	char wayland_display[64];
 } sandbox_t;
 

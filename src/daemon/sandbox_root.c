@@ -2917,8 +2917,8 @@ static int stage_home(sandbox_t* sb, const sandbox_plan_t* plan) {
 	snprintf(appto, sizeof(appto), "%s/.var/app/%s", hto, sb->app_id);
 	// The mount point is created with the mode it needs: a chmod walk here
 	// would go through the home nullfs and change the host directory.
-	if ((home_granted ? mkdir_p(appto, 0700)
-			  : mkdir_as_caller(plan, appto, 0700)) != 0) {
+	if ((home_granted ? mkdir_p(appto, 0755)
+			  : mkdir_as_caller(plan, appto, 0755)) != 0) {
 		fpkg_errorf("mkdir %s: %s", appto, strerror(errno));
 		return -1;
 	}
@@ -3778,6 +3778,7 @@ int sandbox_build_root(sandbox_t* sb, const sandbox_plan_t* plan,
 	assert(sb != NULL);
 	assert(plan != NULL);
 	char tmpl[PATH_MAX];
+	sb->root_lock_fd = -1;
 	snprintf(tmpl, sizeof(tmpl), "%s/%s.XXXXXX", FLATPKG_RUN_DIR,
 		 sb->app_id);
 
@@ -3792,6 +3793,19 @@ int sandbox_build_root(sandbox_t* sb, const sandbox_plan_t* plan,
 		return -1;
 	}
 	sb->jailroot = xstrdup(root);
+	{
+		char lock[PATH_MAX];
+		int fd;
+
+		snprintf(lock, sizeof(lock), "%s/.lock", root);
+		fd = open(lock, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0600);
+		if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) {
+			if (fd >= 0) close(fd);
+			fpkg_warnf("cannot lock %s: %s", lock, strerror(errno));
+		} else {
+			sb->root_lock_fd = fd;
+		}
+	}
 
 	if (chmod(root, 0755) != 0)
 		fpkg_warnf("chmod %s: %s", root, strerror(errno));

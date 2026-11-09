@@ -438,39 +438,56 @@ fail:
 #undef ADDP
 }
 
-#define JAIL_ROOT_MAX_MOUNTS 64
+#ifdef FLATPKG_TESTING
+// A test build can fake the mount table and force unmount failures; the
+// daemon never defines this.  Not an environment switch on purpose.
+extern int fpkg_test_getmntinfo(struct statfs** mntbuf, int flags);
+extern int fpkg_test_unmount(const char* dir, int flags);
+#define getmntinfo fpkg_test_getmntinfo
+#define unmount fpkg_test_unmount
+#endif
 
-// Mount points at or under `root`, shallowest last so a caller can unmount in
-// order.  Boundary-checked: ".../x" is not under ".../xy".
-static int mounts_under(const char* root, char paths[][PATH_MAX], size_t max,
-			size_t* n) {
+typedef struct {
+	char (*path)[PATH_MAX];
+	size_t n;
+} mount_list_t;
+
+// Mount points at or under `root`.  The list is sized from the mount table,
+// not a fixed cap: a heavy app can stage more mounts than any guess.
+static int mounts_under(const char* root, mount_list_t* l) {
 	struct statfs* mnts = NULL;
 	int total = getmntinfo(&mnts, MNT_NOWAIT);
 	size_t rl = strlen(root);
 
-	*n = 0;
+	// A previous scan's list is dead here; overwriting it would leak it.
+	free(l->path);
+	l->n = 0;
+	l->path = NULL;
 	if (total < 0) return -1;
+	if (total == 0) return 0;
+	l->path = calloc((size_t)total, sizeof(l->path[0]));
+	if (l->path == NULL) return -1;
 	for (int i = 0; i < total; i++) {
 		const char* at = mnts[i].f_mntonname;
 
 		if (strncmp(at, root, rl) != 0) continue;
 		if (at[rl] != '\0' && at[rl] != '/') continue;
-		if (*n < max) snprintf(paths[(*n)++], PATH_MAX, "%s", at);
+		snprintf(l->path[l->n++], PATH_MAX, "%s", at);
 	}
 	return 0;
 }
 
-static void sort_deepest_first(char paths[][PATH_MAX], size_t n) {
-	for (size_t i = 1; i < n; i++) {
+static void sort_deepest_first(mount_list_t* l) {
+	for (size_t i = 1; i < l->n; i++) {
 		char key[PATH_MAX];
 		size_t j = i;
 
-		snprintf(key, sizeof(key), "%s", paths[i]);
-		while (j > 0 && strlen(paths[j - 1]) < strlen(key)) {
-			snprintf(paths[j], PATH_MAX, "%s", paths[j - 1]);
+		snprintf(key, sizeof(key), "%s", l->path[i]);
+		while (j > 0 && strlen(l->path[j - 1]) < strlen(key)) {
+			snprintf(l->path[j], PATH_MAX, "%s", l->path[j - 1]);
 			j--;
 		}
-		snprintf(paths[j], PATH_MAX, "%s", key);
+		snprintf(l->path[j], PATH_MAX, "%s", key);
 	}
 }
 
@@ -478,10 +495,14 @@ static void sort_deepest_first(char paths[][PATH_MAX], size_t n) {
 // run dir, with every filesystem mounted at or under it gone first.  A tree
 // that still has a mount is left in place - rm_rf's FTW_MOUNT skips a mount
 // point, it does not keep the walk from reaching one through a swapped path.
-static int remove_jail_root(const char* root) {
+#ifdef FLATPKG_TESTING
+int sandbox_remove_jail_root(const char* root) {
+#else
+static int sandbox_remove_jail_root(const char* root) {
+#endif
 	char rroot[PATH_MAX], rrun[PATH_MAX];
-	char paths[JAIL_ROOT_MAX_MOUNTS][PATH_MAX];
-	size_t n = 0;
+	mount_list_t l = {0};
+	size_t rl;
 
 	if (realpath(root, rroot) == NULL) {
 		if (errno == ENOENT) return 0;
@@ -493,38 +514,36 @@ static int remove_jail_root(const char* root) {
 			    strerror(errno));
 		return -1;
 	}
-	{
-		size_t rl = strlen(rrun);
-
-		if (strncmp(rroot, rrun, rl) != 0 || rroot[rl] != '/' ||
-		    rroot[rl + 1] == '\0') {
-			fpkg_errorf("not removing %s: it is outside %s", rroot,
-				    rrun);
-			return -1;
-		}
+	rl = strlen(rrun);
+	if (strncmp(rroot, rrun, rl) != 0 || rroot[rl] != '/' ||
+	    rroot[rl + 1] == '\0' || strchr(rroot + rl + 1, '/') != NULL) {
+		fpkg_errorf("not removing %s: it is not one directory under %s",
+			    rroot, rrun);
+		return -1;
 	}
 	for (int pass = 0; pass < 3; pass++) {
-		if (mounts_under(rroot, paths, JAIL_ROOT_MAX_MOUNTS, &n) != 0) {
+		if (mounts_under(rroot, &l) != 0) {
+			free(l.path);
 			fpkg_errorf("cannot read the mount table");
 			return -1;
 		}
-		if (n == 0) break;
-		if (n == JAIL_ROOT_MAX_MOUNTS) {
-			fpkg_warnf("not removing %s: too many mounts under it",
-				   rroot);
-			return -1;
-		}
-		sort_deepest_first(paths, n);
-		for (size_t i = 0; i < n; i++)
-			if (unmount(paths[i], 0) != 0)
-				(void)unmount(paths[i], MNT_FORCE);
+		if (l.n == 0) break;
+		sort_deepest_first(&l);
+		for (size_t i = 0; i < l.n; i++)
+			if (unmount(l.path[i], 0) != 0)
+				(void)unmount(l.path[i], MNT_FORCE);
+		free(l.path);
+		l.path = NULL;
+		l.n = 0;
 	}
-	if (mounts_under(rroot, paths, JAIL_ROOT_MAX_MOUNTS, &n) != 0 || n > 0) {
+	if (mounts_under(rroot, &l) != 0 || l.n > 0) {
 		fpkg_warnf("not removing %s: %zu filesystem(s) still mounted "
 			   "under it",
-			   rroot, n);
+			   rroot, l.n);
+		free(l.path);
 		return -1;
 	}
+	free(l.path);
 	if (rm_rf(rroot) != 0) {
 		fpkg_warnf("cannot remove %s: %s", rroot, strerror(errno));
 		return -1;
@@ -556,9 +575,43 @@ static bool jail_alive_for_path(const char* path) {
 	}
 }
 
+// A jail root's name is <app id>.<six random characters> from mkdtemp().
+static bool jail_root_name(const char* name) {
+	const char* dot = strrchr(name, '.');
+
+	if (dot == NULL || dot == name || strlen(dot + 1) != 6) return false;
+	for (const char* p = dot + 1; *p; p++)
+		if (!((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+		      (*p >= '0' && *p <= '9')))
+			return false;
+	return true;
+}
+
+// The worker holds this from mkdtemp() until teardown; a root still locked is
+// a launch in progress, not a leak.  An unreadable lock is skipped, not
+// deleted: the sweep only removes what it can prove is unheld.
+static bool root_is_held(const char* dir) {
+	char path[PATH_MAX];
+	struct stat st;
+	int fd, e;
+
+	snprintf(path, sizeof(path), "%s/.lock", dir);
+	if (lstat(path, &st) != 0) return errno != ENOENT;
+	if (!S_ISREG(st.st_mode)) return true;
+	fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0) return true;
+	if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+		close(fd);
+		return false;
+	}
+	e = errno;
+	close(fd);
+	return e == EWOULDBLOCK;
+}
+
 // Jail roots left behind by a worker that died between mkdtemp and teardown.
-// Only trees no jail refers to are touched; the removal goes through the same
-// guard as a normal teardown.
+// Only trees no jail refers to, that no worker still holds, are touched; the
+// removal goes through the same guard as a normal teardown.
 void sandbox_gc_leaks(void) {
 	DIR* d = opendir(FLATPKG_RUN_DIR);
 
@@ -568,13 +621,13 @@ void sandbox_gc_leaks(void) {
 		char path[PATH_MAX], rpath[PATH_MAX];
 		struct stat st;
 
-		if (e->d_name[0] == '.') continue;
+		if (!jail_root_name(e->d_name)) continue;
 		snprintf(path, sizeof(path), "%s/%s", FLATPKG_RUN_DIR,
 			 e->d_name);
 		if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
 		if (realpath(path, rpath) == NULL) continue;
-		if (jail_alive_for_path(rpath)) continue;
-		if (remove_jail_root(rpath) == 0)
+		if (jail_alive_for_path(rpath) || root_is_held(rpath)) continue;
+		if (sandbox_remove_jail_root(rpath) == 0)
 			fpkg_infof("removed leaked sandbox %s", rpath);
 		else
 			fpkg_warnf("leaked sandbox left at %s", rpath);
@@ -597,8 +650,29 @@ void sandbox_teardown(sandbox_t* sb) {
 		sb->jid = 0;
 	}
 
-	if (sb->jailroot && remove_jail_root(sb->jailroot) != 0)
-		fpkg_warnf("sandbox root left at %s", sb->jailroot);
+	// A tracked mount outside the jail root is not in the scan's reach.
+	if (sb->jailroot) {
+		size_t rl = strlen(sb->jailroot);
+
+		for (size_t i = 0; i < sb->nmounts; i++) {
+			sb_mount_t* m = &sb->mounts[i];
+
+			if (m->to == NULL) continue;
+			if (strncmp(m->to, sb->jailroot, rl) == 0 &&
+			    (m->to[rl] == '\0' || m->to[rl] == '/'))
+				continue;
+			if (unmount(m->to, 0) != 0 &&
+			    unmount(m->to, MNT_FORCE) != 0)
+				fpkg_warnf("still mounted after teardown: %s",
+					   m->to);
+		}
+		if (sandbox_remove_jail_root(sb->jailroot) != 0)
+			fpkg_warnf("sandbox root left at %s", sb->jailroot);
+	}
+	if (sb->root_lock_fd >= 0) {
+		close(sb->root_lock_fd);
+		sb->root_lock_fd = -1;
+	}
 
 	if (sb->devfs_ruleset > 0) {
 		int devnull = open("/dev/null", O_WRONLY);
