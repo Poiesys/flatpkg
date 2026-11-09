@@ -101,13 +101,15 @@ NONFLAT_READ="HOME XDG_RUNTIME_DIR XDG_CURRENT_DESKTOP
 #
 # The exceptions are all one sentence - *the subject of this guard IS the caller's own
 # session* - so they are recorded rather than fixed by pinning: logfmt-path.sh tests the
-# daemon receiving the caller's environment, and sandbox-launch.sh launches in the session
-# the app has to start in.  Checked both ways: the count may not drift, and every entry
-# must name a guard that really does invoke the binary.
+# daemon receiving the caller's environment, sandbox-launch.sh launches in the session
+# the app has to start in, and home-persists.sh is about the home the daemon resolves
+# from the passwd entry rather than from HOME.  Checked both ways: the count may not
+# drift, and every entry must name a guard that really does invoke the binary.
 GUARD_ENV_OWNED_ALL="cli-arg-parsing.sh exports-collision.sh
                      import-visible.sh remote-name-path.sh
                      rollback-commit-ref.sh fplog.sh"
-GUARD_ENV_EXCEPT="logfmt-path.sh sandbox-launch.sh apps-visual.sh"
+GUARD_ENV_EXCEPT="logfmt-path.sh sandbox-launch.sh apps-visual.sh
+                  home-persists.sh"
 
 # Strip comments before grepping, or the names are matched in the comment that
 # explains the rule.  commentlib.sh is sourced, never run - one copy, not five.
@@ -178,10 +180,10 @@ fi
 # The second half: a name the daemon only sets in *one* branch must be cleared in
 # the other.  An `if (master >= 0)` that sets TTY and MASTER with no else is the
 # exact defect, so it is checked as one.
-tty_set=$(grep -chE '[^a-z]setenv\("FLATPKG_APP_TTY"' "$tmp/daemon.c" "$tmp/typed_worker.c" || true)
-tty_clear=$(grep -chE '[^a-z]unsetenv\("FLATPKG_APP_TTY"\)' "$tmp/daemon.c" "$tmp/typed_worker.c" || true)
-mst_set=$(grep -chE '[^a-z]setenv\("FLATPKG_APP_MASTER"' "$tmp/daemon.c" "$tmp/typed_worker.c" || true)
-mst_clear=$(grep -chE '[^a-z]unsetenv\("FLATPKG_APP_MASTER"\)' "$tmp/daemon.c" "$tmp/typed_worker.c" || true)
+tty_set=$(grep -hE '[^a-z]setenv\("FLATPKG_APP_TTY"' "$tmp/daemon.c" "$tmp/typed_worker.c" | grep -c . || true)
+tty_clear=$(grep -hE '[^a-z]unsetenv\("FLATPKG_APP_TTY"\)' "$tmp/daemon.c" "$tmp/typed_worker.c" | grep -c . || true)
+mst_set=$(grep -hE '[^a-z]setenv\("FLATPKG_APP_MASTER"' "$tmp/daemon.c" "$tmp/typed_worker.c" | grep -c . || true)
+mst_clear=$(grep -hE '[^a-z]unsetenv\("FLATPKG_APP_MASTER"\)' "$tmp/daemon.c" "$tmp/typed_worker.c" | grep -c . || true)
 if [ "$tty_set" -ne 1 ] || [ "$mst_set" -ne 1 ]; then
 	echo "FAIL expected exactly one setenv for APP_TTY and APP_MASTER,"
 	echo "       found $tty_set and $mst_set - the carve broke, or there"
@@ -329,14 +331,16 @@ else
 		*) unused_except="$unused_except $e" ;;
 		esac
 	done
-	if [ "$unguarded" -ne 3 ]; then
-		echo "FAIL expected exactly 3 declared exceptions (logfmt-path.sh,"
+	if [ "$unguarded" -ne 4 ]; then
+		echo "FAIL expected exactly 4 declared exceptions (logfmt-path.sh,"
 		echo "       which runs as the caller by design; sandbox-launch.sh,"
-		echo "       which must launch in that same session; and"
+		echo "       which must launch in that same session;"
 		echo "       apps-visual.sh, which launches EVERY installed app and so"
 		echo "       needs that session's D-Bus address, Wayland display and"
 		echo "       DISPLAY - pinned, it would handicap every app and report"
-		echo "       the harness as the subject), found $unguarded -"
+		echo "       the harness as the subject; and home-persists.sh, whose"
+		echo "       subject is the home the daemon resolves from passwd),"
+		echo "       found $unguarded -"
 		echo "       the exception list and the guards have drifted apart"
 		fail=1
 	elif [ -n "$unused_except" ]; then

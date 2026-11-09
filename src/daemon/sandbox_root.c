@@ -1374,6 +1374,17 @@ static void stage_dconf_migration(sandbox_t* sb, const sandbox_plan_t* plan) {
 	}
 }
 
+static bool machine_id_valid(const char* s) {
+	if (s == NULL || strlen(s) != 32) return false;
+	for (size_t i = 0; i < 32; i++) {
+		char c = s[i];
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+		      (c >= 'A' && c <= 'F')))
+			return false;
+	}
+	return true;
+}
+
 static int build_etc(sandbox_t* sb, const sandbox_plan_t* plan) {
 	assert(sb != NULL);
 	assert(plan != NULL);
@@ -1406,31 +1417,43 @@ static int build_etc(sandbox_t* sb, const sandbox_plan_t* plan) {
 		return -1;
 	}
 
-	snprintf(path, sizeof(path), "%s/machine-id", etc);
+	// GDBus refuses to autolaunch a bus unless this file holds 32 hex digits,
+	// and a host file can also hold "" or "uninitialized": copying that
+	// verbatim is what leaves every GDBus client in the sandbox complaining
+	// about an invalid machine-id.  FreeBSD ships no /etc/machine-id at all.
 	char mid[64] = "";
 	FILE* mf = fopen("/etc/machine-id", "r");
-	if (!mf) mf = fopen("/var/lib/dbus/machine-id", "r");
-	if (mf) {
-		if (fgets(mid, sizeof(mid), mf)) mid[strcspn(mid, "\n")] = '\0';
+	if (mf == NULL) mf = fopen("/var/lib/dbus/machine-id", "r");
+	if (mf != NULL) {
+		if (fgets(mid, sizeof(mid), mf) != NULL)
+			mid[strcspn(mid, " \t\r\n")] = '\0';
 		fclose(mf);
 	}
-	if (mid[0] == '\0') {
+	if (!machine_id_valid(mid)) {
+		unsigned char r[16];
 		int fd = open("/dev/urandom", O_RDONLY);
-		if (fd >= 0) {
-			unsigned char r[16];
-			if (read(fd, r, sizeof(r)) == (ssize_t)sizeof(r)) {
-				char* p = mid;
-				for (size_t i = 0; i < sizeof(r); i++)
-					p += snprintf(p, 3, "%02x", r[i]);
-			}
-			close(fd);
+		ssize_t got = fd >= 0 ? read(fd, r, sizeof(r)) : -1;
+		if (fd >= 0) close(fd);
+		mid[0] = '\0';
+		if (got == (ssize_t)sizeof(r)) {
+			for (size_t i = 0; i < sizeof(r); i++)
+				snprintf(mid + i * 2, 3, "%02x", r[i]);
+		} else {
+			fpkg_warnf("no machine-id: the host has none and "
+				   "/dev/urandom could not be read");
 		}
 	}
-	if (mid[0]) write_file(path, mid, 0644);
-	if (mid[0]) {
+	if (mid[0] != '\0') {
+		// The canonical file is the id and a newline.
+		char line[40];
+		snprintf(line, sizeof(line), "%s\n", mid);
+		snprintf(path, sizeof(path), "%s/machine-id", etc);
+		if (write_file(path, line, 0644) != 0)
+			fpkg_warnf("write %s: %s", path, strerror(errno));
 		snprintf(path, sizeof(path), "%s/var/lib/dbus/machine-id",
 			 sb->jailroot);
-		write_file(path, mid, 0644);
+		if (write_file(path, line, 0644) != 0)
+			fpkg_warnf("write %s: %s", path, strerror(errno));
 	}
 
 	if (plan->want_network && stage_hosts("/etc/hosts", etc) != 0)
@@ -1762,10 +1785,12 @@ static void mimic_recreate_one(sandbox_t* sb, const char* src, const char* dst,
 				fpkg_warnf("cannot recreate symlink %s", dst);
 		}
 	} else if (S_ISREG(st->st_mode)) {
-		if (ensure_file(dst) != 0)
+		if (ensure_file(dst) != 0) {
 			fpkg_warnf("cannot create %s", dst);
-		else if (m_nullfs(sb, src, dst, true) != 0)
+		} else if (m_nullfs(sb, src, dst, true) != 0) {
 			fpkg_warnf("cannot bind %s", dst);
+			(void)unlink(dst);
+		}
 	}
 }
 
@@ -2476,9 +2501,11 @@ static int stage_etc(sandbox_t* sb) {
 							m_nullfs(sb, sfrom, sto,
 								 true);
 					} else if (S_ISREG(rst.st_mode)) {
-						if (ensure_file(sto) == 0)
-							m_nullfs(sb, sfrom, sto,
-								 true);
+						if (ensure_file(sto) != 0)
+							continue;
+						if (m_nullfs(sb, sfrom, sto,
+							     true) != 0)
+							(void)unlink(sto);
 					}
 				}
 				closedir(sd);
@@ -2493,13 +2520,19 @@ static int stage_etc(sandbox_t* sb) {
 						 stage, se->d_name);
 					snprintf(sto, sizeof(sto), "%s/etc/%s",
 						 sb->jailroot, se->d_name);
-					if (ensure_file(sto) != 0)
+					if (ensure_file(sto) != 0) {
 						fpkg_warnf("cannot create %s",
 							   sto);
-					else if (m_nullfs(sb, sfrom, sto, true) !=
-						 0)
+					} else if (m_nullfs(sb, sfrom, sto, true) !=
+						   0) {
 						fpkg_warnf("cannot bind %s",
 							   sto);
+						// An empty placeholder is worse
+						// than no file: glib reads it as
+						// an invalid machine-id and stops
+						// falling back.
+						(void)unlink(sto);
+					}
 				}
 				closedir(sd2);
 			}
@@ -2792,55 +2825,85 @@ static int stage_p11kit(sandbox_t* sb, const sandbox_plan_t* plan) {
 	return 0;
 }
 
+// Create `path` as the caller.  A mount point under $HOME is created on a
+// directory the user owns (and, when the app data dir is the home, on the host
+// itself), so a root-owned placeholder must not be left behind.
+static int mkdir_as_caller(const sandbox_plan_t* plan, const char* path,
+			   mode_t mode) {
+	pid_t pid = fork();
+	int ws = 0;
+
+	if (pid < 0) return -1;
+	if (pid == 0) {
+		if (initgroups(plan->user_name, plan->gid) != 0 ||
+		    setgid(plan->gid) != 0 || setuid(plan->uid) != 0)
+			_exit(1);
+		_exit(mkdir_p(path, mode) == 0 ? 0 : 1);
+	}
+	while (waitpid(pid, &ws, 0) < 0) {
+		if (errno != EINTR) return -1;
+	}
+	return WIFEXITED(ws) && WEXITSTATUS(ws) == 0 ? 0 : -1;
+}
+
+static bool jail_path_under_home(const sandbox_t* sb,
+				 const sandbox_plan_t* plan, const char* path) {
+	char home[PATH_MAX];
+	int n = snprintf(home, sizeof(home), "%s%s/", sb->jailroot,
+			 plan->home_dir);
+
+	return n > 0 && (size_t)n < sizeof(home) &&
+	       strncmp(path, home, (size_t)n) == 0;
+}
+
 static int stage_home(sandbox_t* sb, const sandbox_plan_t* plan) {
 	bool home_granted = home_is_granted(plan);
+	char hto[PATH_MAX], appto[PATH_MAX], hide[PATH_MAX];
 
-	{
-		char appto[PATH_MAX];
-		snprintf(appto, sizeof(appto), "%s%s/.var/app/%s", sb->jailroot,
-			 plan->home_dir, sb->app_id);
-		if (home_granted) {
-			char hto[PATH_MAX], hide[PATH_MAX];
-			snprintf(hto, sizeof(hto), "%s%s", sb->jailroot,
-				 plan->home_dir);
-			if (mkdir_p(hto, 0755) != 0) {
-				fpkg_errorf("mkdir %s: %s", hto,
-					    strerror(errno));
-				return -1;
-			}
-			if (m_nullfs(sb, plan->home_dir, hto, false) != 0)
-				return -1;
-			snprintf(hide, sizeof(hide), "%s%s/.var/app",
-				 sb->jailroot, plan->home_dir);
-			if (mkdir_p(hide, 0755) != 0) {
-				fpkg_errorf("mkdir %s: %s", hide,
-					    strerror(errno));
-				return -1;
-			}
-			if (m_tmpfs(sb, hide) != 0) return -1;
-		}
-		if (mkdir_p(appto, 0700) != 0) {
-			fpkg_errorf("mkdir %s: %s", appto, strerror(errno));
-			return -1;
-		}
-		{
-			char ch[PATH_MAX];
-			snprintf(ch, sizeof(ch), "%s", appto);
-			for (char* q = ch + strlen(sb->jailroot) + 1; *q; q++) {
-				if (*q == '/') {
-					*q = '\0';
-					if (chmod(ch, 0755) != 0)
-						fpkg_warnf("chmod %s: %s", ch,
-							   strerror(errno));
-					*q = '/';
-				}
-			}
-			if (chmod(ch, 0755) != 0)
-				fpkg_warnf("chmod %s: %s", ch, strerror(errno));
-		}
-		if (m_nullfs(sb, plan->app_data_dir, appto, false) != 0)
-			return -1;
+	snprintf(hto, sizeof(hto), "%s%s", sb->jailroot, plan->home_dir);
+	if (mkdir_p(hto, 0755) != 0) {
+		fpkg_errorf("mkdir %s: %s", hto, strerror(errno));
+		return -1;
 	}
+
+	if (home_granted) {
+		if (m_nullfs(sb, plan->home_dir, hto, false) != 0) return -1;
+		snprintf(hide, sizeof(hide), "%s/.var/app", hto);
+		if (mkdir_p(hide, 0755) != 0) {
+			fpkg_errorf("mkdir %s: %s", hide, strerror(errno));
+			return -1;
+		}
+		if (m_tmpfs(sb, hide) != 0) return -1;
+	} else {
+		// The app's home is its private dir, as in flatpak: a write to
+		// $HOME (Firefox's ~/.mozilla, an app's own ~/.<name>) must
+		// outlive the sandbox.  XDG_*_HOME and the spawn shim spell the
+		// same dir as ~/.var/app/<id>/..., so it is mounted there too.
+		if (m_nullfs(sb, plan->app_data_dir, hto, false) != 0) return -1;
+	}
+
+	snprintf(appto, sizeof(appto), "%s/.var/app/%s", hto, sb->app_id);
+	if ((home_granted ? mkdir_p(appto, 0700)
+			  : mkdir_as_caller(plan, appto, 0700)) != 0) {
+		fpkg_errorf("mkdir %s: %s", appto, strerror(errno));
+		return -1;
+	}
+	{
+		char ch[PATH_MAX];
+		snprintf(ch, sizeof(ch), "%s", appto);
+		for (char* q = ch + strlen(sb->jailroot) + 1; *q; q++) {
+			if (*q == '/') {
+				*q = '\0';
+				if (chmod(ch, 0755) != 0)
+					fpkg_warnf("chmod %s: %s", ch,
+						   strerror(errno));
+				*q = '/';
+			}
+		}
+		if (chmod(ch, 0755) != 0)
+			fpkg_warnf("chmod %s: %s", ch, strerror(errno));
+	}
+	if (m_nullfs(sb, plan->app_data_dir, appto, false) != 0) return -1;
 	return 0;
 }
 
@@ -2853,7 +2916,9 @@ static int apply_grant(sandbox_t* sb, const sandbox_plan_t* plan,
 	if (g->mode == FS_GRANT_HIDE) {
 		char to[PATH_MAX];
 		snprintf(to, sizeof(to), "%s%s", sb->jailroot, g->jail_path);
-		if (mkdir_p(to, 0755) != 0) {
+		if ((jail_path_under_home(sb, plan, to)
+			 ? mkdir_as_caller(plan, to, 0755)
+			 : mkdir_p(to, 0755)) != 0) {
 			fpkg_warnf("cannot create hide point %s, skipping",
 				   g->jail_path);
 			return 0;
@@ -2911,7 +2976,8 @@ static int apply_grant(sandbox_t* sb, const sandbox_plan_t* plan,
 			return 0;
 		}
 	}
-	if (mkdir_p(to, 0755) != 0) {
+	if ((jail_path_under_home(sb, plan, to) ? mkdir_as_caller(plan, to, 0755)
+					       : mkdir_p(to, 0755)) != 0) {
 		fpkg_warnf("cannot create mount point for '%s', skipping",
 			   g->jail_path);
 		return 0;
