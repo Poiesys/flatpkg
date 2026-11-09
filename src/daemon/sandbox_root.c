@@ -1429,7 +1429,11 @@ static int build_etc(sandbox_t* sb, const sandbox_plan_t* plan) {
 			mid[strcspn(mid, " \t\r\n")] = '\0';
 		fclose(mf);
 	}
-	if (!machine_id_valid(mid)) {
+	if (machine_id_valid(mid)) {
+		for (size_t i = 0; i < 32; i++)
+			if (mid[i] >= 'A' && mid[i] <= 'F')
+				mid[i] = (char)(mid[i] - 'A' + 'a');
+	} else {
 		unsigned char r[16];
 		int fd = open("/dev/urandom", O_RDONLY);
 		ssize_t got = fd >= 0 ? read(fd, r, sizeof(r)) : -1;
@@ -1747,9 +1751,22 @@ static int build_skeleton(sandbox_t* sb, const sandbox_plan_t* plan) {
 	return build_etc(sb, plan);
 }
 
-static int ensure_file(const char* path) {
+// Create `path` when it is missing.  `created` is set only when this call
+// made the file, so a caller may remove the placeholder without removing a
+// file that was already there.
+static int ensure_file(const char* path, bool* created) {
+	int fd;
+
 	assert(path != NULL);
-	int fd = open(path, O_CREAT | O_RDWR, 0600);
+	if (created != NULL) *created = false;
+	fd = open(path, O_CREAT | O_EXCL | O_RDWR, 0600);
+	if (fd >= 0) {
+		close(fd);
+		if (created != NULL) *created = true;
+		return 0;
+	}
+	if (errno != EEXIST) return -1;
+	fd = open(path, O_RDWR);
 	if (fd < 0) return -1;
 	close(fd);
 	return 0;
@@ -1785,11 +1802,13 @@ static void mimic_recreate_one(sandbox_t* sb, const char* src, const char* dst,
 				fpkg_warnf("cannot recreate symlink %s", dst);
 		}
 	} else if (S_ISREG(st->st_mode)) {
-		if (ensure_file(dst) != 0) {
+		bool created = false;
+
+		if (ensure_file(dst, &created) != 0) {
 			fpkg_warnf("cannot create %s", dst);
 		} else if (m_nullfs(sb, src, dst, true) != 0) {
 			fpkg_warnf("cannot bind %s", dst);
-			(void)unlink(dst);
+			if (created) (void)unlink(dst);
 		}
 	}
 }
@@ -2501,10 +2520,14 @@ static int stage_etc(sandbox_t* sb) {
 							m_nullfs(sb, sfrom, sto,
 								 true);
 					} else if (S_ISREG(rst.st_mode)) {
-						if (ensure_file(sto) != 0)
+						bool created = false;
+
+						if (ensure_file(sto,
+								&created) != 0)
 							continue;
 						if (m_nullfs(sb, sfrom, sto,
-							     true) != 0)
+							     true) != 0 &&
+						    created)
 							(void)unlink(sto);
 					}
 				}
@@ -2520,7 +2543,9 @@ static int stage_etc(sandbox_t* sb) {
 						 stage, se->d_name);
 					snprintf(sto, sizeof(sto), "%s/etc/%s",
 						 sb->jailroot, se->d_name);
-					if (ensure_file(sto) != 0) {
+					bool created = false;
+
+					if (ensure_file(sto, &created) != 0) {
 						fpkg_warnf("cannot create %s",
 							   sto);
 					} else if (m_nullfs(sb, sfrom, sto, true) !=
@@ -2530,8 +2555,9 @@ static int stage_etc(sandbox_t* sb) {
 						// An empty placeholder is worse
 						// than no file: glib reads it as
 						// an invalid machine-id and stops
-						// falling back.
-						(void)unlink(sto);
+						// falling back.  Only remove what
+						// this call created.
+						if (created) (void)unlink(sto);
 					}
 				}
 				closedir(sd2);
@@ -2717,7 +2743,7 @@ static int stage_ld_cache(sandbox_t* sb) {
 	struct stat cst;
 	bool hit = stat(cache_store, &cst) == 0 && S_ISREG(cst.st_mode) &&
 		   cst.st_size > 0;
-	if (hit && (ensure_file(cache_dest) != 0 ||
+	if (hit && (ensure_file(cache_dest, NULL) != 0 ||
 		    m_nullfs(sb, cache_store, cache_dest, true) != 0))
 		hit = false;
 
@@ -2832,18 +2858,24 @@ static int mkdir_as_caller(const sandbox_plan_t* plan, const char* path,
 			   mode_t mode) {
 	pid_t pid = fork();
 	int ws = 0;
+	int e;
 
 	if (pid < 0) return -1;
 	if (pid == 0) {
 		if (initgroups(plan->user_name, plan->gid) != 0 ||
 		    setgid(plan->gid) != 0 || setuid(plan->uid) != 0)
-			_exit(1);
-		_exit(mkdir_p(path, mode) == 0 ? 0 : 1);
+			_exit(EPERM);
+		if (mkdir_p(path, mode) != 0)
+			_exit(errno > 0 && errno < 256 ? errno : 1);
+		_exit(0);
 	}
 	while (waitpid(pid, &ws, 0) < 0) {
 		if (errno != EINTR) return -1;
 	}
-	return WIFEXITED(ws) && WEXITSTATUS(ws) == 0 ? 0 : -1;
+	if (!WIFEXITED(ws)) return -1;
+	e = WEXITSTATUS(ws);
+	if (e != 0) errno = e;
+	return e == 0 ? 0 : -1;
 }
 
 static bool jail_path_under_home(const sandbox_t* sb,
@@ -2883,25 +2915,12 @@ static int stage_home(sandbox_t* sb, const sandbox_plan_t* plan) {
 	}
 
 	snprintf(appto, sizeof(appto), "%s/.var/app/%s", hto, sb->app_id);
+	// The mount point is created with the mode it needs: a chmod walk here
+	// would go through the home nullfs and change the host directory.
 	if ((home_granted ? mkdir_p(appto, 0700)
 			  : mkdir_as_caller(plan, appto, 0700)) != 0) {
 		fpkg_errorf("mkdir %s: %s", appto, strerror(errno));
 		return -1;
-	}
-	{
-		char ch[PATH_MAX];
-		snprintf(ch, sizeof(ch), "%s", appto);
-		for (char* q = ch + strlen(sb->jailroot) + 1; *q; q++) {
-			if (*q == '/') {
-				*q = '\0';
-				if (chmod(ch, 0755) != 0)
-					fpkg_warnf("chmod %s: %s", ch,
-						   strerror(errno));
-				*q = '/';
-			}
-		}
-		if (chmod(ch, 0755) != 0)
-			fpkg_warnf("chmod %s: %s", ch, strerror(errno));
 	}
 	if (m_nullfs(sb, plan->app_data_dir, appto, false) != 0) return -1;
 	return 0;
@@ -3521,7 +3540,7 @@ static int stage_network(sandbox_t* sb, const sandbox_plan_t* plan) {
 				 etc_binds[i]);
 			if (access(from, R_OK) == 0) {
 				(void)unlink(to);
-				if (ensure_file(to) == 0)
+				if (ensure_file(to, NULL) == 0)
 					m_nullfs(sb, from, to, true);
 			}
 		}
@@ -3675,7 +3694,7 @@ static int stage_host_grants(sandbox_t* sb, const sandbox_plan_t* plan) {
 				 overlays[i].name);
 			snprintf(to, sizeof(to), "%s/run/host/%s", sb->jailroot,
 				 overlays[i].name);
-			if (access(from, R_OK) == 0 && ensure_file(to) == 0)
+			if (access(from, R_OK) == 0 && ensure_file(to, NULL) == 0)
 				m_nullfs(sb, from, to, true);
 		}
 		if (plan_has_host_grant(plan)) {
@@ -3717,7 +3736,7 @@ static int stage_host_grants(sandbox_t* sb, const sandbox_plan_t* plan) {
 							continue;
 						m_nullfs(sb, from, to, ro);
 					} else if (S_ISREG(st.st_mode)) {
-						if (ensure_file(to) == 0)
+						if (ensure_file(to, NULL) == 0)
 							m_nullfs(sb, from, to,
 								 ro);
 					}

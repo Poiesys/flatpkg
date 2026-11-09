@@ -31,7 +31,12 @@ done
 
 probe=.flatpkg-home-probe
 data="$HOME/.var/app/$app"
-trap 'rm -f "$data/$probe" "$HOME/$probe"' EXIT
+mkdir -p "$data" || exit 0
+orig_mode=$(stat -f '%Lp' "$data")
+trap 'chmod "$orig_mode" "$data" 2>/dev/null; rm -f "$data/$probe" "$HOME/$probe"' EXIT
+# A mode the app data dir may keep: root must not chmod it through the home
+# mount on the way to the mount point.
+chmod 0700 "$data"
 rm -f "$data/$probe" "$HOME/$probe"
 
 fail=0
@@ -46,6 +51,28 @@ if [ ! -f "$data/$probe" ]; then
 fi
 [ ! -f "$HOME/$probe" ] ||
 	note "a write to \$HOME landed in the real home ($HOME/$probe)"
+
+mode=$(stat -f '%Lp' "$data")
+if [ "$mode" != 700 ]; then
+	note "the run changed the app data dir's mode to $mode (a chmod"
+	note "  through the home mount reached the host directory)"
+fi
+
+# Both spellings of the private dir are the same directory inside the
+# sandbox, which is what lets XDG_*_HOME and the spawn shim use either.  A
+# nullfs mount reports its own st_dev, so compare a file, not st_ino.
+same=$("$FLATPKG" run --command=/usr/bin/sh "$app" \
+	-c 'echo x >"$HOME/.var/app/'"$app"'/.flatpkg-alias" &&
+	    cat "$HOME/.flatpkg-alias" >/dev/null && echo same' \
+	2>/dev/null || true)
+rm -f "$data/.flatpkg-alias"
+case "$same" in
+*same*) ;;
+*)
+	note "\$HOME and \$HOME/.var/app/$app are not the same directory"
+	note "  inside the sandbox"
+	;;
+esac
 
 if [ "$fail" -eq 0 ]; then
 	echo "PASS: \$HOME is the app's private dir; writes to it persist and do"

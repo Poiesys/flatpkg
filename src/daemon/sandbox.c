@@ -438,6 +438,150 @@ fail:
 #undef ADDP
 }
 
+#define JAIL_ROOT_MAX_MOUNTS 64
+
+// Mount points at or under `root`, shallowest last so a caller can unmount in
+// order.  Boundary-checked: ".../x" is not under ".../xy".
+static int mounts_under(const char* root, char paths[][PATH_MAX], size_t max,
+			size_t* n) {
+	struct statfs* mnts = NULL;
+	int total = getmntinfo(&mnts, MNT_NOWAIT);
+	size_t rl = strlen(root);
+
+	*n = 0;
+	if (total < 0) return -1;
+	for (int i = 0; i < total; i++) {
+		const char* at = mnts[i].f_mntonname;
+
+		if (strncmp(at, root, rl) != 0) continue;
+		if (at[rl] != '\0' && at[rl] != '/') continue;
+		if (*n < max) snprintf(paths[(*n)++], PATH_MAX, "%s", at);
+	}
+	return 0;
+}
+
+static void sort_deepest_first(char paths[][PATH_MAX], size_t n) {
+	for (size_t i = 1; i < n; i++) {
+		char key[PATH_MAX];
+		size_t j = i;
+
+		snprintf(key, sizeof(key), "%s", paths[i]);
+		while (j > 0 && strlen(paths[j - 1]) < strlen(key)) {
+			snprintf(paths[j], PATH_MAX, "%s", paths[j - 1]);
+			j--;
+		}
+		snprintf(paths[j], PATH_MAX, "%s", key);
+	}
+}
+
+// Remove a jail root, and only when it really is one: canonicalized under the
+// run dir, with every filesystem mounted at or under it gone first.  A tree
+// that still has a mount is left in place - rm_rf's FTW_MOUNT skips a mount
+// point, it does not keep the walk from reaching one through a swapped path.
+static int remove_jail_root(const char* root) {
+	char rroot[PATH_MAX], rrun[PATH_MAX];
+	char paths[JAIL_ROOT_MAX_MOUNTS][PATH_MAX];
+	size_t n = 0;
+
+	if (realpath(root, rroot) == NULL) {
+		if (errno == ENOENT) return 0;
+		fpkg_errorf("cannot resolve %s: %s", root, strerror(errno));
+		return -1;
+	}
+	if (realpath(FLATPKG_RUN_DIR, rrun) == NULL) {
+		fpkg_errorf("cannot resolve %s: %s", FLATPKG_RUN_DIR,
+			    strerror(errno));
+		return -1;
+	}
+	{
+		size_t rl = strlen(rrun);
+
+		if (strncmp(rroot, rrun, rl) != 0 || rroot[rl] != '/' ||
+		    rroot[rl + 1] == '\0') {
+			fpkg_errorf("not removing %s: it is outside %s", rroot,
+				    rrun);
+			return -1;
+		}
+	}
+	for (int pass = 0; pass < 3; pass++) {
+		if (mounts_under(rroot, paths, JAIL_ROOT_MAX_MOUNTS, &n) != 0) {
+			fpkg_errorf("cannot read the mount table");
+			return -1;
+		}
+		if (n == 0) break;
+		if (n == JAIL_ROOT_MAX_MOUNTS) {
+			fpkg_warnf("not removing %s: too many mounts under it",
+				   rroot);
+			return -1;
+		}
+		sort_deepest_first(paths, n);
+		for (size_t i = 0; i < n; i++)
+			if (unmount(paths[i], 0) != 0)
+				(void)unmount(paths[i], MNT_FORCE);
+	}
+	if (mounts_under(rroot, paths, JAIL_ROOT_MAX_MOUNTS, &n) != 0 || n > 0) {
+		fpkg_warnf("not removing %s: %zu filesystem(s) still mounted "
+			   "under it",
+			   rroot, n);
+		return -1;
+	}
+	if (rm_rf(rroot) != 0) {
+		fpkg_warnf("cannot remove %s: %s", rroot, strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+// Is a jail still rooted at `path`?  A leaked tree has no jail; a live one
+// must not be swept when the daemon restarts.
+static bool jail_alive_for_path(const char* path) {
+	char jidstr[16] = "0";
+	char jpath[PATH_MAX];
+
+	for (;;) {
+		int jid = jail_getv(0, "lastjid", jidstr, NULL);
+
+		if (jid <= 0) return false;
+		snprintf(jidstr, sizeof(jidstr), "%d", jid);
+		jpath[0] = '\0';
+		if (jail_getv(0, "jid", jidstr, "path", jpath, NULL) != jid)
+			continue;
+		{
+			char rpath[PATH_MAX];
+
+			if (realpath(jpath, rpath) != NULL &&
+			    strcmp(rpath, path) == 0)
+				return true;
+		}
+	}
+}
+
+// Jail roots left behind by a worker that died between mkdtemp and teardown.
+// Only trees no jail refers to are touched; the removal goes through the same
+// guard as a normal teardown.
+void sandbox_gc_leaks(void) {
+	DIR* d = opendir(FLATPKG_RUN_DIR);
+
+	if (d == NULL) return;
+	struct dirent* e;
+	while ((e = readdir(d)) != NULL) {
+		char path[PATH_MAX], rpath[PATH_MAX];
+		struct stat st;
+
+		if (e->d_name[0] == '.') continue;
+		snprintf(path, sizeof(path), "%s/%s", FLATPKG_RUN_DIR,
+			 e->d_name);
+		if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
+		if (realpath(path, rpath) == NULL) continue;
+		if (jail_alive_for_path(rpath)) continue;
+		if (remove_jail_root(rpath) == 0)
+			fpkg_infof("removed leaked sandbox %s", rpath);
+		else
+			fpkg_warnf("leaked sandbox left at %s", rpath);
+	}
+	closedir(d);
+}
+
 void sandbox_teardown(sandbox_t* sb) {
 	assert(sb != NULL);
 	if (cli_getenv("FLATPKG_DEBUG_KEEP") != NULL) {
@@ -453,33 +597,8 @@ void sandbox_teardown(sandbox_t* sb) {
 		sb->jid = 0;
 	}
 
-	if (sb->jailroot) {
-		for (size_t i = sb->nmounts; i > 0; i--) {
-			sb_mount_t* m = &sb->mounts[i - 1];
-			if (unmount(m->to, 0) != 0 && errno == EBUSY)
-				unmount(m->to, MNT_FORCE);
-		}
-		for (int pass = 0; pass < 5; pass++) {
-			bool busy = false;
-			for (size_t i = 0; i < sb->nmounts; i++) {
-				sb_mount_t* m = &sb->mounts[i];
-				if (unmount(m->to, 0) != 0 && errno == EBUSY) {
-					busy = true;
-					unmount(m->to, MNT_FORCE);
-				}
-			}
-			if (!busy) break;
-			usleep(100000 * (unsigned)(pass + 1));
-		}
-		for (size_t i = 0; i < sb->nmounts; i++) {
-			sb_mount_t* m = &sb->mounts[i];
-			if (unmount(m->to, 0) != 0 && errno != EINVAL)
-				fpkg_warnf("still mounted after teardown: "
-					   "%s",
-					   m->to);
-		}
-		(void)rm_rf(sb->jailroot);
-	}
+	if (sb->jailroot && remove_jail_root(sb->jailroot) != 0)
+		fpkg_warnf("sandbox root left at %s", sb->jailroot);
 
 	if (sb->devfs_ruleset > 0) {
 		int devnull = open("/dev/null", O_WRONLY);

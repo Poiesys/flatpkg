@@ -547,21 +547,33 @@ fail:
 	return 0;
 }
 
+// The directory is the caller's once the instance is registered, so a
+// component can have been swapped for a symlink: open it no-follow and remove
+// the entries through the descriptor, not by path.
 static void rmdir_contents(const char* dir) {
+	int fd, dfd;
+	DIR* d;
+
 	assert(dir != NULL);
-	DIR* d = opendir(dir);
-	if (d) {
+	fd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0) return;
+	d = fdopendir(fd);
+	if (d == NULL) {
+		close(fd);
+		return;
+	}
+	dfd = dirfd(d);
+	if (dfd >= 0) {
 		struct dirent* e;
 		while ((e = readdir(d)) != NULL) {
 			if (strcmp(e->d_name, ".") == 0 ||
 			    strcmp(e->d_name, "..") == 0)
 				continue;
-			char p[PATH_MAX];
-			snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
-			(void)unlink(p);
+			(void)unlinkat(dfd, e->d_name, 0);
 		}
-		closedir(d);
 	}
+	closedir(d);
+	// rmdir refuses a symlink, so the final removal is safe by name.
 	(void)rmdir(dir);
 }
 

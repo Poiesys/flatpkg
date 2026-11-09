@@ -152,6 +152,8 @@ int daemon_main(void) {
 		fpkg_errorf("listen: %s", strerror(errno));
 		return 1;
 	}
+	// One daemon owns the run dir now; a tree no jail refers to is a leak.
+	sandbox_gc_leaks();
 	fpkg_infof("flatpkg daemon listening on %s", FPKG_SOCKET);
 
 	if (mkdir_p(FLATPKG_STORE_DIR, 0775) != 0) {
