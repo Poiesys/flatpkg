@@ -58,7 +58,10 @@ void fp_write_stderr(const char* s, size_t n) {
 	fp_write_fd(STDERR_FILENO, s, n);
 }
 
-#define FP_LINEBUF (FP_MAX_MSG + FP_LEFT_W + 128)
+// A wrapped message costs a newline, an indent, a trailing clear and its
+// chunk on every row, so the buffer is sized for one row per message byte.
+#define FP_LINEBUF                                                             \
+	((FP_MAX_MSG + 1) * (FP_LEFT_W + FP_COL_GAP + 8) + 256)
 
 typedef struct {
 	int fd;
@@ -409,55 +412,156 @@ static void write_badge(fp_obuf_t* o, int level, bool colors_on) {
 	ob_cstr(o, "]" FP_SGR_RESET);
 }
 
-static void render_line_body(fp_obuf_t* o, const char* scope, const char* desc,
-			     int level, const char* msg) {
+// Byte length of the UTF-8 sequence at `p`; an invalid lead byte counts as one.
+static size_t utf8_len(const char* p) {
+	unsigned char c = (unsigned char)*p;
+
+	if ((c & 0xE0) == 0xC0) return 2;
+	if ((c & 0xF0) == 0xE0) return 3;
+	if ((c & 0xF8) == 0xF0) return 4;
+	return 1;
+}
+
+// Byte length of the escape sequence at `p`, 0 when `p` starts none.  The same
+// grammar fp_visible_width() counts as zero columns.
+static size_t esc_len(const char* p) {
+	const char* q;
+
+	if (*p != FP_ESC_CHAR) return 0;
+	q = p + 1;
+	if (*q != '[') return 1;
+	q++;
+	while (*q && (unsigned char)*q >= 0x30 && (unsigned char)*q <= 0x3F) q++;
+	while (*q && (unsigned char)*q >= 0x20 && (unsigned char)*q <= 0x2F) q++;
+	if (*q && (unsigned char)*q >= 0x40 && (unsigned char)*q <= 0x7E) q++;
+	return (size_t)(q - p);
+}
+
+// The chunk of `p` one row can hold: at most `avail` columns, broken at the
+// last space that fits so a sentence wraps at a word, else at the column
+// boundary.  A newline ends the chunk.  `*width` is its visible width, `*next`
+// where the following row starts.
+static size_t wrap_chunk(const char* p, size_t avail, size_t* width,
+			 const char** next) {
+	size_t i = 0, w = 0, space = 0, space_w = 0;
+	bool have_space = false;
+
+	while (p[i] != '\0' && p[i] != '\n') {
+		size_t e = esc_len(p + i);
+
+		if (e > 0) {
+			i += e;
+			continue;
+		}
+		if (w + 1 > avail) break;
+		if (p[i] == ' ') {
+			have_space = true;
+			space = i;
+			space_w = w;
+		}
+		w++;
+		i += utf8_len(p + i);
+	}
+	if (p[i] == '\0' || p[i] == '\n') {
+		*width = w;
+		*next = p + i;
+		return i;
+	}
+	if (have_space && space_w > 0) {
+		*width = space_w;
+		*next = p + space + 1;
+		return space;
+	}
+	*width = w;
+	*next = p + i;
+	return i;
+}
+
+// Emit `msg` in rows of at most `avail` columns.  Continuation rows are
+// indented by `indent`, so the message keeps its column; a newline in `msg`
+// starts a row too.  Every row is padded to `avail`, which is what the badge
+// column is measured from.  Returns the number of rows written.
+static size_t write_msg_wrapped(fp_obuf_t* o, const char* msg, size_t avail,
+				size_t indent) {
+	size_t rows = 1, col = 0;
+	const char* p = msg;
+
+	if (avail == 0) avail = 1;
+	for (;;) {
+		size_t w = 0, n;
+		const char* next = NULL;
+
+		if (*p == '\n') {
+			n = 0;
+			next = p + 1;
+		} else {
+			n = wrap_chunk(p, avail, &w, &next);
+			if (n == 0) {
+				// A chunk always makes progress; never loop on one
+				// that does not.
+				n = utf8_len(p);
+				w = 1;
+				next = p + n;
+			}
+			ob_write(o, p, n);
+		}
+		col += w;
+		p = next;
+		if (*p == '\0' || (*p == '\n' && p[1] == '\0')) {
+			if (*p == '\n') p++;
+			break;
+		}
+		ob_pad(o, avail > col ? avail - col : 0);
+		// The row may still hold a bar or an older line, and only the last
+		// row gets a badge: clear what this one will not overwrite.
+		ob_cstr(o, FP_EL_TO_END);
+		if (*p == '\n') p++;
+		ob_cstr(o, "\n");
+		ob_pad(o, indent);
+		rows++;
+		col = 0;
+	}
+	if (avail > col) ob_pad(o, avail - col);
+	return rows;
+}
+
+static size_t render_line_body(fp_obuf_t* o, const char* scope,
+			       const char* desc, int level, const char* msg) {
 	const bool colors_on = colors_on_locked();
-	const bool tty = true;
+	const bool tty = fp_fd_is_tty(STDERR_FILENO);
 	const size_t cols = fp_term_cols();
 	const size_t avail = fp_msg_avail(cols);
-	const size_t vis = fp_visible_width(msg);
-	const bool has_ansi = strchr(msg, FP_ESC_CHAR) != NULL;
-	const bool trunc = (vis > avail && avail > 1);
-	size_t written_msg;
-	size_t left_w, rows_up, badge_col;
+	size_t left_w, rows;
 
 	left_w = write_left(o, scope, desc, colors_on);
 	ob_pad(o, FP_COL_GAP);
 	if (colors_on)
 		ob_printf(o, FP_SGR_BOLD_FG256, fp_level_style(level)->msg);
 
-	written_msg = trunc ? (has_ansi ? vis : avail + 2)
-			    : (avail > vis ? avail : vis);
-	if (trunc) {
-		if (has_ansi) {
-			ob_cstr(o, msg);
-		} else {
-			ob_write(o, msg, avail - 1);
-			ob_cstr(o, "...");
-		}
-	} else {
+	// A redirected log is read a record at a time: wrap for a terminal, and
+	// keep one line otherwise, with the badge after the text instead of at a
+	// column the reader cannot see.
+	if (!tty) {
 		ob_cstr(o, msg);
-		if (avail > vis) ob_pad(o, avail - vis);
-	}
-
-	rows_up = cols > 0 ? (left_w + FP_COL_GAP + written_msg) / cols : 0;
-	badge_col =
-		cols > (size_t)FP_BADGE_W ? cols - (size_t)FP_BADGE_W + 1 : 1;
-	if (tty) {
-		if (rows_up > 0) ob_printf(o, FP_CUU, rows_up);
-		ob_printf(o, FP_CR_CHA, badge_col);
-		write_badge(o, level, colors_on);
-		if (rows_up > 0) ob_printf(o, FP_CUD, rows_up);
-	} else {
 		ob_pad(o, FP_COL_GAP);
 		write_badge(o, level, colors_on);
+		return 1;
 	}
+	rows = write_msg_wrapped(o, msg, avail, left_w + FP_COL_GAP);
+	// The badge is the last thing on the last row, at the right margin every
+	// row was padded towards; clear what the padding left behind first.
+	ob_cstr(o, FP_EL_TO_END);
+	ob_printf(o, FP_CR_CHA,
+		  cols > (size_t)FP_BADGE_W ? cols - (size_t)FP_BADGE_W + 1 : 1);
+	write_badge(o, level, colors_on);
+	return rows;
 }
 
-static void print_line_locked(const char* scope, const char* desc, int level,
-			      const char* msg, fp_line_kind_t kind) {
+static size_t print_line_locked(const char* scope, const char* desc, int level,
+				const char* msg, fp_line_kind_t kind) {
 	const bool colors_on = colors_on_locked();
 	fp_obuf_t o;
+	size_t rows;
 
 	ob_init(&o);
 
@@ -466,7 +570,7 @@ static void print_line_locked(const char* scope, const char* desc, int level,
 		else
 			ob_cstr(&o, FP_CR);
 	}
-	render_line_body(&o, scope, desc, level, msg);
+	rows = render_line_body(&o, scope, desc, level, msg);
 	switch (kind) {
 	case FP_LINE_FULL:
 		ob_cstr(&o, "\n");
@@ -481,9 +585,12 @@ static void print_line_locked(const char* scope, const char* desc, int level,
 		break;
 	}
 	ob_flush(&o);
+	return rows;
 }
 
-__attribute__((weak)) void fp_anchor_after_log_line(void) {}
+__attribute__((weak)) void fp_anchor_after_log_line(size_t rows) {
+	(void)rows;
+}
 
 static bool needs_quoting(const char* s) {
 	return strpbrk(s, " \t\n\r=\"") != NULL;
@@ -594,7 +701,7 @@ static void format_msg(char* buf, size_t buflen, const char* fmt, va_list ap) {
 	(void)vsnprintf(buf, buflen, get_string(fmt), ap);
 }
 
-void fp_anchor_after_log_line(void);
+void fp_anchor_after_log_line(size_t rows);
 
 // While a sink is installed (a worker serving a typed request), lines are records
 // for that request instead of terminal output; evui.c serves the daemon.
@@ -637,12 +744,14 @@ bool fp_record_table(const char* const* headers, size_t ncols,
 
 static void emit_line(const char* scope, const char* desc, int level,
 		      const char* msg) {
+	size_t rows;
+
 	if (record_line(scope, level, msg)) return;
 	fp_out_lock();
-	print_line_locked(scope, desc, level, msg, FP_LINE_FULL);
-	// A pinned progress area has to know a row was used, or the next
-	// redraw puts the cursor back on top of this line.
-	fp_anchor_after_log_line();
+	rows = print_line_locked(scope, desc, level, msg, FP_LINE_FULL);
+	// A pinned progress area has to know how many rows were used, or the
+	// next redraw puts the cursor back on top of this line.
+	fp_anchor_after_log_line(rows);
 	emit_logfmt(scope, level, msg);
 	fp_out_unlock();
 }
@@ -665,11 +774,13 @@ static void end_line(const char* scope, const char* desc, int level,
 }
 
 static void emit_begin(const char* scope, const char* desc, const char* msg) {
+	size_t rows;
+
 	if (record_line(scope, FP_LEVEL_INFO, msg)) return;
 	fp_out_lock();
 	g_last_begin_ns = fp_now_ns();
-	print_line_locked(scope, desc, FP_LVL_PROGRESS, msg, FP_LINE_FULL);
-	fp_anchor_after_log_line();
+	rows = print_line_locked(scope, desc, FP_LVL_PROGRESS, msg, FP_LINE_FULL);
+	fp_anchor_after_log_line(rows);
 	fp_out_unlock();
 }
 

@@ -249,9 +249,9 @@ if ! kill -0 "$helper" 2>/dev/null; then
 	fail=1
 fi
 
-# Two counters over the helper's own log.  Counts, not greps: fplog truncates
-# the message body at the terminal width, so only the badge (drawn after a
-# cursor move) and a phrase that LEADS a line survive.
+# Two counters over the helper's own log.  Counts, not greps: a redirected log
+# keeps one line per record with the badge after the text, and a phrase may sit
+# anywhere on it, but counting badges is what says the message came from here.
 helper_warns() {
 	sed 's/\x1b\[[0-9;]*m//g; s/\x1b\[[0-9;]*G//g' "$tmp/helper.log" |
 		grep -c '\[ WARN  \]' || true
@@ -603,8 +603,7 @@ for form in none forged; do
 	fi
 done
 # ...and the refusal must be one the PORTAL spoke, so count its WARN badges:
-# fplog truncates the body at the terminal width, so a grep of the tail could
-# never fire - while the pid that leads the sentence always survives.
+# the badge is drawn for the line the portal wrote, whatever its length.
 echo "  portal WARN badges before the two refusals: $warns0"
 for form in none forged; do
 	if sed 's/\x1b\[[0-9;]*m//g' "$tmp/portal.log" |
@@ -636,6 +635,9 @@ else
 	# build a 13-second union root.  A D-Bus name must start with a letter.
 	apptag="com.example.fpguard.accepted"
 	psock="$tmp/accepted.sock"
+	# The forgery refusals above wrote "is not flatpkg" into this log; only
+	# what the real proxy appends can convict the executable check.
+	accept_log=$(wc -c < "$tmp/portal.log" | tr -d ' ')
 	"$PROXY" "$ADDR" "$psock" --filter "--own=$apptag" 	    --call=org.freedesktop.portal.*=* >"$tmp/proxy.log" 2>&1 &
 	pxy=$!
 	n=0
@@ -672,8 +674,8 @@ else
 		fi
 		# and it must NOT have been turned away for its executable,
 		# which is the check the forgery case proves
-		if sed 's/\x1b\[[0-9;]*m//g' "$tmp/portal.log" |
-		    grep -q "is not flatpkg"; then
+		if tail -c "+$((accept_log + 1))" "$tmp/portal.log" 2>/dev/null |
+		    sed 's/\x1b\[[0-9;]*m//g' | grep -q "is not flatpkg"; then
 			note "the portal refused a real proxy for not being one - the"
 			note "  executable check is rejecting flatpkg's own proxy"
 		fi

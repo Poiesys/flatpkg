@@ -71,7 +71,7 @@ typedef struct {
 	size_t pos;
 } tbbuf;
 
-void fp_anchor_after_log_line(void);
+void fp_anchor_after_log_line(size_t rows);
 
 static tb_bar_chars_t chars_from_glyphs(const unsigned char glyphs[4],
 					char store[4][2]);
@@ -1085,15 +1085,54 @@ static void finish_progress(const char* sn, const char* desc, bool success,
 
 void fp_progress_cursor_restore(void) { cursor_show(); }
 
-void fp_anchor_after_log_line(void) {
+// Rows the log may use before it meets the pinned bars.
+static size_t log_room(void) {
+	return g_rows > g_bar_count ? g_rows - g_bar_count : 0;
+}
+
+// A wrapped line's rows may have scrolled the screen and covered the bars, and
+// the cursor is no longer where g_log_row says.  Ask the terminal where it is,
+// put the pin below it, and redraw the bars.
+static void repin_after_wrapped(void) {
+	tbbuf t;
+	char buf[4096];
+	size_t row = 0;
+
+	if (!query_cursor_row(&row)) {
+		// No answer: stop pinning rather than draw bars over the log.
+		g_pin = false;
+		return;
+	}
+	g_log_row = row;
+	t.b = buf;
+	t.cap = sizeof(buf);
+	t.pos = 0;
+	if (g_log_row > log_room()) {
+		size_t scroll = g_log_row - log_room();
+
+		tb_fmt(&t, FP_CUP_CR, g_rows);
+		while (scroll-- > 0) tb_str(&t, "\n");
+		g_log_row = log_room();
+	}
+	for (size_t i = 0; i < TB_MAX_BARS; i++)
+		if (g_bar_slots[i].active) draw_bar_row_at_row(&t, i);
+	tb_fmt(&t, FP_CUP_CR, g_log_row);
+	write_out_locked(&t);
+}
+
+void fp_anchor_after_log_line(size_t rows) {
 	tbbuf t;
 	char buf[4096];
 
+	if (rows == 0) rows = 1;
 	if (!g_anchor) return;
 	if (g_pin) {
-		g_log_row++;
-		if (g_bar_count == 0 || g_log_row <= g_rows - g_bar_count)
+		g_log_row += rows;
+		if (g_bar_count == 0 || g_log_row <= log_room()) return;
+		if (rows > 1) {
+			repin_after_wrapped();
 			return;
+		}
 		t.b = buf;
 		t.cap = sizeof(buf);
 		t.pos = 0;
@@ -1102,11 +1141,13 @@ void fp_anchor_after_log_line(void) {
 		return;
 	}
 	if (g_bar_count == 0) return;
-	t.b = buf;
-	t.cap = sizeof(buf);
-	t.pos = 0;
-	shift_bars_down(&t);
-	write_out_locked(&t);
+	for (size_t i = 0; i < rows; i++) {
+		t.b = buf;
+		t.cap = sizeof(buf);
+		t.pos = 0;
+		shift_bars_down(&t);
+		write_out_locked(&t);
+	}
 }
 
 static void fill_buf(char* dst, size_t dstlen, const char* src) {
