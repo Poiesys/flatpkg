@@ -938,7 +938,7 @@ static void client_state_write(wctx_t* c, uint32_t id, const fp_req_t* r,
 	ok = fsync(fileno(f)) == 0 && ok;
 	ok = fclose(f) == 0 && ok;
 	if (!ok || rename(tmp, path) != 0) {
-		unlink(tmp);
+		(void)unlink(tmp);
 		ack_err(c, id, FP_E_INTERNAL, "cannot store the client state");
 		return;
 	}

@@ -116,11 +116,7 @@ typedef struct {
 
 extern bool g_fetch_quiet;
 
-fpkg_error_t write_file(const char* path, const char* content,
-			       mode_t mode);
-int rm_rf(const char* path);
 char* slurp_file(const char* path);
-void trim(char* s);
 void store_path(char* buf, size_t len, const char* fmt, ...);
 const char* host_arch(void);
 int atomic_symlink(const char* target, const char* link_path);

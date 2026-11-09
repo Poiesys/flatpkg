@@ -1,5 +1,7 @@
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <ftw.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -98,6 +100,61 @@ fpkg_error_t copy_file(const char* from, const char* to, mode_t mode) {
 	close(in);
 	errno = e;
 	return e == 0 ? FPKG_OK : fpkg_error_from_errno(e);
+}
+
+// Give `path` to uid:gid without following a symlink standing in for it.  The
+// name may be one the caller can swap, and following it would hand away the
+// target's owner instead.
+fpkg_error_t chown_nofollow(const char* path, uid_t uid, gid_t gid) {
+	assert(path != NULL);
+	if (fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW) != 0)
+		return fpkg_error_from_errno(errno);
+	return FPKG_OK;
+}
+
+// Write `content` to `path`, replacing what is there.  The write is looped over
+// short writes and EINTR, and a failed close is an error: a truncated keyfile
+// or /etc/passwd is worse than no file.
+fpkg_error_t write_file(const char* path, const char* content, mode_t mode) {
+	assert(path != NULL);
+	assert(content != NULL);
+	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+	if (fd < 0) return fpkg_error_from_errno(errno);
+	size_t len = strlen(content), off = 0;
+	int e = 0;
+
+	while (off < len) {
+		ssize_t w = write(fd, content + off, len - off);
+		if (w < 0) {
+			if (errno == EINTR) continue;
+			e = errno;
+			break;
+		}
+		if (w == 0) {
+			e = EIO;
+			break;
+		}
+		off += (size_t)w;
+	}
+	if (close(fd) != 0 && e == 0) e = errno;
+	errno = e;
+	return e == 0 ? FPKG_OK : fpkg_error_from_errno(e);
+}
+
+static int rm_cb(const char* path, const struct stat* st, int type,
+		 struct FTW* ftw) {
+	(void)st;
+	(void)ftw;
+	if (type == FTW_DP || type == FTW_D) rmdir(path);
+	else
+		(void)unlink(path);
+	return 0;
+}
+
+// FTW_MOUNT: FTW_PHYS alone only skips symlinks, not another filesystem.
+int rm_rf(const char* path) {
+	assert(path != NULL);
+	return nftw(path, rm_cb, 16, FTW_DEPTH | FTW_PHYS | FTW_MOUNT);
 }
 
 // Run a program with no shell.  Any of the three fds may be -1 to inherit;

@@ -24,7 +24,7 @@ int history_append(const char* action, const char* ref, const char* old_version,
 	history_path(path, sizeof(path));
 	char dir[PATH_MAX];
 	snprintf(dir, sizeof(dir), "%s", store_root());
-	mkdir(dir, 0755);
+	(void)mkdir(dir, 0755);
 	FILE* f = fopen(path, "a");
 	if (!f) {
 		fpkg_warnf("cannot write history: %s", strerror(errno));

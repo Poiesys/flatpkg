@@ -127,7 +127,11 @@ bool fp_fd_is_tty(int fd) {
 	return false;
 }
 size_t fp_term_cols(void) { return 80; }
+// The daemon has no terminal: the callers share these entry points with the
+// CLI's renderer, and this side has nothing to redraw.
 void fp_set_terminal_size(int rows, int cols) {
+	(void)rows;
+	(void)cols;
 }
 
 void fp_out(const char* fmt, ...) {
@@ -214,8 +218,7 @@ fp_spin_t fp_spin_init(const char* scope, const char* desc, const char* label) {
 	return s;
 }
 
-void fp_spin_tick(fp_spin_t* s) {
-}
+void fp_spin_tick(fp_spin_t* s) { (void)s; }
 
 void fp_spin_dismiss(fp_spin_t* s) { (void)s; }
 

@@ -17,14 +17,6 @@ static void set_str(char** dst, const char* val) {
 	*dst = copy;
 }
 
-static char* trim(char* s) {
-	assert(s != NULL);
-	while (*s && isspace((unsigned char)*s)) s++;
-	size_t n = strlen(s);
-	while (n > 0 && isspace((unsigned char)s[n - 1])) s[--n] = '\0';
-	return s;
-}
-
 static void strlist_push(strlist_t* l, const char* item) {
 	assert(l != NULL);
 	assert(item != NULL);

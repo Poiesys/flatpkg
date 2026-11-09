@@ -537,7 +537,7 @@ int cmd_remote_delete(const char* name) {
 
 	char key_host[PATH_MAX];
 	store_path(key_host, sizeof(key_host), "keys/%s.gpg", name);
-	unlink(key_host);
+	(void)unlink(key_host);
 	return rc;
 }
 static int list_commits_one(const char* type, const char* branch_dir) {

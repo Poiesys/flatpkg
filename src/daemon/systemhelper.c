@@ -350,22 +350,7 @@ static void handle_uninstall(GDBusConnection* connection, const gchar* sender,
 			"No uninstall command is configured in helper.conf");
 		return;
 	}
-	if (access(argv[0], X_OK) != 0) {
-		for (size_t i = 0; i < argc; i++) free(argv[i]);
-		free(argv);
-		g_dbus_method_invocation_return_error(
-			invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
-			"Configured uninstall command is not executable");
-		return;
-	}
-	pid_t pid = fork();
-	int status = -1;
-	if (pid == 0) {
-		execv(argv[0], argv);
-		_exit(127);
-	}
-	if (pid < 0 || waitpid(pid, &status, 0) != pid ||
-	    !WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+	if (run_program(argv, -1, -1, -1) != 0) {
 		for (size_t i = 0; i < argc; i++) free(argv[i]);
 		free(argv);
 		g_dbus_method_invocation_return_error(
@@ -707,20 +692,6 @@ out:
 	if (sig_v != NULL) g_variant_unref(sig_v);
 }
 
-static int run_helper_command(char** argv, size_t argc) {
-	if (argc == 0 || argv[0] == NULL) return -1;
-	pid_t pid = fork();
-	int status = -1;
-	if (pid == 0) {
-		execv(argv[0], argv);
-		_exit(127);
-	}
-	if (pid < 0 || waitpid(pid, &status, 0) != pid ||
-	    !WIFEXITED(status) || WEXITSTATUS(status) != 0)
-		return -1;
-	return 0;
-}
-
 static gboolean helper_run_mapped(const char* request,
 				  fpkg_helper_args_t* args,
 				  GDBusMethodInvocation* invocation) {
@@ -739,15 +710,7 @@ static gboolean helper_run_mapped(const char* request,
 			"No %s command is configured in helper.conf", request);
 		return FALSE;
 	}
-	if (access(argv[0], X_OK) != 0) {
-		for (size_t i = 0; i < argc; i++) free(argv[i]);
-		free(argv);
-		g_dbus_method_invocation_return_error(
-			invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
-			"Configured %s command is not executable", request);
-		return FALSE;
-	}
-	int rc = run_helper_command(argv, argc);
+	int rc = run_program(argv, -1, -1, -1);
 	for (size_t i = 0; i < argc; i++) free(argv[i]);
 	free(argv);
 	if (rc != 0) {
@@ -818,15 +781,7 @@ handle_install_bundle(GDBusConnection* connection, const gchar* sender,
 			"No install-bundle command is configured in helper.conf");
 		goto out;
 	}
-	if (access(argv[0], X_OK) != 0) {
-		for (size_t i = 0; i < argc; i++) free(argv[i]);
-		free(argv);
-		g_dbus_method_invocation_return_error(
-			invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
-			"Configured install-bundle command is not executable");
-		goto out;
-	}
-	int hrc = run_helper_command(argv, argc);
+	int hrc = run_program(argv, -1, -1, -1);
 	for (size_t i = 0; i < argc; i++) free(argv[i]);
 	free(argv);
 	if (hrc != 0) {

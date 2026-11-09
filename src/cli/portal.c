@@ -1894,9 +1894,9 @@ static void handle_file_chooser(DBusConnection* conn, DBusMessage* msg,
 			    access("/tmp/.X11-unix/X0", F_OK) == 0)
 				setenv("DISPLAY", ":0", 1);
 		}
-		if (folder && *folder)
-			if (chdir(folder) != 0) {
-			}
+		// The start folder is a hint for the dialog; the child still
+		// execs if it is gone.
+		if (folder && *folder) (void)chdir(folder);
 		const char* argv[24];
 		int a = 0;
 		argv[a++] = "/usr/local/bin/zenity";
@@ -2404,7 +2404,7 @@ static void sweep_stale_instances(void) {
 					continue;
 				char f[PATH_MAX];
 				snprintf(f, sizeof(f), "%s/%s", dir, e->d_name);
-				unlink(f);
+				(void)unlink(f);
 			}
 			closedir(id);
 		}

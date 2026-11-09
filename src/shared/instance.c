@@ -267,23 +267,12 @@ int jail_exists(int jid) {
 	assert(jid > 0);
 	char jidstr[16];
 	snprintf(jidstr, sizeof(jidstr), "%d", jid);
-	pid_t pid = fork();
-	if (pid < 0) return 0;
-	if (pid == 0) {
-		char* argv[] = {"/usr/sbin/jls", "-q", "-j", jidstr, NULL};
-		int devnull = open("/dev/null", O_WRONLY);
+	int devnull = open("/dev/null", O_WRONLY);
+	char* argv[] = {"/usr/sbin/jls", "-q", "-j", jidstr, NULL};
+	int rc = run_program(argv, -1, devnull, devnull);
 
-		if (devnull >= 0) {
-			dup2(devnull, STDOUT_FILENO);
-			dup2(devnull, STDERR_FILENO);
-			if (devnull > STDERR_FILENO) close(devnull);
-		}
-		execv(argv[0], argv);
-		_exit(127);
-	}
-	int status = 0;
-	if (waitpid(pid, &status, 0) < 0) return 0;
-	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+	if (devnull >= 0) close(devnull);
+	return rc == 0;
 }
 
 int instance_alive(const char* dir, int jid) {

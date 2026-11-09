@@ -2,6 +2,7 @@
 #define FLATPKG_H
 
 #include <assert.h>
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdbool.h>
@@ -51,9 +52,26 @@ typedef enum {
 // Small shared helpers, once copied into most modules.
 char* xstrdup(const char* s);
 char* xasprintf(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+// Strip whitespace in place; returns the new start.  Header-inline because a
+// parser that only needs this should not have to link the file helpers.
+static inline char* trim(char* s) {
+	assert(s != NULL);
+	char* p = s;
+	while (*p && isspace((unsigned char)*p)) p++;
+	if (p != s) memmove(s, p, strlen(p) + 1);
+	size_t n = strlen(s);
+	while (n > 0 && isspace((unsigned char)s[n - 1])) s[--n] = '\0';
+	return s;
+}
 fpkg_error_t mkdir_p(const char* path, mode_t mode);
 // Copy a regular file, creating `to`; errno is set on failure.
 fpkg_error_t copy_file(const char* from, const char* to, mode_t mode);
+// chown without following a symlink.  For a path the caller can swap.
+fpkg_error_t chown_nofollow(const char* path, uid_t uid, gid_t gid);
+// Replace `path` with `content`.
+fpkg_error_t write_file(const char* path, const char* content, mode_t mode);
+// Remove a tree; symlinks are not followed and other mounts are not crossed.
+int rm_rf(const char* path);
 // Fork/exec a program with no shell; fds < 0 inherit.  Returns its exit
 // status, or -1 when it could not be run.
 int run_program(char* const argv[], int in_fd, int out_fd, int err_fd);
@@ -526,26 +544,14 @@ typedef enum {
 	FLATPKG_DEP_KIND_EXTENSION = 2,
 } flatpkg_dep_kind_t;
 
-// One batch: resolve every request, solve once, show one table and ask once,
-// then run every op with (k/N) progress.  `simulate` stops after the table.
-int cmd_install_many(const char** requests, const char* const* commits,
-		     const flatpkg_dep_kind_t* kinds, size_t n, int assume_yes,
-		     bool simulate, bool reinstall);
-int cmd_plan_apply(const char* request, flatpkg_dep_kind_t kind,
-		   const char* commit, int assume_yes, bool simulate,
-		   bool reinstall);
-
 // The executor a confirmed plan row reaches; `update` plans first.
 int update_deploy(const char* ref);
-int cmd_update(const char* ref, bool assume_yes, bool simulate);
 int cmd_search(const char* text);
 int cmd_list_commits(const char* ref);
 int cmd_rollback(const char* ref, const char* commit);
 
 // Remove one deploy after a confirmed plan; the world save belongs to the commit.
 int remove_deploy_ref(const char* ref);
-int cmd_uninstall_world_many(const char** refs, size_t nrefs, int assume_yes,
-			     int rdepends, bool simulate);
 // Install one extension ref by pulling its runtime-kind ref under extension/.
 int ostree_install_extension_ref(const char* ref);
 // Refs a deployed app or runtime needs that the store lacks; `full` asks the
@@ -686,9 +692,6 @@ int cmd_history(void);
 
 int cmd_repair(bool simulate);
 
-int cmd_upgrade(bool simulate, bool prune, bool available, bool assume_yes,
-		const char* const* refs, size_t nrefs);
-
 int daemon_main(void);
 int cli_entry(int argc, char* argv[]);
 // The control socket: a compile-time setting, never the environment, because
@@ -751,7 +754,6 @@ int portal_main(void);
 int ostree_deploy_from_repo(const char* child_repo, const char* ref,
 			    const char* origin, char** subpaths,
 			    size_t nsubpaths, unsigned flags);
-int ostree_uninstall_from_helper(const char* ref, unsigned flags);
 
 void store_mark_changed(void);
 bool ostree_remote_exists(const char* name);
@@ -783,8 +785,6 @@ int ostree_appstream_deploy(const char* remote, const char* arch);
 int session_helper_main(void);
 
 int system_helper_main(int argc, char* argv[]);
-
-int ostree_ensure_installed(const char* app_id);
 
 // One answer to "is this deployed runtime/extension still needed": a runtime
 // declares its extensions, so an app-only scan would orphan them.

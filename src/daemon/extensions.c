@@ -13,17 +13,6 @@
 #define FPKG_MODULE "extensions"
 #include "fpkglog.h"
 
-static int write_file(const char* path, const char* content, mode_t mode) {
-	assert(path != NULL);
-	assert(content != NULL);
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
-	if (fd < 0) return -1;
-	size_t len = strlen(content);
-	ssize_t w = write(fd, content, len);
-	close(fd);
-	return (w == (ssize_t)len) ? 0 : -1;
-}
-
 static void path_parent(const char* path, char* out, size_t outlen) {
 	assert(path != NULL);
 	assert(out != NULL);
@@ -414,7 +403,7 @@ int fp_extensions_apply(const fp_metadata_t* app_meta, sandbox_t* sb) {
 						   strerror(errno));
 					continue;
 				}
-				unlink(host_link);
+				(void)unlink(host_link);
 				if (symlink(target, host_link) != 0) {
 					fpkg_warnf("symlink %s -> %s: %s",
 						   host_link, target,

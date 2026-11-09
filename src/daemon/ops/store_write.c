@@ -333,7 +333,7 @@ static int export_link(const char* store, const char* app_id, const char* rel,
 			   rel, app_id);
 		return -1;
 	}
-	unlink(link);
+	(void)unlink(link);
 	return symlink(target, link) == 0 ? 0 : -1;
 }
 

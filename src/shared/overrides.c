@@ -287,14 +287,14 @@ int overrides_from_text(const char* text, const char* dir, fp_metadata_t* out) {
 		if (w < 0 && errno == EINTR) continue;
 		if (w <= 0) {
 			close(fd);
-			unlink(tmp);
+			(void)unlink(tmp);
 			return -1;
 		}
 		off += (size_t)w;
 	}
 	close(fd);
 	int rc = fp_metadata_parse_any(tmp, out);
-	unlink(tmp);
+	(void)unlink(tmp);
 	return rc;
 }
 

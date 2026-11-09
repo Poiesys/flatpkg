@@ -81,7 +81,8 @@ uidline=$(at 'st.st_uid != plan->uid')
 refuse=$(at 'return -1')
 tighten=$(grep -n 'chmod(plan->xdg_runtime_dir, 0700)' "$tmp/fn.c" | head -1 |
 	cut -d: -f1)
-hand=$(grep -n 'chown(plan->xdg_runtime_dir' "$tmp/fn.c" | head -1 | cut -d: -f1)
+hand=$(grep -nE 'chown(_nofollow)?\(plan->xdg_runtime_dir' "$tmp/fn.c" |
+	head -1 | cut -d: -f1)
 
 if [ -z "$uidline" ] || [ -z "$refuse" ]; then
 	note "sandbox_ensure_runtime_dir(): cannot locate both the ownership"
@@ -109,7 +110,7 @@ fi
 # The floor on the operations themselves: the ownership test, the refusal,
 # the tightening and the handover.  A tree that loses one has changed
 # shape, and a count that can only be zero is not a check.
-n=$(grep -cE 'st_uid|chmod\(plan->xdg_runtime_dir, 0700\)|chown\(plan->xdg_runtime_dir' \
+n=$(grep -cE 'st_uid|chmod\(plan->xdg_runtime_dir, 0700\)|chown(_nofollow)?\(plan->xdg_runtime_dir' \
 	"$tmp/fn.c" || true)
 [ "${n:-0}" -ge 4 ] || {
 	echo "FAIL: only $n of the four documented operations are present in"

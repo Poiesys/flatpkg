@@ -880,14 +880,14 @@ static int parse_metadata_text(const char* body, fp_metadata_t* out) {
 	ssize_t nw = write(fd, body, strlen(body));
 	close(fd);
 	if (nw < 0) {
-		unlink(tmpl);
+		(void)unlink(tmpl);
 		fpkg_errorf("write %s: %s", tmpl, strerror(errno));
 		return -1;
 	}
 	// Runtimes use [Runtime] (no name=/command=), so parse them leniently
 	// or their metadata is rejected and the deploy skipped.
 	int rc = fp_metadata_parse_any(tmpl, out);
-	unlink(tmpl);
+	(void)unlink(tmpl);
 	return rc;
 }
 static int read_remote_metadata(const char* commit, fp_metadata_t* out) {

@@ -54,20 +54,6 @@ static void host_wayland_display(const sandbox_plan_t* plan, char* out,
 	free(nm);
 }
 
-static fpkg_error_t write_file(const char* path, const char* content,
-			       mode_t mode) {
-	assert(path != NULL);
-	assert(content != NULL);
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
-	if (fd < 0) return fpkg_error_from_errno(errno);
-	size_t len = strlen(content);
-	ssize_t w = write(fd, content, len);
-	int e = errno;
-	close(fd);
-	if (w != (ssize_t)len) return e ? fpkg_error_from_errno(e) : FPKG_EIO;
-	return FPKG_OK;
-}
-
 // Copy `from` into a new `to` owned by uid:gid.  O_EXCL makes "the caller
 // wanted this file created" one decision: an existing file is left alone, and
 // the owner is set through the descriptor rather than a second name lookup.
@@ -116,7 +102,7 @@ static fpkg_error_t copy_file_owned(const char* from, const char* to,
 static int make_symlink(const char* target, const char* linkpath) {
 	assert(target != NULL);
 	assert(linkpath != NULL);
-	unlink(linkpath);
+	(void)unlink(linkpath);
 	return symlink(target, linkpath);
 }
 
@@ -457,21 +443,6 @@ static int gpg_agent_socket(const sandbox_plan_t* plan, char* out, size_t n) {
 	return -1;
 }
 
-static int run_argv(char* const argv[]) {
-	assert(argv != NULL);
-	assert(argv[0] != NULL);
-	pid_t pid = fork();
-	if (pid < 0) return -1;
-	if (pid == 0) {
-		execv(argv[0], argv);
-		_exit(127);
-	}
-	int status = 0;
-	if (waitpid(pid, &status, 0) < 0) return -1;
-	if (!WIFEXITED(status)) return -1;
-	return WEXITSTATUS(status);
-}
-
 void sb_track(sandbox_t* sb, const char* fstype, const char* from,
 		     const char* to) {
 	assert(sb != NULL);
@@ -585,7 +556,7 @@ int mount_tool(sandbox_t* sb, const char* tool, char* const args[],
 	if (!argv) return -1;
 	argv[0] = (char*)tool;
 	for (size_t i = 0; i < n; i++) argv[i + 1] = args[i];
-	int rc = run_argv(argv);
+	int rc = run_program(argv, -1, -1, -1);
 	free(argv);
 	if (rc != 0) {
 		fpkg_errorf("%s failed (rc=%d): %s%s%s", tool, rc,
@@ -734,8 +705,6 @@ int m_special_opts(sandbox_t* sb, const char* fstype, const char* to,
 	return mount_tool(sb, "/sbin/mount", args, fstype, NULL, to);
 }
 
-// Make the host's PKCS#11 trust store reachable: reuse or start one per-user
-// `p11-kit server` and bind its directory into the jail.
 static bool p11kit_socket_usable(const char* path, uid_t uid) {
 	assert(path != NULL);
 	struct stat st;
@@ -780,6 +749,8 @@ static bool p11kit_find_server(const char* dir, uid_t uid, char* sock_out,
 	return false;
 }
 
+// Make the host's PKCS#11 trust store reachable: reuse or start one per-user
+// `p11-kit server` and bind its directory into the jail.
 static bool p11kit_ensure_server(const sandbox_plan_t* plan, char* sock_out,
 				 size_t sock_len) {
 	assert(plan != NULL);
@@ -991,8 +962,8 @@ static void write_drm_node(const char* jailroot, const char* rel,
 	write_file(file, buf, 0644);
 
 	snprintf(file, sizeof(file), "%s/subsystem", dir);
-	unlink(file);
-	symlink("../../../.sys/class/drm", file);
+	(void)unlink(file);
+	(void)symlink("../../../.sys/class/drm", file);
 
 	snprintf(file, sizeof(file), "%s/device", dir);
 	if (mkdir_p(file, 0755) != 0) return;
@@ -1007,15 +978,15 @@ static void write_drm_node(const char* jailroot, const char* rel,
 	if (driver != NULL && *driver != '\0') {
 		snprintf(file, sizeof(file), "%s/driver", devdir);
 		snprintf(buf, sizeof(buf), "../../../../.drmdrv/%s", driver);
-		unlink(file);
-		symlink(buf, file);
+		(void)unlink(file);
+		(void)symlink(buf, file);
 	}
 
 	snprintf(file, sizeof(file), "%s/subsystem", devdir);
 	snprintf(buf, sizeof(buf), "../../../../.drmbus/%s",
 		 (busname != NULL && *busname != '\0') ? busname : "pci");
-	unlink(file);
-	symlink(buf, file);
+	(void)unlink(file);
+	(void)symlink(buf, file);
 
 	if (slot != NULL && *slot != '\0') {
 		snprintf(file, sizeof(file), "%s/uevent", devdir);
@@ -1150,7 +1121,7 @@ int sandbox_ensure_runtime_dir(const sandbox_plan_t* plan) {
 	}
 	if (mkdir(plan->xdg_runtime_dir, 0700) != 0 && errno != EEXIST)
 		return -1;
-	if (chown(plan->xdg_runtime_dir, plan->uid, plan->gid) != 0 ||
+	if (chown_nofollow(plan->xdg_runtime_dir, plan->uid, plan->gid) != 0 ||
 	    chmod(plan->xdg_runtime_dir, 0700) != 0) {
 		fpkg_warnf("cannot hand %s to %s: %s", plan->xdg_runtime_dir,
 			   plan->user_name, strerror(errno));
@@ -1214,13 +1185,16 @@ static int mkdir_app_xdg_dir(const sandbox_plan_t* plan, const char* app_id,
 	if (mkdir_p(appd, 0755) != 0) return -1;
 	if (sub && sub[0] && mkdir_p(leaf, 0700) != 0) return -1;
 
-	chmod(base, 0755);
-	chown(base, plan->uid, plan->gid);
-	chmod(appd, 0755);
-	chown(appd, plan->uid, plan->gid);
-	if (sub && sub[0]) {
-		chmod(leaf, 0700);
-		chown(leaf, plan->uid, plan->gid);
+	// Each name lives under the caller's runtime dir, so it is chowned
+	// without following a link the caller could have put there.
+	const char* give[] = {base, appd, leaf};
+	const mode_t modes[] = {0755, 0755, 0700};
+	size_t ngive = (sub && sub[0]) ? 3 : 2;
+	for (size_t i = 0; i < ngive; i++) {
+		if (chmod(give[i], modes[i]) != 0)
+			fpkg_warnf("chmod %s: %s", give[i], strerror(errno));
+		if (chown_nofollow(give[i], plan->uid, plan->gid) != 0)
+			fpkg_warnf("chown %s: %s", give[i], strerror(errno));
 	}
 	return 0;
 }
@@ -1349,11 +1323,11 @@ static void stage_dconf_migration(sandbox_t* sb, const sandbox_plan_t* plan) {
 
 	char dump_path[PATH_MAX];
 	snprintf(dump_path, sizeof(dump_path), "%s/user", dconf_dir);
-	if (chown(dconf_dir, plan->uid, plan->gid) != 0)
+	if (chown_nofollow(dconf_dir, plan->uid, plan->gid) != 0)
 		fpkg_warnf("chown %s: %s", dconf_dir, strerror(errno));
 	if (write_file(dump_path, "", 0644) != 0)
 		fpkg_warnf("write %s: %s", dump_path, strerror(errno));
-	if (chown(dump_path, plan->uid, plan->gid) != 0)
+	if (chown_nofollow(dump_path, plan->uid, plan->gid) != 0)
 		fpkg_warnf("chown %s: %s", dump_path, strerror(errno));
 	int out_fd = open(dump_path, O_WRONLY | O_TRUNC);
 	if (out_fd < 0) {
@@ -1373,7 +1347,7 @@ static void stage_dconf_migration(sandbox_t* sb, const sandbox_plan_t* plan) {
 	if (mkdir_p(kf_dir, 0755) != 0) {
 		fpkg_warnf("mkdir %s: %s", kf_dir, strerror(errno));
 	} else {
-		if (chown(kf_dir, plan->uid, plan->gid) != 0)
+		if (chown_nofollow(kf_dir, plan->uid, plan->gid) != 0)
 			fpkg_warnf("chown %s: %s", kf_dir, strerror(errno));
 		if (copy_file_owned(dump_path, kf_path, 0644, plan->uid,
 				    plan->gid) != FPKG_OK &&
@@ -1691,7 +1665,10 @@ static int build_skeleton(sandbox_t* sb, const sandbox_plan_t* plan) {
 		fpkg_errorf("mkdir %s: %s", p, strerror(errno));
 		return -1;
 	}
-	chown(p, plan->uid, plan->gid);
+	if (chown_nofollow(p, plan->uid, plan->gid) != 0) {
+		fpkg_errorf("chown %s: %s", p, strerror(errno));
+		return -1;
+	}
 
 	if (stage_tmp(sb, plan) != 0) return -1;
 
@@ -2034,7 +2011,7 @@ static int writable_mimic(sandbox_t* sb, const char* target_dir) {
 	if (m_nullfs(sb, target_dir, safe, true) != 0) {
 		fpkg_warnf("writable_mimic: bind %s -> %s failed", target_dir,
 			   safe);
-		rmdir(safe);
+		(void)rmdir(safe);
 		return -1;
 	}
 
@@ -2123,14 +2100,14 @@ int sandbox_ensure_writable_dir(sandbox_t* sb, const char* path) {
 	return mkdir_p(path, 0755);
 }
 
-// Extension mounts: a needs_tmpfs extension gets a writable parent, then its
-// files/ tree is ro-bound; shallowest first, since nullfs hides inner mounts.
 static bool is_mount_point_dir(const char* path) {
 	assert(path != NULL);
 	struct stat st;
 	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
+// Extension mounts: a needs_tmpfs extension gets a writable parent, then its
+// files/ tree is ro-bound; shallowest first, since nullfs hides inner mounts.
 static int mount_extensions(sandbox_t* sb) {
 	assert(sb != NULL);
 	size_t n = sb->nextensions;
@@ -2649,7 +2626,7 @@ static bool ld_cache_valid(const char* cache_dest) {
 			fpkg_warnf("ldconfig produced a non-glibc cache "
 				   "(magic \"%.16s\"), not caching",
 				   magic);
-		unlink(cache_dest);
+		(void)unlink(cache_dest);
 	}
 	return ok;
 }
@@ -2680,7 +2657,7 @@ static void store_ld_cache(const char* cache_dest, const char* cache_store,
 					   (long)ist.st_size, sum);
 				prune_ld_so_caches(cache_dir);
 			} else {
-				unlink(cache_store);
+				(void)unlink(cache_store);
 			}
 		}
 	}
@@ -2740,7 +2717,7 @@ static int stage_time(sandbox_t* sb) {
 		snprintf(zdbdir, sizeof(zdbdir), "%s/var/db", sb->jailroot);
 		if (mkdir_p(zdbdir, 0755) == 0) {
 			snprintf(zdb, sizeof(zdb), "%s/zoneinfo", zdbdir);
-			unlink(zdb);
+			(void)unlink(zdb);
 			if (symlink("/etc/timezone", zdb) != 0)
 				fpkg_warnf("symlink /var/db/zoneinfo: %s",
 					   strerror(errno));
@@ -3033,7 +3010,7 @@ static void stage_xdg_socket_links(sandbox_t* sb, const sandbox_plan_t* plan,
 			 base);
 		if (access(sock, R_OK) == 0) {
 			snprintf(link, sizeof(link), "%s/%s", runuser, base);
-			unlink(link);
+			(void)unlink(link);
 			snprintf(sock, sizeof(sock), "/run/host/xdg/%s", base);
 			make_symlink(sock, link);
 		}
@@ -3045,7 +3022,7 @@ static void stage_xdg_socket_links(sandbox_t* sb, const sandbox_plan_t* plan,
 			 plan->xdg_runtime_dir);
 		if (access(bsock, R_OK) == 0) {
 			snprintf(link, sizeof(link), "%s/bus", runuser);
-			unlink(link);
+			(void)unlink(link);
 			make_symlink("/run/host/xdg/bus", link);
 		}
 	}
@@ -3068,7 +3045,7 @@ static void stage_xdg_socket_links(sandbox_t* sb, const sandbox_plan_t* plan,
 			if (!*base || strchr(base, '/')) continue;
 			char link[PATH_MAX];
 			snprintf(link, sizeof(link), "%s/%s", runuser, base);
-			unlink(link);
+			(void)unlink(link);
 			char sock[PATH_MAX];
 			snprintf(sock, sizeof(sock), "/run/host/xdg/%s", base);
 			make_symlink(sock, link);
@@ -3457,7 +3434,7 @@ static int stage_sys_links(sandbox_t* sb) {
 				snprintf(lnsrc, sizeof(lnsrc), "../.sys/%s",
 					 ent->d_name);
 				if (lstat(linkpath, &(struct stat){0}) != 0)
-					symlink(lnsrc, linkpath);
+					(void)symlink(lnsrc, linkpath);
 			}
 			closedir(d);
 		}
@@ -3477,7 +3454,7 @@ static int stage_network(sandbox_t* sb, const sandbox_plan_t* plan) {
 			snprintf(to, sizeof(to), "%s/etc/%s", sb->jailroot,
 				 etc_binds[i]);
 			if (access(from, R_OK) == 0) {
-				unlink(to);
+				(void)unlink(to);
 				if (ensure_file(to) == 0)
 					m_nullfs(sb, from, to, true);
 			}
@@ -3702,7 +3679,7 @@ static int stage_store_links(sandbox_t* sb) {
 				m_nullfs(sb, store_root(), to, true);
 			snprintf(link, sizeof(link), "%s/var/lib/flatpak",
 				 sb->jailroot);
-			unlink(link);
+			(void)unlink(link);
 			if (symlink("flatpkg", link) != 0)
 				fpkg_warnf("cannot create %s: %s", link,
 					   strerror(errno));

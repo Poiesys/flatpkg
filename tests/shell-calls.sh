@@ -53,9 +53,9 @@ nexec=$(grep -c . "$tmp/execs" || true)
 # The floor.  It sits below the real count so removing a site is not a failure -
 # a shape with sites removed has changed and this file's reasoning has to be
 # re-read - while an extraction that sees nothing still fails.
-[ "${nexec:-0}" -ge 14 ] || {
+[ "${nexec:-0}" -ge 12 ] || {
 	echo "FAIL: only $nexec exec-family site(s) found in src/, below the"
-	echo "       floor of 14 - the extraction broke, or the tree stopped"
+	echo "       floor of 12 - the extraction broke, or the tree stopped"
 	echo "       running programs directly"
 	fail=1
 }
@@ -70,12 +70,8 @@ sandbox_exec.c:child_exec:sandbox_exec.c:child_set_base_env:/app/bin:/run/flatpa
 sandbox_root.c:run_ldconfig:extensions.c:fp_extensions_apply:/usr/bin/ldconfig
 util.c:run_program:util.c:run_program:argv[0][0] != '/' 
 instance_ctl.c:cmd_enter:instance_ctl.c:cmd_enter:/app/bin:/usr/bin
-systemhelper.c:handle_uninstall:config.c:fpkg_helper_command:argv[0][0] != '/'
-systemhelper.c:run_helper_command:config.c:fpkg_helper_command:argv[0][0] != '/'
-sandbox_root.c:run_argv:sandbox_root.c:mount_tool:~mount_tool
 sandbox_root.c:p11kit_ensure_server:sandbox_root.c:p11kit_ensure_server:/usr/local/bin/p11-kit
 ostree.c:run_direct_cb:ostree.c:tool_binary:/usr/local/bin/ostree
-instance.c:jail_exists:instance.c:jail_exists:/usr/sbin/jls
 ostree.c:run_capture:ostree.c:gpg_program:!gpg_program'
 
 exec_resolved=0

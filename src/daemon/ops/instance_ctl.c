@@ -35,20 +35,6 @@
 static fp_logger_t log = {.scope = "instance", .desc = ""};
 
 
-static fpkg_error_t write_file(const char* path, const char* content,
-			       mode_t mode) {
-	assert(path != NULL);
-	assert(content != NULL);
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
-	if (fd < 0) return fpkg_error_from_errno(errno);
-	size_t len = strlen(content);
-	ssize_t w = write(fd, content, len);
-	int e = errno;
-	close(fd);
-	if (w != (ssize_t)len) return e ? fpkg_error_from_errno(e) : FPKG_EIO;
-	return FPKG_OK;
-}
-
 static void kf_append(char* buf, size_t cap, size_t* pos, const char* fmt,
 		      ...) {
 	assert(buf != NULL);
@@ -194,18 +180,6 @@ static int write_run_environ(const char* path, const char* snapshot,
 	return (w == (ssize_t)len) ? 0 : -1;
 }
 
-static int random_uint32(uint32_t* out) {
-	assert(out != NULL);
-	int fd = open("/dev/urandom", O_RDONLY);
-	if (fd < 0) return -1;
-	uint32_t v = 0;
-	ssize_t r = read(fd, &v, sizeof(v));
-	close(fd);
-	if (r != (ssize_t)sizeof(v)) return -1;
-	*out = v;
-	return 0;
-}
-
 static bool is_ostree_checksum(const char* s) {
 	if (s == NULL || strlen(s) != 64) return false;
 	for (int i = 0; i < 64; i++) {
@@ -324,10 +298,10 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 		return 0;
 	}
 
-	uint32_t rnd = 0;
-	if (random_uint32(&rnd) != 0)
-		rnd = (uint32_t)((uintptr_t)getpid() * 2654435761u ^
-				 (uint32_t)time(NULL));
+	// The id names a directory under the caller's runtime dir; arc4random is
+	// the kernel's, so there is no seed to weaken and no failure to fall back
+	// from.
+	uint32_t rnd = arc4random();
 	char id[16];
 	snprintf(id, sizeof(id), "%u", rnd);
 
@@ -360,7 +334,7 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 	snprintf(priv_dir, sizeof(priv_dir), "%s-private", inst_dir);
 	if (mkdir(priv_dir, 0700) != 0) {
 		fpkg_warnf("mkdir %s: %s", priv_dir, strerror(errno));
-		rmdir(inst_dir);
+		(void)rmdir(inst_dir);
 		return 0;
 	}
 
@@ -372,22 +346,22 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 		open(ref_path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 	if (lock_fd < 0) {
 		fpkg_warnf("open %s: %s", ref_path, strerror(errno));
-		rmdir(priv_dir);
-		rmdir(inst_dir);
+		(void)rmdir(priv_dir);
+		(void)rmdir(inst_dir);
 		return 0;
 	}
 	if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
 		fpkg_warnf("flock %s: %s", ref_path, strerror(errno));
 		close(lock_fd);
-		rmdir(priv_dir);
-		rmdir(inst_dir);
+		(void)rmdir(priv_dir);
+		(void)rmdir(inst_dir);
 		return 0;
 	}
 	char ref_content[512];
 	snprintf(ref_content, sizeof(ref_content), "%s\n", meta->app_id);
 	ssize_t wr = write(lock_fd, ref_content, strlen(ref_content));
-	if (wr < 0) {
-	}
+	if (wr < 0)
+		fpkg_warnf("write %s: %s", ref_path, strerror(errno));
 
 	char runtime_id[256] = "";
 	{
@@ -536,13 +510,16 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 			fpkg_warnf("write %s: %s", p, strerror(errno));
 	}
 
-	chmod(inst_base, 0755);
-	chown(inst_base, plan->uid, plan->gid);
-	chown(inst_dir, plan->uid, plan->gid);
-	chown(priv_dir, plan->uid, plan->gid);
-	chown(info_path, plan->uid, plan->gid);
+	const char* give[] = {inst_base, inst_dir, priv_dir, info_path};
+	if (chmod(inst_base, 0755) != 0)
+		fpkg_warnf("chmod %s: %s", inst_base, strerror(errno));
+	for (size_t i = 0; i < sizeof(give) / sizeof(give[0]); i++) {
+		if (chown_nofollow(give[i], plan->uid, plan->gid) != 0)
+			fpkg_warnf("chown %s: %s", give[i], strerror(errno));
+	}
 	// .ref is still open: chown the descriptor, not the name.
-	(void)fchown(lock_fd, plan->uid, plan->gid);
+	if (fchown(lock_fd, plan->uid, plan->gid) != 0)
+		fpkg_warnf("chown %s: %s", ref_path, strerror(errno));
 	{
 		char nonce_path[PATH_MAX];
 		int nfd;
@@ -564,8 +541,8 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 
 fail:
 	close(lock_fd);
-	unlink(runenv_path);
-	rmdir(priv_dir);
+	(void)unlink(runenv_path);
+	(void)rmdir(priv_dir);
 	rmdir_contents(inst_dir);
 	return 0;
 }
@@ -581,11 +558,11 @@ static void rmdir_contents(const char* dir) {
 				continue;
 			char p[PATH_MAX];
 			snprintf(p, sizeof(p), "%s/%s", dir, e->d_name);
-			unlink(p);
+			(void)unlink(p);
 		}
 		closedir(d);
 	}
-	rmdir(dir);
+	(void)rmdir(dir);
 }
 
 static int snapshot_put(const char*** kvp, size_t* n, size_t* cap,
@@ -684,9 +661,9 @@ void instance_unregister(sandbox_t* sb) {
 
 		snprintf(p, sizeof(p), "%s-private/run-environ",
 			 sb->instance_dir);
-		unlink(p);
+		(void)unlink(p);
 		snprintf(p, sizeof(p), "%s-private", sb->instance_dir);
-		rmdir(p);
+		(void)rmdir(p);
 
 		free(sb->instance_dir);
 		sb->instance_dir = NULL;

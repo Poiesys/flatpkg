@@ -267,12 +267,20 @@ int world_save(const flatpkg_dep_array_t* world) {
 		fprintf(f, "%s\n", line);
 		free(line);
 	}
-	fflush(f);
-	fsync(fileno(f));
-	fclose(f);
+	// A worldfile that lost a line is worse than one that was not written:
+	// the rename must not publish a failed write.
+	int e = fflush(f) != 0 ? errno : 0;
+	if (fsync(fileno(f)) != 0 && e == 0) e = errno;
+	if (fclose(f) != 0 && e == 0) e = errno;
+	if (e != 0) {
+		errno = e;
+		fpkg_errorf("cannot write %s: %s", tmp, strerror(errno));
+		(void)unlink(tmp);
+		return -1;
+	}
 	if (rename(tmp, path) != 0) {
 		fpkg_errorf("rename %s -> %s: %s", tmp, path, strerror(errno));
-		unlink(tmp);
+		(void)unlink(tmp);
 		return -1;
 	}
 	return 0;
@@ -565,7 +573,7 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 	if (installed_list(&installed, &ninst) != 0) return -1;
 
 	// Incoming apps are intended, so their runtime and extensions must not
-	// read as orphans in Phase 2.
+	// read as orphans and be swept.
 	for (size_t i = 0; i < nincoming; i++) {
 		const solver_incoming_t* inc = &incoming[i];
 		idset_add(&g_closure, inc->ref.id);
@@ -592,7 +600,7 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 	}
 
 	// Ready, so ostree_deploy_referenced() does not rebuild the closure and
-	// drop the IDs added above; Phase 2 would then remove what we just
+	// drop the IDs added above; the sweep would then remove what we just
 	// scheduled for install.
 	ostree_closure_mark_ready();
 
@@ -757,7 +765,7 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 		free(miss);
 	}
 
-	// Phase 2: an installed ref not in the world and not referenced by one is removed
+	// An installed ref not in the world and not referenced by one is removed
 	// (apk-style). An upgrade only sweeps with --prune; install and uninstall always do.
 	bool sweep =
 		!(flags & (FLATPKG_SOLVERF_UPGRADE | FLATPKG_SOLVERF_REPAIR)) ||

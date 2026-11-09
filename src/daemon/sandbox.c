@@ -1,6 +1,5 @@
 #include <assert.h>
 #include <dirent.h>
-#include <ftw.h>
 #include <jail.h>
 #include <libutil.h>
 #include <poll.h>
@@ -236,10 +235,9 @@ static void chown_dev_nodes(sandbox_t* sb, const sandbox_plan_t* plan) {
 }
 
 // The per-launch tree is the app's: everything flatpkg created goes to the
-// caller, who is who the app runs as. A bind-mounted path keeps the source's
-// owner.
-// The walk holds the directory open: the entry that is opened for chown is
-// the entry that is descended into, so there is no path to swap underneath.
+// caller, who is who the app runs as.  A bind-mounted path keeps the source's
+// owner.  The walk holds the directory open, so the entry that is chowned is
+// the entry that is descended into and there is no path to swap underneath.
 static void own_tree_dir_at(sandbox_t* sb, uid_t uid, gid_t gid, int fd,
 			    const char* dir) {
 	assert(sb != NULL);
@@ -440,26 +438,6 @@ fail:
 #undef ADDP
 }
 
-// Relay between the caller's terminal and a pty master until `pid` is gone:
-// app output to out_fd, the caller's typing to the pty, window changes to the
-// master.  -1 means no terminal that way; kill_on_eof kills on caller EOF.
-// Called by the parent of the fork that gave the app its terminal: the app has
-// its own copy by then, and while the parent's stays open a session-leader app
-// loses the last few hundred bytes queued in the pty when it exits.
-// Give the app the caller's terminal, as a new session for a controlling tty.
-// Only the descriptors the caller had on a terminal; the rest keep the
-// caller's own file or pipe.
-// The app must not run while the parent holds a copy of the pty slave, or
-// FreeBSD discards output queued when the session leader exits. EOF releases
-// the child if the parent dies.
-static int rm_cb(const char* path, const struct stat* st, int type,
-		 struct FTW* ftw) {
-	if (type == FTW_DP || type == FTW_D) rmdir(path);
-	else
-		unlink(path);
-	return 0;
-}
-
 void sandbox_teardown(sandbox_t* sb) {
 	assert(sb != NULL);
 	if (cli_getenv("FLATPKG_DEBUG_KEEP") != NULL) {
@@ -500,7 +478,7 @@ void sandbox_teardown(sandbox_t* sb) {
 					   "%s",
 					   m->to);
 		}
-		nftw(sb->jailroot, rm_cb, 16, FTW_DEPTH | FTW_PHYS | FTW_MOUNT);
+		(void)rm_rf(sb->jailroot);
 	}
 
 	if (sb->devfs_ruleset > 0) {

@@ -1,31 +1,5 @@
 #include "ostree_internal.h"
 
-fpkg_error_t write_file(const char* path, const char* content,
-			       mode_t mode) {
-	assert(path != NULL);
-	assert(content != NULL);
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
-	if (fd < 0) return fpkg_error_from_errno(errno);
-	size_t len = strlen(content);
-	ssize_t w = write(fd, content, len);
-	int e = errno;
-	close(fd);
-	if (w != (ssize_t)len) return e ? fpkg_error_from_errno(e) : FPKG_EIO;
-	return FPKG_OK;
-}
-static int rm_cb(const char* path, const struct stat* st, int type,
-		 struct FTW* ftw) {
-	assert(path != NULL);
-	if (type == FTW_DP || type == FTW_D) rmdir(path);
-	else
-		unlink(path);
-	return 0;
-}
-int rm_rf(const char* path) {
-	assert(path != NULL);
-	// FTW_MOUNT: FTW_PHYS alone only skips symlinks.
-	return nftw(path, rm_cb, 16, FTW_DEPTH | FTW_PHYS | FTW_MOUNT);
-}
 char* slurp_file(const char* path) {
 	assert(path != NULL);
 	FILE* f = fopen(path, "r");
@@ -64,14 +38,6 @@ char* slurp_file(const char* path) {
 	if (!buf) return NULL;
 	buf[len] = '\0';
 	return buf;
-}
-void trim(char* s) {
-	assert(s != NULL);
-	char* p = s;
-	while (*p && isspace((unsigned char)*p)) p++;
-	if (p != s) memmove(s, p, strlen(p) + 1);
-	size_t n = strlen(s);
-	while (n > 0 && isspace((unsigned char)s[n - 1])) s[--n] = '\0';
 }
 void store_path(char* buf, size_t len, const char* fmt, ...) {
 	assert(buf != NULL);
@@ -1155,7 +1121,7 @@ int make_active(const char* deploy_host_path) {
 				 "%s/current", arch_dir);
 			char target[256];
 			snprintf(target, sizeof(target), "%s/%s", arch, branch);
-			unlink(current_link);
+			(void)unlink(current_link);
 			if (symlink(target, current_link) != 0)
 				fpkg_warnf("symlink %s -> %s: %s", current_link,
 					   target, strerror(errno));

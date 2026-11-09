@@ -112,10 +112,9 @@ LEGACY_OBJS=    $(OBJDIR)/ostree.o \
 DAEMON_OPS_OBJS=$(OBJDIR)/daemon/ops/dbus_proxy.o \
 		$(OBJDIR)/daemon/ops/instance_ctl.o
 
-# Policy the daemon still runs in process (the solver and upgrade planner).
-# Phase 2 moves it to the CLI; until then it is the one CLI-side object set
-# the daemon links, together with the logger and env accessor the primitives
-# call.
+# Policy the daemon runs in process (the solver and upgrade planner).  It is
+# the one CLI-side object set the daemon links, together with the logger and
+# env accessor the primitives call.
 POLICY_OBJS=    $(OBJDIR)/cli/solver.o
 
 DAEMON_LINK=    $(DAEMON_OBJS) $(LEGACY_OBJS) $(DAEMON_OPS_OBJS) \
@@ -382,6 +381,7 @@ sinclude $(OBJDIR)/daemon/extensions.d
 sinclude $(OBJDIR)/shared/history.d
 sinclude $(OBJDIR)/shared/profile.d
 sinclude $(OBJDIR)/shared/dbus.d
+sinclude $(OBJDIR)/shared/config.d
 sinclude $(OBJDIR)/shared/store.d
 sinclude $(OBJDIR)/shared/protocol.d
 sinclude $(OBJDIR)/shared/instance.d

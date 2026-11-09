@@ -162,10 +162,9 @@ static void add_bus_filter_args(argvec_t* av, const char* app_id,
 		name[nlen] = '\0';
 		const char* pol = eq + 1;
 
-		if (strcmp(pol, "none") == 0) {
-		} else if (strcmp(pol, "see") == 0 ||
-			   strcmp(pol, "talk") == 0 ||
-			   strcmp(pol, "own") == 0) {
+		if (strcmp(pol, "none") == 0) continue;
+		if (strcmp(pol, "see") == 0 || strcmp(pol, "talk") == 0 ||
+		    strcmp(pol, "own") == 0) {
 			char arg[512];
 			snprintf(arg, sizeof(arg), "--%s=%s", pol, name);
 			av_push(av, arg);
@@ -316,7 +315,7 @@ static void fill_proxy_argv(argvec_t* av, sandbox_t* sb,
 		char sock[PATH_MAX];
 		snprintf(sock, sizeof(sock), "%s/%s-session-bus", proxy_dir,
 			 bus_id);
-		unlink(sock);
+		(void)unlink(sock);
 		av_push(av, a->session);
 		av_push(av, sock);
 		if (!a->session_raw) {
@@ -331,7 +330,7 @@ static void fill_proxy_argv(argvec_t* av, sandbox_t* sb,
 		char sock[PATH_MAX];
 		snprintf(sock, sizeof(sock), "%s/%s-system-bus", proxy_dir,
 			 bus_id);
-		unlink(sock);
+		(void)unlink(sock);
 		av_push(av, a->system);
 		av_push(av, sock);
 		add_bus_filter_args(av, NULL, &plan->system_bus_policy);
@@ -340,7 +339,7 @@ static void fill_proxy_argv(argvec_t* av, sandbox_t* sb,
 		char sock[PATH_MAX];
 		snprintf(sock, sizeof(sock), "%s/%s-a11y-bus", proxy_dir,
 			 bus_id);
-		unlink(sock);
+		(void)unlink(sock);
 		av_push(av, a->a11y);
 		av_push(av, sock);
 		av_push(av, "--filter");
@@ -479,22 +478,8 @@ int dbus_start_proxies(sandbox_t* sb, const sandbox_plan_t* plan) {
 		// Unmount a stale bind from an aborted run. No shell: the path comes from the
 		// caller's XDG_RUNTIME_DIR, so it goes over as its own argv entry.
 		if (sb_is_mounted(sb, path)) {
-			char* av[4];
-			pid_t pid;
-			av[0] = (char*)"umount";
-			av[1] = (char*)"-f";
-			av[2] = path;
-			av[3] = NULL;
-			pid = fork();
-			if (pid == 0) {
-				execv("/sbin/umount", av);
-				_exit(127);
-			}
-			if (pid > 0) {
-				int ws;
-				while (waitpid(pid, &ws, 0) < 0 &&
-				       errno == EINTR);
-			}
+			char* av[] = {"/sbin/umount", "-f", path, NULL};
+			(void)run_program(av, -1, -1, -1);
 		}
 		if (m_nullfs(sb, proxy_dir, path, true) != 0) {
 			fpkg_warnf("could not bind %s into the jail; "

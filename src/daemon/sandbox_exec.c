@@ -146,6 +146,9 @@ static int jail_process_count(int jid) {
 	return count;
 }
 
+// Relay between the caller's terminal and the pty master until `pid` is gone:
+// app output to out_fd, the caller's typing to the pty, window changes to the
+// master.  -1 means no terminal that way; kill_on_eof kills on caller EOF.
 int sandbox_pty_relay(int master, int in_fd, int out_fd, int size_fd, pid_t pid,
 		      bool kill_on_eof, int* status) {
 	int done = 0;

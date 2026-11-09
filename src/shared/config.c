@@ -13,14 +13,6 @@
 #define SYSCONFDIR "/usr/local/etc"
 #endif
 
-static char* trim(char* s) {
-	while (*s && isspace((unsigned char)*s)) s++;
-	char* end = s + strlen(s);
-	while (end > s && isspace((unsigned char)end[-1])) end--;
-	*end = '\0';
-	return s;
-}
-
 static int config_path(char* out, size_t len) {
 	snprintf(out, len, "%s/helper.conf", store_root());
 	struct stat st;
