@@ -448,16 +448,24 @@ int cmd_remote_modify(const char* name, const char* changes) {
 	if (url != NULL && remote_config_set(name, "url", url) != 0)
 		rc = 1;
 	if (rc == 0 && gpg_import != NULL) {
-		// ostree imports keys into an existing remote through remote add
-		// --if-not-exists: it keeps the url and the flags it finds, and
-		// only needs a url to accept the command.
+		// ostree has no "remote modify".  Re-adding an existing remote keeps
+		// its section but drops what --set would have applied (and its own
+		// defaults then turn verification off), and the write can land after
+		// the command's last line - so the remote is replaced: read what it
+		// has, delete it, and add it back with the key, the flags and the
+		// rest of the settings.
 		char key_host[PATH_MAX], cur_url[PATH_MAX] = "";
 		char cfgkey[512];
+		char gv[16] = "true", gvs[16] = "true";
+		char old_branch[256] = "";
+		char old_title[256] = "", old_comment[256] = "";
+		char old_desc[1024] = "", old_home[512] = "", old_icon[512] = "";
 		tool_ctx_t tc;
 		tool_ctx_init(&tc);
 		char repo_arg[PATH_MAX + 32];
 		char import_arg[PATH_MAX + 32];
 
+		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 		snprintf(cfgkey, sizeof(cfgkey), "remote \"%s\".url", name);
 		if (ostree_config_get(cfgkey, cur_url, sizeof(cur_url)) != 0 ||
 		    cur_url[0] == '\0') {
@@ -465,24 +473,83 @@ int cmd_remote_modify(const char* name, const char* changes) {
 			rc = 1;
 		}
 		if (rc == 0) {
+			snprintf(cfgkey, sizeof(cfgkey),
+				 "remote \"%s\".gpg-verify", name);
+			(void)ostree_config_get(cfgkey, gv, sizeof(gv));
+			snprintf(cfgkey, sizeof(cfgkey),
+				 "remote \"%s\".gpg-verify-summary", name);
+			(void)ostree_config_get(cfgkey, gvs, sizeof(gvs));
+			if (gv[0] == '\0') snprintf(gv, sizeof(gv), "true");
+			if (gvs[0] == '\0') snprintf(gvs, sizeof(gvs), "true");
+			snprintf(cfgkey, sizeof(cfgkey),
+				 "remote \"%s\".flatpkg.branch", name);
+			(void)ostree_config_get(cfgkey, old_branch,
+						sizeof(old_branch));
+			struct {
+				const char* key;
+				char* out;
+				size_t len;
+			} extra[] = {
+				{"xa.title", old_title, sizeof(old_title)},
+				{"xa.comment", old_comment, sizeof(old_comment)},
+				{"xa.description", old_desc, sizeof(old_desc)},
+				{"xa.homepage", old_home, sizeof(old_home)},
+				{"xa.icon", old_icon, sizeof(old_icon)},
+			};
+			for (size_t i = 0; i < sizeof(extra) / sizeof(extra[0]);
+			     i++) {
+				snprintf(cfgkey, sizeof(cfgkey),
+					 "remote \"%s\".%s", name, extra[i].key);
+				(void)ostree_config_get(cfgkey, extra[i].out,
+							extra[i].len);
+			}
+
 			store_path(key_host, sizeof(key_host), "keys/%s.gpg",
 				   name);
-			snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 			snprintf(import_arg, sizeof(import_arg),
 				 "--gpg-import=%s", key_host);
-			char* argv[] = {"ostree",     "remote",
-					"add",        "--if-not-exists",
-					import_arg,   (char*)name,
-					cur_url,      repo_arg,
-					NULL};
-			tool_res_t res;
+			char gv_arg[64], gvs_arg[64];
+			snprintf(gv_arg, sizeof(gv_arg), "--set=gpg-verify=%s",
+				 gv);
+			snprintf(gvs_arg, sizeof(gvs_arg),
+				 "--set=gpg-verify-summary=%s", gvs);
 
+			char* del[] = {"ostree", "remote", "delete", (char*)name,
+				       repo_arg, NULL};
+			tool_res_t res;
 			tool_res_init(&res);
-			if (ostree_run(argv, &res) != 0 || res.rc != 0) {
+			(void)ostree_run(del, &res);
+			tool_res_free(&res);
+
+			char* add[] = {"ostree",     "remote",
+				       "add",        import_arg,
+				       (char*)name,  cur_url,
+				       repo_arg,     gv_arg,
+				       gvs_arg,      NULL};
+			tool_res_init(&res);
+			if (ostree_run(add, &res) != 0 || res.rc != 0) {
 				log_tool_stderr(&res);
 				rc = 1;
 			}
 			tool_res_free(&res);
+			// --set is only honoured for a fresh remote, and not reliably
+			// even then: put every kept setting back explicitly.
+			if (rc == 0 &&
+			    (remote_config_set(name, "gpg-verify", gv) != 0 ||
+			     remote_config_set(name, "gpg-verify-summary",
+					       gvs) != 0))
+				rc = 1;
+			if (rc == 0 && old_branch[0] != '\0' &&
+			    remote_config_set(name, "flatpkg.branch",
+					      old_branch) != 0)
+				rc = 1;
+			for (size_t i = 0;
+			     rc == 0 && i < sizeof(extra) / sizeof(extra[0]);
+			     i++)
+				if (extra[i].out[0] != '\0' &&
+				    remote_config_set(name, extra[i].key,
+						      extra[i].out) != 0)
+					rc = 1;
 		}
 	}
 	if (rc == 0 && gpg_verify >= 0) {

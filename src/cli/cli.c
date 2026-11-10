@@ -1681,6 +1681,8 @@ int cli_parse(int argc, char* const* argv, cli_req_t* r) {
 	assert(r != NULL);
 	memset(r, 0, sizeof(*r));
 	r->over_user = true;
+	// remote-modify's "not asked for" is -1; zero would mean "turn it off".
+	r->gpg_verify = -1;
 
 	if (cli_scan(argc, argv, 1, &r->g, true) != 0) return 1;
 	cli_apply_env(&r->g);

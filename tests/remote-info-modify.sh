@@ -69,6 +69,15 @@ run remote-list >"$T/list" 2>/dev/null || true
 grep -Eq 'local +[^ ]+ +true +true' "$T/list" ||
 	note "remote-modify --gpg-verify did not set the flags"
 
+# A modify that does not mention the GPG flags must leave them alone: a
+# zeroed request once meant "switch verification off", so every
+# `remote-modify --url` (and the app's own key import) silently did.
+run remote-modify --gpg-verify local >/dev/null 2>&1 || true
+run remote-modify --url="$url" local >/dev/null 2>&1 || true
+run remote-list >"$T/list" 2>/dev/null || true
+grep -Eq 'local +[^ ]+ +true +true' "$T/list" ||
+	note "a modify that does not name the GPG flags turned them off"
+
 # A remote that does not exist is a refusal, not a new remote.
 if run remote-modify --url="$url" not-there >/dev/null 2>&1; then
 	note "remote-modify created a remote that did not exist"
