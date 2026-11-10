@@ -66,6 +66,11 @@ static inline char* trim(char* s) {
 fpkg_error_t mkdir_p(const char* path, mode_t mode);
 // Copy a regular file, creating `to`; errno is set on failure.
 fpkg_error_t copy_file(const char* from, const char* to, mode_t mode);
+// Append formatted text to a bounded buffer, refusing rather than truncating.
+// snprintf's return is the length it *wanted*, so adding it back into the next
+// size argument underflows once the buffer is full; this never does.
+bool fpkg_buf_append(char* buf, size_t len, size_t* off, const char* fmt,
+		     ...) __attribute__((format(printf, 4, 5)));
 // chown without following a symlink.  For a path the caller can swap.
 fpkg_error_t chown_nofollow(const char* path, uid_t uid, gid_t gid);
 // Replace `path` with `content`.

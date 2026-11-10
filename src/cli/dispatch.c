@@ -128,10 +128,16 @@ int cmd_info(const cli_req_t* r) {
 			values[nv++] = meta.sdk_ref != NULL ? meta.sdk_ref
 							    : "-";
 		line[0] = '\0';
-		for (size_t i = 0; i < nv && off < sizeof(line); i++) {
-			off += (size_t)snprintf(line + off, sizeof(line) - off,
-						"%s%s", first ? "" : " ",
-						values[i]);
+		for (size_t i = 0; i < nv; i++) {
+			if (!fpkg_buf_append(line, sizeof(line), &off, "%s%s",
+					     first ? "" : " ", values[i])) {
+				// A value longer than the line: the machine form is
+				// one line by contract, so say so instead of cutting
+				// a field.
+				fpkg_warnf("the selected fields do not fit one "
+					   "line");
+				break;
+			}
 			first = false;
 		}
 		if (nv > 0) fp_outl("%s", line);

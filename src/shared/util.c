@@ -59,6 +59,24 @@ char* xasprintf(const char* fmt, ...) {
 	return r;
 }
 
+bool fpkg_buf_append(char* buf, size_t len, size_t* off, const char* fmt, ...) {
+	assert(buf != NULL);
+	assert(off != NULL);
+	assert(fmt != NULL);
+	va_list ap;
+	int n;
+
+	if (*off >= len) return false;
+	va_start(ap, fmt);
+	n = vsnprintf(buf + *off, len - *off, fmt, ap);
+	va_end(ap);
+	// A negative or truncated result means the line does not fit whole, and a
+	// half line in a `key=value` stream is worse than a refusal.
+	if (n < 0 || (size_t)n >= len - *off) return false;
+	*off += (size_t)n;
+	return true;
+}
+
 fpkg_error_t copy_file(const char* from, const char* to, mode_t mode) {
 	int in = open(from, O_RDONLY);
 	if (in < 0) return fpkg_error_from_errno(errno);

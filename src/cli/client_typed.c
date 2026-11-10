@@ -127,17 +127,17 @@ static char* remote_modify_text(const cli_req_t* req) {
 			fpkg_errorf("--%s cannot hold a newline", rows[i].key);
 			return NULL;
 		}
-		if (off + strlen(rows[i].key) + strlen(rows[i].val) + 3 >
-		    sizeof(buf)) {
+		if (!fpkg_buf_append(buf, sizeof(buf), &off, "%s=%s\n",
+				     rows[i].key, rows[i].val)) {
 			fpkg_errorf("too many remote changes");
 			return NULL;
 		}
-		off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s=%s\n",
-					rows[i].key, rows[i].val);
 	}
-	if (req->gpg_verify >= 0) {
-		off += (size_t)snprintf(buf + off, sizeof(buf) - off,
-					"gpg-verify=%d\n", req->gpg_verify);
+	if (req->gpg_verify >= 0 &&
+	    !fpkg_buf_append(buf, sizeof(buf), &off, "gpg-verify=%d\n",
+			     req->gpg_verify)) {
+		fpkg_errorf("too many remote changes");
+		return NULL;
 	}
 	return xstrdup(buf);
 }
@@ -146,11 +146,15 @@ static void free_refs(char** v, size_t n) {
 	for (size_t i = 0; i < n; i++) free(v[i]);
 }
 
-static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned) {
+// Returns false when the request cannot be framed.  `reported` says the builder
+// already named the reason, so the caller must not add a vaguer one.
+static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned,
+			  bool* reported) {
 	const char* const* op = req->ops;
 	size_t n = req->nops;
 
 	memset(out, 0, sizeof(*out));
+	*reported = false;
 	switch (cli_req_cmd(req)) {
 	case CMD_REMOTE_ADD:
 		out->type = FP_REQ_REMOTE_ADD;
@@ -166,7 +170,10 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned) {
 		out->type = FP_REQ_REMOTE_MODIFY;
 		out->u.remote_modify.name = (char*)(n > 0 ? op[0] : "");
 		*owned = remote_modify_text(req);
-		if (*owned == NULL) return false;
+		if (*owned == NULL) {
+			*reported = true;
+			return false;
+		}
 		out->u.remote_modify.changes = *owned;
 		return n > 0;
 	case CMD_OVERRIDE:
@@ -779,7 +786,7 @@ static int typed_complete(typed_ctx_t* c, int exit_code) {
 
 int client_try_typed(int argc, char* argv[]) {
 	typed_ctx_t c;
-	bool appstream;
+	bool appstream, reported;
 	int rc = -1;
 
 	memset(&c, 0, sizeof(c));
@@ -816,8 +823,10 @@ int client_try_typed(int argc, char* argv[]) {
 			goto out;
 		}
 		memset(&c.typed, 0, sizeof(c.typed));
-	} else if (!typed_request(&c.req, &c.typed, &c.owned)) {
-		fpkg_errorf("'%s' cannot be sent to flatpkgd", c.req.name);
+	} else if (!typed_request(&c.req, &c.typed, &c.owned, &reported)) {
+		if (!reported)
+			fpkg_errorf("'%s' cannot be sent to flatpkgd",
+				    c.req.name);
 		rc = 1;
 		goto out;
 	}
