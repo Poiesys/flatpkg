@@ -177,7 +177,11 @@ int run_program(char* const argv[], int in_fd, int out_fd, int err_fd) {
 		}
 		if (out_fd >= 0) {
 			(void)dup2(out_fd, STDOUT_FILENO);
-			if (out_fd != STDOUT_FILENO) close(out_fd);
+			// out_fd and err_fd are the same /dev/null in callers that
+			// silence both; closing it here would leave stderr on the
+			// caller's terminal.
+			if (out_fd != STDOUT_FILENO && out_fd != err_fd)
+				close(out_fd);
 		}
 		if (err_fd >= 0) {
 			(void)dup2(err_fd, STDERR_FILENO);
