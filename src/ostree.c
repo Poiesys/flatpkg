@@ -1,3 +1,5 @@
+#include <signal.h>
+
 #include "ostree_internal.h"
 
 char* slurp_file(const char* path) {
@@ -411,20 +413,19 @@ static int capture_child(pid_t pid, int outfd, int errfd, tool_res_t* res,
 			}
 		} else {
 			if (done[0] && done[1]) break;
-			// Quiet for a while is not finished: ostree writes a remote's
-			// config after its last line, so returning here let the caller
-			// act on a half-run command (a --gpg-import raced with the
-			// config write and the import won).  Wait for the child.
-			if (++grace > 10) {
+			// Quiet is not finished: ostree writes a remote's config after
+			// its last line, so returning here let a caller act on a
+			// half-run command (a --gpg-import raced with the config write
+			// and the import won).  Keep waiting - but a tool that neither
+			// prints nor exits is killed rather than hanging the caller.
+			if (++grace > 600) {
 				int status = 0;
 
-				if (!reaped &&
-				    waitpid(pid, &status, 0) == pid) {
-					reaped = 1;
-					res->rc = WIFEXITED(status)
-							  ? WEXITSTATUS(status)
-							  : 128 + WTERMSIG(status);
-				}
+				(void)kill(pid, SIGKILL);
+				(void)waitpid(pid, &status, 0);
+				fpkg_errorf("a tool ran without output for two "
+					    "minutes; killed it");
+				res->rc = 124;
 				break;
 			}
 		}
