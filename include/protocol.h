@@ -71,6 +71,7 @@ typedef enum {
 	FP_REQ_CLIENT_STATE = 24,
 	FP_REQ_CLIENT_DECLARE = 25, // {names}: the files this client owns
 	FP_REQ_APPSTREAM = 26, // {remote, arch}: refresh appstream; empty is all
+	FP_REQ_REMOTE_MODIFY = 27, // {name, changes}: a remote's settings
 } fp_req_type_t;
 
 // FP_REQ_CLIENT_STATE flags.  Without WRITE the request is a read.
@@ -181,6 +182,13 @@ typedef struct {
 		struct {
 			char* name;
 		} remote_delete;
+		struct {
+			char* name;
+			// `key=value` lines: url, gpg-import, branch, title,
+			// comment, description, homepage, icon, gpg-verify,
+			// enable.  The daemon validates every key.
+			char* changes;
+		} remote_modify;
 		struct {
 			char* remote; // "" means every remote
 			char* arch;   // "" means the host architecture

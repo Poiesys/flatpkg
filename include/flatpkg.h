@@ -452,7 +452,7 @@ void parse_app_ref(const char* ref, char* id, size_t idlen, char* arch,
 int store_update_exports(void);
 int cmd_exports(void);
 int cmd_list(void);
-int cmd_info(const char* app_id);
+
 int cmd_run(const char* app_id, char* const extra_argv[], const run_opts_t* ro);
 int cmd_import(const char* path);
 int cmd_complete(const char* what, const char* arg);
@@ -532,6 +532,14 @@ int cmd_kill(const char* jid);
 int cmd_remote_add(const char* name, const char* url, const char* from);
 int cmd_remote_list(void);
 int cmd_remote_delete(const char* name);
+// The changes are `key=value` lines from the client: url, gpg-import, branch,
+// title, comment, description, homepage, icon, gpg-verify, enable.
+int cmd_remote_modify(const char* name, const char* changes);
+int cmd_remote_info(const char* remote, const char* request, const char* arch,
+		    const char* commit, bool runtime, bool show_ref,
+		    bool show_commit, bool show_metadata, bool show_parent);
+// The GL drivers flatpak would consider active on this host, one per line.
+void cmd_gl_drivers(void);
 char** ostree_remote_names(size_t* n_out);
 
 typedef enum {

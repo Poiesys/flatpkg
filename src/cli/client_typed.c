@@ -102,6 +102,46 @@ bad:
 	return -1;
 }
 
+// remote-modify's settings as `key=value` lines, one per line: the daemon
+// parses what the CLI parsed, so neither side keeps a second vocabulary.
+static char* remote_modify_text(const cli_req_t* req) {
+	struct {
+		const char* key;
+		const char* val;
+	} rows[] = {
+		{"url", req->url},
+		{"gpg-import", req->gpg_import},
+		{"branch", req->branch_name},
+		{"title", req->title},
+		{"comment", req->comment},
+		{"description", req->description},
+		{"homepage", req->homepage},
+		{"icon", req->icon},
+	};
+	char buf[8192];
+	size_t off = 0;
+
+	for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+		if (rows[i].val == NULL) continue;
+		if (strchr(rows[i].val, '\n') != NULL) {
+			fpkg_errorf("--%s cannot hold a newline", rows[i].key);
+			return NULL;
+		}
+		if (off + strlen(rows[i].key) + strlen(rows[i].val) + 3 >
+		    sizeof(buf)) {
+			fpkg_errorf("too many remote changes");
+			return NULL;
+		}
+		off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s=%s\n",
+					rows[i].key, rows[i].val);
+	}
+	if (req->gpg_verify >= 0) {
+		off += (size_t)snprintf(buf + off, sizeof(buf) - off,
+					"gpg-verify=%d\n", req->gpg_verify);
+	}
+	return xstrdup(buf);
+}
+
 static void free_refs(char** v, size_t n) {
 	for (size_t i = 0; i < n; i++) free(v[i]);
 }
@@ -121,6 +161,13 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned) {
 	case CMD_REMOTE_DELETE:
 		out->type = FP_REQ_REMOTE_DELETE;
 		out->u.remote_delete.name = (char*)(n > 0 ? op[0] : "");
+		return n > 0;
+	case CMD_REMOTE_MODIFY:
+		out->type = FP_REQ_REMOTE_MODIFY;
+		out->u.remote_modify.name = (char*)(n > 0 ? op[0] : "");
+		*owned = remote_modify_text(req);
+		if (*owned == NULL) return false;
+		out->u.remote_modify.changes = *owned;
 		return n > 0;
 	case CMD_OVERRIDE:
 		// Only the system scope is a request (cli_req_is_local() keeps the rest in the

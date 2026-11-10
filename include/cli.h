@@ -20,6 +20,7 @@ typedef struct {
 	bool profile;
 	bool simulate;
 	int color; // -1 unset, 0 off, 1 on
+	bool gl_drivers; // --gl-drivers: print the drivers and exit
 	const char* logfmt;
 	const char* installation;
 } cli_globals_t;
@@ -33,6 +34,8 @@ typedef struct {
 	const char* name; // the command as typed (`remove` for uninstall)
 	const char** ops; // operands, in order
 	size_t nops;
+	char** owned_ops; // the operands cli.c spelled itself (see install)
+	size_t nowned_ops;
 	char* const* rest; // the application's own arguments, or NULL
 
 	bool assume_yes;
@@ -47,6 +50,23 @@ typedef struct {
 	bool reinstall;
 	bool appstream;
 	const char* remote;
+
+	// info and remote-info: the machine-readable selectors.
+	bool show_ref, show_origin, show_commit, show_location, show_metadata;
+	bool show_size, show_permissions, show_extensions, show_parent;
+	bool show_runtime, show_sdk;
+	const char* arch; // --arch, when the command is not `run`
+
+	// remote-modify: the changes, each NULL or unset when not asked for.
+	const char* url;
+	const char* gpg_import;
+	const char* branch_name;
+	const char* title;
+	const char* comment;
+	const char* description;
+	const char* homepage;
+	const char* icon;
+	int gpg_verify; // -1 unset, 0 off, 1 on
 
 	run_opts_t run;	    // run: the per-launch grants
 	fp_metadata_t over; // override: the changes asked for
@@ -82,6 +102,8 @@ typedef enum {
 	CMD_REMOTE_ADD,
 	CMD_REMOTE_LIST,
 	CMD_REMOTE_DELETE,
+	CMD_REMOTE_INFO,
+	CMD_REMOTE_MODIFY,
 	CMD_COMPLETE,
 	CMD_HELP
 } cli_cmd_id_t;
@@ -105,6 +127,7 @@ const char* cli_argv0(void);
 
 // cmd_* handlers.  cmd_run is the daemon's, the rest are the CLI's.
 int cmd_override(const cli_req_t* r);
+int cmd_info(const cli_req_t* r);
 int cmd_run(const char* app_id, char* const extra_argv[], const run_opts_t* ro);
 
 // Whether a command runs in the unprivileged CLI without the daemon.

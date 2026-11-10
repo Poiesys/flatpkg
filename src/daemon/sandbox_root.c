@@ -465,6 +465,22 @@ void sb_track(sandbox_t* sb, const char* fstype, const char* from,
 	m->to = xstrdup(to);
 }
 
+// A mount the launch took down itself is no longer the teardown's to remove;
+// leaving the record makes it unmount a path that is already gone and warn.
+static void untrack_mount(sandbox_t* sb, const char* to) {
+	assert(sb != NULL);
+	assert(to != NULL);
+	for (size_t i = 0; i < sb->nmounts; i++) {
+		sb_mount_t* m = &sb->mounts[i];
+
+		if (m->to == NULL || strcmp(m->to, to) != 0) continue;
+		free(m->fstype);
+		free(m->from);
+		free(m->to);
+		memset(m, 0, sizeof(*m));
+	}
+}
+
 static bool sb_mounted_from(sandbox_t* sb, const char* to, const char* from) {
 	assert(sb != NULL);
 	assert(to != NULL);
@@ -481,7 +497,9 @@ bool sb_is_mounted(sandbox_t* sb, const char* path) {
 	assert(sb != NULL);
 	assert(path != NULL);
 	for (size_t i = 0; i < sb->nmounts; i++) {
-		if (strcmp(sb->mounts[i].to, path) == 0) return true;
+		if (sb->mounts[i].to != NULL &&
+		    strcmp(sb->mounts[i].to, path) == 0)
+			return true;
 	}
 	return false;
 }
@@ -1463,12 +1481,17 @@ static int build_etc(sandbox_t* sb, const sandbox_plan_t* plan) {
 	if (plan->want_network && stage_hosts("/etc/hosts", etc) != 0)
 		return -1;
 
-	snprintf(path, sizeof(path), "%s/ld.so.preload", etc);
-	write_file(path,
-		   "/.signalfd_shim.so\n/.seccomp_shim.so\n"
-		   "/.memfd_shim.so\n/.syncobj_shim.so\n/.rlimit_shim.so\n"
-		   "/.madvise_shim.so\n",
-		   0644);
+	// The shims also load from this file, so the debugging escape hatch has
+	// to leave it out: an app that clears LD_PRELOAD (GeForce NOW's launcher
+	// does) would still get them otherwise.
+	if (cli_getenv("FLATPKG_NO_SHIMS") == NULL) {
+		snprintf(path, sizeof(path), "%s/ld.so.preload", etc);
+		write_file(path,
+			   "/.signalfd_shim.so\n/.seccomp_shim.so\n"
+			   "/.memfd_shim.so\n/.syncobj_shim.so\n"
+			   "/.rlimit_shim.so\n/.madvise_shim.so\n",
+			   0644);
+	}
 
 	{
 		static const char* conf =
@@ -1678,6 +1701,12 @@ static int build_skeleton(sandbox_t* sb, const sandbox_plan_t* plan) {
 		return -1;
 	}
 
+	// flatpak always exposes the host's os-release here, and sandboxes read it
+	// (GeForce NOW's launcher cats it); a missing file makes them guess.
+	snprintf(p, sizeof(p), "%s/run/host/os-release", root);
+	if (copy_file("/etc/os-release", p, 0644) != FPKG_OK)
+		fpkg_warnf("no host os-release at %s", p);
+
 	write_font_dirs_xml(sb, plan);
 
 	// /run/user/<uid> for XDG_RUNTIME_DIR (0700, user-owned). The /run/user
@@ -1772,7 +1801,8 @@ static int ensure_file(const char* path, bool* created) {
 	return 0;
 }
 
-static void detach_bind(const char* path) {
+static void detach_bind(sandbox_t* sb, const char* path) {
+	assert(sb != NULL);
 	assert(path != NULL);
 	char* const argv[] = {"/sbin/umount", (char*)path, NULL};
 	int devnull = open("/dev/null", O_WRONLY);
@@ -1780,6 +1810,7 @@ static void detach_bind(const char* path) {
 	(void)run_program(argv, -1, -1, devnull);
 	if (devnull >= 0) close(devnull);
 	(void)rmdir(path);
+	untrack_mount(sb, path);
 }
 
 static void mimic_recreate_one(sandbox_t* sb, const char* src, const char* dst,
@@ -2066,7 +2097,7 @@ static int writable_mimic(sandbox_t* sb, const char* target_dir) {
 
 	if (m_tmpfs(sb, target_dir) != 0) {
 		fpkg_warnf("writable_mimic: tmpfs over %s failed", target_dir);
-		detach_bind(safe);
+		detach_bind(sb, safe);
 		return -1;
 	}
 	if (have_orig_st) {
@@ -2087,7 +2118,7 @@ static int writable_mimic(sandbox_t* sb, const char* target_dir) {
 	if (!d) {
 		fpkg_warnf("writable_mimic: opendir %s failed: %s", safe,
 			   strerror(errno));
-		detach_bind(safe);
+		detach_bind(sb, safe);
 		return -1;
 	}
 	struct dirent* ent;
@@ -2104,7 +2135,7 @@ static int writable_mimic(sandbox_t* sb, const char* target_dir) {
 		mimic_recreate_one(sb, src, dst, &est);
 	}
 	closedir(d);
-	detach_bind(safe);
+	detach_bind(sb, safe);
 	return 0;
 }
 

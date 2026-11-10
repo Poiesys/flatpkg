@@ -1473,10 +1473,101 @@ static char* summary_xa_metadata(const char* remote, const char* refstr) {
 	g_variant_unref(sum);
 	return body;
 }
+// The commit a remote's summary advertises for a ref.  The summary's ref list
+// is (name, (timestamp, checksum, metadata)), so the checksum is 32 bytes of
+// binary that the rest of the tree spells in hex.
+char* summary_ref_commit(const char* remote, const char* refstr) {
+	if (!remote_name_valid(remote)) return NULL;
+	// A local repository has no summary cache: ask it directly.
+	char local[PATH_MAX];
+	if (remote_local_path(remote, local, sizeof(local))) {
+		char repo_arg[PATH_MAX + 32];
+		tool_res_t res;
+
+		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", local);
+		char* argv[] = {"ostree", "rev-parse", repo_arg, (char*)refstr,
+				NULL};
+		if (ostree_run(argv, &res) != 0 || res.rc != 0 || !res.out ||
+		    !*res.out) {
+			tool_res_free(&res);
+			return NULL;
+		}
+		res.out[strcspn(res.out, " \t\r\n")] = '\0';
+		char* out = xstrdup(res.out);
+		tool_res_free(&res);
+		return out;
+	}
+	char path[PATH_MAX];
+	store_path(path, sizeof(path), "repo/tmp/cache/summaries/%s", remote);
+	GMappedFile* mf = g_mapped_file_new(path, FALSE, NULL);
+	if (!mf) return NULL;
+	GBytes* bytes = g_mapped_file_get_bytes(mf);
+	g_mapped_file_unref(mf);
+	// Untrusted: the cache directory is group-writable.
+	GVariant* sum = g_variant_new_from_bytes(
+		G_VARIANT_TYPE("(a(s(taya{sv}))a{sv})"), bytes, FALSE);
+	g_bytes_unref(bytes);
+	GVariant* refs = g_variant_get_child_value(sum, 0);
+	char* out = NULL;
+
+	for (gsize i = 0; i < g_variant_n_children(refs) && out == NULL; i++) {
+		GVariant* ent = g_variant_get_child_value(refs, i);
+		const char* name = NULL;
+
+		g_variant_get_child(ent, 0, "&s", &name);
+		if (name == NULL || strcmp(name, refstr) != 0) {
+			g_variant_unref(ent);
+			continue;
+		}
+		GVariant* body = g_variant_get_child_value(ent, 1);
+		GVariant* csum = g_variant_get_child_value(body, 1);
+		gsize clen = 0;
+		const guint8* cdata = g_variant_get_fixed_array(csum, &clen, 1);
+
+		if (cdata != NULL && clen == 32) {
+			char hex[65];
+
+			for (gsize k = 0; k < clen; k++)
+				snprintf(hex + k * 2, 3, "%02x", cdata[k]);
+			out = xstrdup(hex);
+		}
+		g_variant_unref(csum);
+		g_variant_unref(body);
+		g_variant_unref(ent);
+	}
+	g_variant_unref(refs);
+	g_variant_unref(sum);
+	return out;
+}
 // Try the local summary cache first (no network) and refresh the
 // summary, which may hit the network, only on a miss.
 char* summary_ref_metadata_text(const char* remote,
 				       const char* refstr) {
+	// A local repository has no summary cache; the commit is local too, so
+	// its metadata can be read straight out of it.
+	char local[PATH_MAX];
+	if (remote_local_path(remote, local, sizeof(local))) {
+		char* commit = summary_ref_commit(remote, refstr);
+
+		if (commit == NULL) return NULL;
+		char repo_arg[PATH_MAX + 32];
+		tool_res_t res;
+
+		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", local);
+		char* argv[] = {"ostree", "cat", repo_arg, commit, "metadata",
+				NULL};
+		int rc = ostree_run(argv, &res);
+
+		// argv kept the pointer: free it only after the child ran.
+		free(commit);
+		if (rc != 0 || res.rc != 0 || !res.out) {
+			tool_res_free(&res);
+			return NULL;
+		}
+		char* out = xstrdup(res.out);
+		tool_res_free(&res);
+		return out;
+	}
 	char* body = summary_xa_metadata(remote, refstr);
 	if (body) return body;
 	const remote_refs_t* rr =
@@ -1484,6 +1575,59 @@ char* summary_ref_metadata_text(const char* remote,
 	if (!rr || rr->failed) return NULL;
 	return summary_xa_metadata(remote, refstr);
 }
+// A plan row may name its own remote (`flathub:runtime/...`); the kind word is
+// whatever follows the colon.  Rows the planner built from metadata carry no
+// remote, so the executor asks for the body only.
+static const char* ref_body(const char* ref) {
+	const char* colon = strchr(ref, ':');
+	const char* slash = strchr(ref, '/');
+
+	return (colon != NULL && (slash == NULL || colon < slash)) ? colon + 1
+								  : ref;
+}
+
+// Does this remote's summary carry the ref?  Extensions are published as
+// runtime/<id>/<arch>/<branch>, and a row spells them extension/.
+static bool remote_has_ref(const char* remote, const char* ref) {
+	char want[512];
+	remote_refs_t* rr;
+
+	snprintf(want, sizeof(want), "%s",
+		 ref_body(ref));
+	if (strncmp(want, "extension/", 10) == 0) {
+		char tmp[512];
+		snprintf(tmp, sizeof(tmp), "runtime/%s", want + 10);
+		snprintf(want, sizeof(want), "%s", tmp);
+	}
+	rr = remote_refs_cached(remote, "Looking up dependencies");
+	if (rr == NULL || rr->failed) return false;
+	for (size_t i = 0; i < rr->n; i++)
+		if (strcmp(rr->refs[i], want) == 0) return true;
+	return false;
+}
+
+// Which remote has this ref?  A dependency row carries no remote of its own,
+// and the app's remote usually does not ship the runtime - NVIDIA's repo has
+// com.nvidia.geforcenow, flathub has org.freedesktop.Platform - so the plan's
+// remote is a preference, not the answer.  Nothing found keeps the preference.
+char* remote_for_ref(const char* prefer, const char* ref) {
+	if (prefer != NULL && remote_has_ref(prefer, ref)) return xstrdup(prefer);
+	size_t n = 0;
+	char** remotes = list_remotes(&n);
+
+	for (size_t i = 0; i < n; i++) {
+		if (prefer != NULL && strcmp(remotes[i], prefer) == 0) continue;
+		if (!remote_has_ref(remotes[i], ref)) continue;
+		char* out = xstrdup(remotes[i]);
+		for (size_t k = 0; k < n; k++) free(remotes[k]);
+		free(remotes);
+		return out;
+	}
+	for (size_t k = 0; k < n; k++) free(remotes[k]);
+	free(remotes);
+	return prefer != NULL ? xstrdup(prefer) : NULL;
+}
+
 // Pull every ref the plan installs side by side, one bar each. The
 // installs that follow find them in the repo; whatever failed here is
 // retried there.
@@ -1498,7 +1642,8 @@ static void prefetch_installs(const flatpkg_changeset_t* cs, const char* remote,
 		const flatpkg_change_t* c = &cs->items[i];
 		if (c->type != FP_CHANGE_INSTALL) continue;
 		char ctype[64], cid[256];
-		if (sscanf(c->ref, "%63[^/]/%255s", ctype, cid) != 2) continue;
+		if (sscanf(ref_body(c->ref), "%63[^/]/%255s", ctype, cid) != 2)
+			continue;
 		fpkg_ref_t ir;
 		if (ref_parse(c->ref, &ir) != 0) continue;
 		if (!ir.arch) ir.arch = xstrdup(host_arch());
@@ -1506,8 +1651,10 @@ static void prefetch_installs(const flatpkg_changeset_t* cs, const char* remote,
 		char refstr[512];
 		ref_full(&ir, strcmp(ctype, "app") == 0 ? "app" : "runtime",
 			 refstr, sizeof(refstr));
-		pull_job_init(&jobs[n++], ir.remote ? ir.remote : remote,
-			      refstr);
+		char* rem = ir.remote ? xstrdup(ir.remote)
+				      : remote_for_ref(remote, c->ref);
+		pull_job_init(&jobs[n++], rem != NULL ? rem : remote, refstr);
+		free(rem);
 		ref_free(&ir);
 	}
 	if (n > 1 || (txn != NULL && n > 0)) {
@@ -1602,13 +1749,27 @@ int changeset_apply(flatpkg_changeset_t* cs, const char* remote) {
 			continue;
 		}
 		char ctype[64], cid[256];
-		if (sscanf(c->ref, "%63[^/]/%255s", ctype, cid) != 2) {
+		if (sscanf(ref_body(c->ref), "%63[^/]/%255s", ctype, cid) != 2) {
 			fpkg_warnf("cannot parse ref '%s'", c->ref);
 			rc = -1;
 			continue;
 		}
 		if (strcmp(ctype, "extension") == 0) {
-			if (ostree_install_extension_ref(c->ref) != 0) {
+			// The extension installer takes the remote from the ref, so
+			// the resolved one is spelled on when the row has none.
+			char eref[768];
+			char* erem = NULL;
+			if (ref_body(c->ref) == c->ref) {
+				erem = remote_for_ref(use_remote, c->ref);
+				snprintf(eref, sizeof(eref), "%s:%s",
+					 erem != NULL ? erem : "",
+					 c->ref);
+			} else {
+				snprintf(eref, sizeof(eref), "%s", c->ref);
+			}
+			int erc = ostree_install_extension_ref(eref);
+			free(erem);
+			if (erc != 0) {
 				fpkg_errorf("install %s failed", c->ref);
 				rc = -1;
 			} else {
@@ -1631,7 +1792,7 @@ int changeset_apply(flatpkg_changeset_t* cs, const char* remote) {
 		if (!ir.branch) ir.branch = xstrdup("stable");
 		char* iremote =
 			ir.remote ? xstrdup(ir.remote)
-				  : (use_remote ? xstrdup(use_remote) : NULL);
+				  : remote_for_ref(use_remote, c->ref);
 		if (iremote == NULL) {
 			fpkg_errorf("no remote for %s", c->ref);
 			rc = -1;

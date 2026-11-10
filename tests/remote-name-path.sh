@@ -123,7 +123,7 @@ n_sites=0
 # Use carve_function from commentlib.sh (sourced above) which handles
 # static functions and multi-line definitions correctly.
 sites=$(mktemp /tmp/.fpkg-storepath.XXXXXX)
-trap 'rm -f "$sites"' EXIT
+trap 'rm -f "$sites"; scratchd_stop; rm -rf "$tmp"' EXIT
 # The ostree backend is split across several units; discover the file per
 # function instead of assuming one.
 for f in "$ROOT"/src/ostree*.c; do

@@ -196,7 +196,10 @@ static int resolve_install_ref(const char* remote, int runtime_only,
 			   arch, branch) != 4)
 			continue;
 		bool is_runtime = strcmp(kind, "runtime") == 0;
-		if (runtime_only && !is_runtime) continue;
+		// A summary also carries kinds that are not an installable ref for
+		// this lookup - NVIDIA publishes internal/<id>/<arch>/pinned next to
+		// the app - and without --runtime the answer is one app.
+		if (runtime_only ? !is_runtime : strcmp(kind, "app") != 0) continue;
 
 		bool exact = strcmp(id, out->id) == 0;
 		if (exact) {
@@ -667,6 +670,57 @@ static bool gl_driver_name_matches(const char* basename) {
 	for (char* d = want; *d; d++)
 		if (*d == '.') *d = '-';
 	return strcmp(basename, want) == 0;
+}
+// flatpak --gl-drivers: the drivers flatpak would consider active here, one
+// per line.  FLATPAK_GL_DRIVERS overrides the choice, and the only driver this
+// host can contribute is the NVIDIA one (everything else is the runtime's
+// default Mesa).
+void cmd_gl_drivers(void) {
+	const char* env = cli_getenv("FLATPAK_GL_DRIVERS");
+
+	if (env != NULL && *env != '\0') {
+		char* dup = xstrdup(env);
+
+		for (char* t = strtok(dup, ":"); t != NULL;
+		     t = strtok(NULL, ":"))
+			fp_outl("%s", t);
+		free(dup);
+		return;
+	}
+	fp_outl("default");
+	const char* ver = nvidia_driver_version();
+	if (ver[0] != '\0') {
+		char want[160];
+
+		snprintf(want, sizeof(want), "nvidia-%s", ver);
+		for (char* d = want; *d != '\0'; d++)
+			if (*d == '.') *d = '-';
+		fp_outl("%s", want);
+	}
+}
+// `remote-info`: which ref the remote advertises for a request.  The match is
+// install's, against the named remote, and an ambiguous one is an error the
+// caller reports rather than a question nobody can answer mid-report.
+int remote_info_ref(const char* remote, const char* request, bool runtime_only,
+		    char* out, size_t outlen) {
+	fpkg_ref_t r;
+	const char* kind = NULL;
+	char** srefs = NULL;
+	size_t nsrefs = 0;
+
+	if (remote == NULL || !remote_name_valid(remote)) return -1;
+	if (ref_parse(request, &r) != 0) return -1;
+	if (r.branch == NULL) r.branch = xstrdup("stable");
+	if (resolve_install_ref(remote, runtime_only, &r, &kind, &srefs,
+				&nsrefs) != 0) {
+		ref_free(&r);
+		return -1;
+	}
+	snprintf(out, outlen, "%s/%s/%s/%s", kind, r.id,
+		 r.arch != NULL ? r.arch : host_arch(),
+		 r.branch != NULL ? r.branch : "stable");
+	ref_free(&r);
+	return 0;
 }
 // Once per process, like the GL driver: every Gtk3theme candidate asks.
 static const char* active_gtk_theme(void) {
@@ -1188,57 +1242,79 @@ static void cs_add_install_once(flatpkg_changeset_t* cs, const char* ref,
 // The solver plans the app's runtime and its own extensions, not the
 // runtime's (Locale, GL, codecs), which only turn up in install_extensions()
 // after it deploys: expand them here so the table and total agree.
+// A runtime's own [Extension] groups, resolved against the remote that has the
+// runtime - the app's remote usually does not - and filtered by each group's
+// download-if/enable-if rules.  Called for every runtime the plan installs and
+// for the runtime an incoming app declares, because an installed runtime does
+// not mean its extensions are there: GeForce NOW's 24.08 runtime was deployed
+// without the GL extension that belongs to it, and every EGL lookup failed.
+static size_t expand_one_runtime(flatpkg_changeset_t* cs, const char* remote,
+				 const char* runtime_ref) {
+	assert(cs != NULL);
+	size_t added = 0;
+	fpkg_ref_t ir;
+
+	if (runtime_ref == NULL || *runtime_ref == '\0') return 0;
+	if (ref_parse(runtime_ref, &ir) != 0) return 0;
+	if (!ir.arch) {
+		free(ir.arch);
+		ir.arch = xstrdup(host_arch());
+	}
+	if (!ir.branch) ir.branch = xstrdup("stable");
+	char refstr[512];
+	ref_full(&ir, "runtime", refstr, sizeof(refstr));
+	// The lookup wants the kind word: `remote_has_ref` matches a summary's
+	// `runtime/<id>/<arch>/<branch>` against a full ref.
+	char* use_remote =
+		ir.remote ? xstrdup(ir.remote)
+			  : remote_for_ref(remote, refstr);
+	fp_metadata_t rmeta;
+	if (use_remote == NULL ||
+	    remote_ref_metadata(use_remote, refstr, &rmeta) != 0) {
+		free(use_remote);
+		ref_free(&ir);
+		return 0;
+	}
+	remote_refs_t* rr =
+		remote_refs_cached(use_remote, "Looking up extensions");
+	if (!rr || rr->failed) {
+		free(use_remote);
+		fp_metadata_free(&rmeta);
+		ref_free(&ir);
+		return 0;
+	}
+	fpkg_ref_t* refs = NULL;
+	size_t nrefs = 0;
+	related_refs_for_metadata(&rmeta, ir.branch, ir.arch, rr->refs, rr->n,
+				  &refs, &nrefs);
+	fp_metadata_free(&rmeta);
+	for (size_t k = 0; k < nrefs; k++) {
+		char eref[512];
+		snprintf(eref, sizeof(eref), "extension/%s/%s/%s", refs[k].id,
+			 refs[k].arch, refs[k].branch ? refs[k].branch : "");
+		size_t before = cs->count;
+		cs_add_install_once(cs, eref, refs[k].branch);
+		if (cs->count != before) added++;
+		ref_free(&refs[k]);
+	}
+	free(refs);
+	free(use_remote);
+	ref_free(&ir);
+	return added;
+}
+
 static size_t expand_runtime_extensions(flatpkg_changeset_t* cs,
 					const char* remote) {
 	assert(cs != NULL);
-	assert(remote != NULL);
 	size_t added = 0;
 	size_t orig = cs->count;
+
 	for (size_t i = 0; i < orig; i++) {
 		flatpkg_change_t* c = &cs->items[i];
+
 		if (c->type != FP_CHANGE_INSTALL) continue;
-		char ctype[64], cid[256];
-		if (sscanf(c->ref, "%63[^/]/%255s", ctype, cid) != 2) continue;
-		if (strcmp(ctype, "runtime") != 0) continue;
-		fpkg_ref_t ir;
-		if (ref_parse(c->ref, &ir) != 0) continue;
-		if (!ir.arch) {
-			free(ir.arch);
-			ir.arch = xstrdup(host_arch());
-		}
-		if (!ir.branch) ir.branch = xstrdup("stable");
-		const char* use_remote = ir.remote ? ir.remote : remote;
-		char refstr[512];
-		ref_full(&ir, "runtime", refstr, sizeof(refstr));
-		fp_metadata_t rmeta;
-		if (remote_ref_metadata(use_remote, refstr, &rmeta) != 0) {
-			ref_free(&ir);
-			continue;
-		}
-		remote_refs_t* rr =
-			remote_refs_cached(use_remote, "Looking up extensions");
-		if (!rr || rr->failed) {
-			fp_metadata_free(&rmeta);
-			ref_free(&ir);
-			continue;
-		}
-		fpkg_ref_t* refs = NULL;
-		size_t nrefs = 0;
-		related_refs_for_metadata(&rmeta, ir.branch, ir.arch, rr->refs,
-					  rr->n, &refs, &nrefs);
-		fp_metadata_free(&rmeta);
-		for (size_t k = 0; k < nrefs; k++) {
-			char eref[512];
-			snprintf(eref, sizeof(eref), "extension/%s/%s/%s",
-				 refs[k].id, refs[k].arch,
-				 refs[k].branch ? refs[k].branch : "");
-			size_t before = cs->count;
-			cs_add_install_once(cs, eref, refs[k].branch);
-			if (cs->count != before) added++;
-			ref_free(&refs[k]);
-		}
-		free(refs);
-		ref_free(&ir);
+		if (strncmp(c->ref, "runtime/", 8) != 0) continue;
+		added += expand_one_runtime(cs, remote, c->ref);
 	}
 	return added;
 }
@@ -1494,8 +1570,14 @@ int ostree_plan_install(const char** requests, const char* const* commits,
 		goto out;
 	}
 	fpkg_span_end(&phase_solve);
-	for (size_t i = 0; i < n; i++)
+	for (size_t i = 0; i < n; i++) {
 		expand_runtime_extensions(&out->cs, reqs[i].remote);
+		// The app's own runtime may already be installed; its extensions
+		// still have to be there, and only its metadata says which.
+		if (!reqs[i].is_runtime && !reqs[i].is_ext)
+			expand_one_runtime(&out->cs, reqs[i].remote,
+					   reqs[i].meta.runtime_ref);
+	}
 	for (size_t i = 0; i < n; i++)
 		install_req_add_row(&out->cs, &reqs[i], reinstall);
 

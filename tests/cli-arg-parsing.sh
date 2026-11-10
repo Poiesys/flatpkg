@@ -15,7 +15,7 @@ BAD="--zzz-flatpkg-guard"
 # for the commands that take a pair, because without it the buggy behaviour is
 # masked by an unrelated usage error.  The inventory below must cover all of them.
 CASES="upgrade: install: uninstall: update: rollback: list-commits:
-       remote-add:@REPOFILE@ remote-delete:
+       remote-add:@REPOFILE@ remote-delete: remote-info:x remote-modify:x
        override:com.example.Guard import: complete: ps: enter: kill: run:
        info: remove: list: exports: remote-list: remotes: history: repair:
        help:"

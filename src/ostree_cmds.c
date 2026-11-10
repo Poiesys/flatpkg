@@ -119,7 +119,11 @@ static unsigned int crc24(const unsigned char* data, size_t len) {
 }
 static const char b64_alphabet[] =
 	"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+#ifdef FLATPKG_TESTING
+char* armor_gpg_key(const char* key) {
+#else
 static char* armor_gpg_key(const char* key) {
+#endif
 	assert(key != NULL);
 	if (strncmp(key, "-----BEGIN PGP", 14) == 0) return xstrdup(key);
 
@@ -129,6 +133,25 @@ static char* armor_gpg_key(const char* key) {
 	if (binlen == 0) {
 		free(bin);
 		return NULL;
+	}
+
+	// Repos differ inside the base64: flathub encodes the binary packets,
+	// NVIDIA encodes the armored text.  Armoring that again hides the key, so
+	// a decoded armor is written as it is.
+	static const char armor_begin[] = "-----BEGIN PGP PUBLIC KEY BLOCK-----";
+	if (binlen >= sizeof(armor_begin) - 1 &&
+	    memcmp(bin, armor_begin, sizeof(armor_begin) - 1) == 0) {
+		char* out = malloc(binlen + 1);
+
+		if (out == NULL) {
+			free(bin);
+			fpkg_errorf("out of memory");
+			exit(1);
+		}
+		memcpy(out, bin, binlen);
+		out[binlen] = '\0';
+		free(bin);
+		return out;
 	}
 
 	unsigned int crc = crc24(bin, binlen);
@@ -281,6 +304,311 @@ static int flatpakrepo_parse(const char* buf, char** url_out, char** key_out,
 	free(line);
 	return 0;
 }
+static int ostree_config_get(const char* key, char* out, size_t outlen);
+
+// One key of a remote's configuration, as ostree spells it in repo/config.
+static int remote_config_set(const char* name, const char* key,
+			     const char* value) {
+	assert(name != NULL);
+	assert(key != NULL);
+	tool_ctx_t tc;
+	tool_ctx_init(&tc);
+	char repo_arg[PATH_MAX + 32];
+	char cfgkey[512];
+
+	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
+	snprintf(cfgkey, sizeof(cfgkey), "remote \"%s\".%s", name, key);
+	char* argv[] = {"ostree", "config", repo_arg, "set", cfgkey,
+			(char*)value, NULL};
+	tool_res_t res;
+	int rc = -1;
+
+	tool_res_init(&res);
+	if (ostree_run(argv, &res) == 0 && res.rc == 0) rc = 0;
+	else log_tool_stderr(&res);
+	tool_res_free(&res);
+	return rc;
+}
+
+static int remote_config_unset(const char* name, const char* key) {
+	assert(name != NULL);
+	assert(key != NULL);
+	tool_ctx_t tc;
+	tool_ctx_init(&tc);
+	char repo_arg[PATH_MAX + 32];
+	char cfgkey[512];
+
+	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
+	snprintf(cfgkey, sizeof(cfgkey), "remote \"%s\".%s", name, key);
+	char* argv[] = {"ostree", "config", repo_arg, "unset", cfgkey, NULL};
+	tool_res_t res;
+	int rc = -1;
+
+	tool_res_init(&res);
+	if (ostree_run(argv, &res) == 0 && res.rc == 0) rc = 0;
+	tool_res_free(&res);
+	return rc;
+}
+
+// remote-modify's changes are `key=value` lines: the client wrote what the
+// parser understood, and this is the only other reader.
+int cmd_remote_modify(const char* name, const char* changes) {
+	assert(name != NULL);
+	if (!remote_name_valid(name)) {
+		fpkg_errorf("invalid remote name '%s'", name);
+		return 1;
+	}
+	if (!ostree_remote_exists(name)) {
+		fpkg_errorf("no remote named '%s'", name);
+		return 1;
+	}
+
+	const char* url = NULL;
+	const char* gpg_import = NULL;
+	int gpg_verify = -1;
+	const char* branch = NULL;
+	const char* title = NULL;
+	const char* comment = NULL;
+	const char* desc = NULL;
+	const char* homepage = NULL;
+	const char* icon = NULL;
+
+	char* text = xstrdup(changes != NULL ? changes : "");
+	for (char* line = text; line != NULL && *line != '\0';) {
+		char* nl = strchr(line, '\n');
+		char* val;
+
+		if (nl != NULL) *nl = '\0';
+		val = strchr(line, '=');
+		if (val == NULL) {
+			fpkg_errorf("malformed remote change '%s'", line);
+			free(text);
+			return 1;
+		}
+		*val++ = '\0';
+		if (strcmp(line, "url") == 0) url = val;
+		else if (strcmp(line, "gpg-import") == 0) gpg_import = val;
+		else if (strcmp(line, "gpg-verify") == 0)
+			gpg_verify = atoi(val) != 0;
+		else if (strcmp(line, "branch") == 0) branch = val;
+		else if (strcmp(line, "title") == 0) title = val;
+		else if (strcmp(line, "comment") == 0) comment = val;
+		else if (strcmp(line, "description") == 0) desc = val;
+		else if (strcmp(line, "homepage") == 0) homepage = val;
+		else if (strcmp(line, "icon") == 0) icon = val;
+		else {
+			fpkg_errorf("unknown remote change '%s'", line);
+			free(text);
+			return 1;
+		}
+		line = nl != NULL ? nl + 1 : NULL;
+	}
+
+	if (url == NULL && gpg_import == NULL && gpg_verify < 0 &&
+	    branch == NULL && title == NULL && comment == NULL &&
+	    desc == NULL && homepage == NULL && icon == NULL) {
+		fpkg_errorf("nothing to change: give the remote an option");
+		free(text);
+		return 1;
+	}
+
+	// A new keyring replaces the one ostree trusts for this remote.  The
+	// path ostree imports from is ours, so a caller cannot point it at a
+	// file of theirs.
+	if (gpg_import != NULL) {
+		char key_host[PATH_MAX];
+		struct stat st;
+
+		if (stat(gpg_import, &st) != 0 || !S_ISREG(st.st_mode)) {
+			fpkg_errorf("cannot read the key file %s: %s",
+				    gpg_import, strerror(errno));
+			free(text);
+			return 1;
+		}
+		store_path(key_host, sizeof(key_host), "keys/%s.gpg", name);
+		char keysdir[PATH_MAX];
+		snprintf(keysdir, sizeof(keysdir), "%s", key_host);
+		char* slash = strrchr(keysdir, '/');
+		if (slash != NULL) *slash = '\0';
+		mkdir_p(keysdir, 0755);
+		// The caller may name the file the remote already uses; copying it
+		// onto itself would truncate the source before it is read.
+		struct stat dst;
+		bool same = stat(key_host, &dst) == 0 &&
+			    dst.st_dev == st.st_dev && dst.st_ino == st.st_ino;
+		if (!same && copy_file(gpg_import, key_host, 0644) != FPKG_OK) {
+			fpkg_errorf("cannot store %s: %s", key_host,
+				    strerror(errno));
+			free(text);
+			return 1;
+		}
+	}
+
+	int rc = 0;
+	if (url != NULL && remote_config_set(name, "url", url) != 0)
+		rc = 1;
+	if (rc == 0 && gpg_import != NULL) {
+		// ostree imports keys into an existing remote through remote add
+		// --if-not-exists: it keeps the url and the flags it finds, and
+		// only needs a url to accept the command.
+		char key_host[PATH_MAX], cur_url[PATH_MAX] = "";
+		char cfgkey[512];
+		tool_ctx_t tc;
+		tool_ctx_init(&tc);
+		char repo_arg[PATH_MAX + 32];
+		char import_arg[PATH_MAX + 32];
+
+		snprintf(cfgkey, sizeof(cfgkey), "remote \"%s\".url", name);
+		if (ostree_config_get(cfgkey, cur_url, sizeof(cur_url)) != 0 ||
+		    cur_url[0] == '\0') {
+			fpkg_errorf("remote %s has no url to keep", name);
+			rc = 1;
+		}
+		if (rc == 0) {
+			store_path(key_host, sizeof(key_host), "keys/%s.gpg",
+				   name);
+			snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
+			snprintf(import_arg, sizeof(import_arg),
+				 "--gpg-import=%s", key_host);
+			char* argv[] = {"ostree",     "remote",
+					"add",        "--if-not-exists",
+					import_arg,   (char*)name,
+					cur_url,      repo_arg,
+					NULL};
+			tool_res_t res;
+
+			tool_res_init(&res);
+			if (ostree_run(argv, &res) != 0 || res.rc != 0) {
+				log_tool_stderr(&res);
+				rc = 1;
+			}
+			tool_res_free(&res);
+		}
+	}
+	if (rc == 0 && gpg_verify >= 0) {
+		if (remote_config_set(name, "gpg-verify",
+				      gpg_verify ? "true" : "false") != 0 ||
+		    remote_config_set(name, "gpg-verify-summary",
+				      gpg_verify ? "true" : "false") != 0)
+			rc = 1;
+	}
+	if (rc == 0 && branch != NULL) {
+		if (*branch != '\0')
+			rc = remote_config_set(name, "flatpkg.branch", branch) != 0;
+		else
+			rc = remote_config_unset(name, "flatpkg.branch") != 0;
+	}
+	struct {
+		const char* key;
+		const char* val;
+	} meta[] = {{"xa.title", title},
+		    {"xa.comment", comment},
+		    {"xa.description", desc},
+		    {"xa.homepage", homepage},
+		    {"xa.icon", icon}};
+	for (size_t i = 0; rc == 0 && i < sizeof(meta) / sizeof(meta[0]); i++) {
+		if (meta[i].val == NULL) continue;
+		rc = remote_config_set(name, meta[i].key, meta[i].val) != 0;
+	}
+
+	if (rc == 0) fpkg_okf("modified remote %s", name);
+	free(text);
+	return rc;
+}
+
+// A `key=` line of a commit's metadata, read without the full parser: a
+// report needs two of them.
+static void meta_line(const char* body, const char* key, char* out,
+		      size_t outlen) {
+	assert(key != NULL);
+	size_t klen = strlen(key);
+
+	out[0] = '\0';
+	if (body == NULL) return;
+	for (const char* p = body; *p != '\0';) {
+		const char* eol = strchr(p, '\n');
+		size_t len = eol != NULL ? (size_t)(eol - p) : strlen(p);
+
+		if (len > klen && strncmp(p, key, klen) == 0 && p[klen] == '=') {
+			snprintf(out, outlen, "%.*s", (int)(len - klen - 1),
+				 p + klen + 1);
+			return;
+		}
+		p = eol != NULL ? eol + 1 : p + len;
+	}
+}
+
+int cmd_remote_info(const char* remote, const char* request, const char* arch,
+		    const char* commit, bool runtime, bool show_ref,
+		    bool show_commit, bool show_metadata, bool show_parent) {
+	if (!remote_name_valid(remote) || !ostree_remote_exists(remote)) {
+		fpkg_errorf("no remote named '%s'", remote);
+		return 1;
+	}
+
+	char req[600], ref[512];
+	snprintf(req, sizeof(req), "%s%s%s", request,
+		 arch != NULL && *arch != '\0' ? "/" : "",
+		 arch != NULL ? arch : "");
+	if (remote_info_ref(remote, req, runtime, ref, sizeof(ref)) != 0) {
+		fpkg_errorf("nothing matches %s in remote %s", request,
+			    remote);
+		return 1;
+	}
+
+	char* csum = commit != NULL && *commit != '\0'
+			     ? xstrdup(commit)
+			     : summary_ref_commit(remote, ref);
+	char* body = NULL;
+
+	if (show_ref) fp_outl("%s", ref);
+	if (show_commit) {
+		if (csum == NULL) {
+			fpkg_errorf("no commit for %s in remote %s", ref,
+				    remote);
+			return 1;
+		}
+		fp_outl("%s", csum);
+	}
+	if (show_metadata) {
+		body = summary_ref_metadata_text(remote, ref);
+		if (body != NULL) fp_out_raw(body, strlen(body));
+		free(body);
+	}
+	if (show_ref || show_commit || show_metadata) {
+		free(csum);
+		return 0;
+	}
+
+	// The friendly block, in flatpak's order and spelling: `info` prints
+	// the same fields for a deploy this store holds.
+	fpkg_ref_t r;
+	char version[128] = "", runtime_id[256] = "";
+	if (ref_parse(ref, &r) != 0) {
+		fpkg_errorf("the remote returned an unreadable ref '%s'", ref);
+		free(csum);
+		return 1;
+	}
+	body = summary_ref_metadata_text(remote, ref);
+	if (body != NULL) {
+		meta_line(body, "version", version, sizeof(version));
+		meta_line(body, "runtime", runtime_id, sizeof(runtime_id));
+		free(body);
+	}
+	fp_outl("Ref: %s", ref);
+	fp_outl("ID: %s", r.id);
+	fp_outl("Arch: %s", r.arch != NULL ? r.arch : "-");
+	fp_outl("Branch: %s", r.branch != NULL ? r.branch : "-");
+	if (version[0] != '\0') fp_outl("Version: %s", version);
+	fp_outl("Commit: %s", csum != NULL ? csum : "-");
+	if (show_parent)
+		fp_outl("Parent: %s", "-");
+	if (runtime_id[0] != '\0') fp_outl("Runtime: %s", runtime_id);
+	ref_free(&r);
+	free(csum);
+	return 0;
+}
+
 int cmd_remote_add(const char* name, const char* url, const char* from) {
 	if (!name || !*name) {
 		fpkg_errorf("usage: remote-add [--from=URL] NAME [URL]");

@@ -171,6 +171,10 @@ char* commit_xa_metadata(const char* commit);
 char* cat_commit_metadata(const char* commit);
 char* summary_ref_metadata_text(const char* remote,
 				       const char* refstr);
+char* summary_ref_commit(const char* remote, const char* refstr);
+char* remote_for_ref(const char* prefer, const char* ref);
+int remote_info_ref(const char* remote, const char* request, bool runtime_only,
+		    char* out, size_t outlen);
 int find_deploy_dir(const char* type, const fpkg_ref_t* r, char* out,
 			   size_t len);
 bool remote_name_valid(const char* name);

@@ -710,10 +710,16 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 		const char* ibranch =
 			inc->ref.branch ? inc->ref.branch : "stable";
 
+		// An extension is versioned by the runtime it extends, not by the
+		// app's branch: an app on branch master extends 24.08, and flathub
+		// publishes gamescope for 22.08..24.08, never for master.
+		const char* ebranch = ibranch;
 		fpkg_ref_t rt;
-		if (inc->meta.runtime_ref && *inc->meta.runtime_ref &&
-		    ref_parse(inc->meta.runtime_ref, &rt) == 0) {
+		bool have_rt = inc->meta.runtime_ref && *inc->meta.runtime_ref &&
+			       ref_parse(inc->meta.runtime_ref, &rt) == 0;
+		if (have_rt) {
 			const char* rbranch = rt.branch ? rt.branch : "stable";
+			ebranch = rbranch;
 			if (!installed_has(installed, ninst, "runtime", rt.id,
 					   rt.branch)) {
 				char rref[512];
@@ -722,7 +728,6 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 				changeset_add_once(cs_out, FP_CHANGE_INSTALL,
 						   rref, NULL, rbranch);
 			}
-			ref_free(&rt);
 		}
 
 		for (size_t g = 0; g < inc->meta.next_groups; g++) {
@@ -730,7 +735,7 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 			if (!grp->id || !*grp->id) continue;
 			const char* branches[16];
 			size_t nb = ostree_group_install_branches(
-				grp, iarch, ibranch, branches, 16);
+				grp, iarch, ebranch, branches, 16);
 			for (size_t b = 0; b < nb; b++) {
 				char eref[512];
 				snprintf(eref, sizeof(eref),
@@ -740,6 +745,7 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 						   eref, NULL, branches[b]);
 			}
 		}
+		if (have_rt) ref_free(&rt);
 	}
 
 	// Heal: the world implies a complete set, so a missing dependency of an installed

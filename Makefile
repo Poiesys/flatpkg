@@ -410,8 +410,7 @@ DISTDIR?=       ports/dist
 
 dist:
 	@mkdir -p $(DISTDIR)
-	@tmp=$$(mktemp); { git ls-files; git ls-files --others \
-	        --exclude-standard; } | sort -u | grep -v '^ports/' | \
+	@tmp=$$(mktemp); git ls-files | sort -u | grep -v '^ports/' | \
 	    while IFS= read -r f; do [ -f "$$f" ] && printf '%s\n' "$$f"; done \
 	        > $$tmp; \
 	    tar --format=ustar --uid 0 --gid 0 --uname root --gname wheel \

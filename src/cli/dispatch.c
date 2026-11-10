@@ -20,7 +20,7 @@
 
 static fp_logger_t log = {.scope = "run", .desc = ""};
 
-// A property/value table: both `info` tables are keyed pairs.
+// A property/value table: `info`'s permission section is keyed pairs.
 enum { KV_COLS = 2, KV_ROWS_MAX = 64 };
 
 static void kv_row(const char*** rows, const char* (*cells)[KV_COLS],
@@ -35,8 +35,59 @@ static void kv_row(const char*** rows, const char* (*cells)[KV_COLS],
 	(*m)++;
 }
 
-int cmd_info(const char* app_id) {
-	assert(app_id != NULL);
+// <store>/app/<id>/<arch>/<branch>/<commit>/files is the deploy layout, so the
+// report reads the parts off the path it already has.
+static void deploy_parts(const char* files_dir, char* deploy, size_t dlen,
+			 char* arch, size_t alen, char* branch, size_t blen,
+			 char* commit, size_t clen) {
+	assert(files_dir != NULL);
+	char buf[PATH_MAX];
+	// files_dir may be the `active` symlink: the parts are the real deploy's.
+	if (realpath(files_dir, buf) == NULL)
+		snprintf(buf, sizeof(buf), "%s", files_dir);
+	size_t n = strlen(buf);
+	if (n > 6 && strcmp(buf + n - 6, "/files") == 0) buf[n - 6] = '\0';
+	snprintf(deploy, dlen, "%s", buf);
+	const char* leaf = strrchr(buf, '/');
+	snprintf(commit, clen, "%s", leaf != NULL ? leaf + 1 : "");
+	if (leaf != NULL) ((char*)leaf)[0] = '\0';
+	leaf = strrchr(buf, '/');
+	snprintf(branch, blen, "%s", leaf != NULL ? leaf + 1 : "");
+	if (leaf != NULL) ((char*)leaf)[0] = '\0';
+	leaf = strrchr(buf, '/');
+	snprintf(arch, alen, "%s", leaf != NULL ? leaf + 1 : "");
+}
+
+// The remote a deploy came from, as `remote-delete` and `info --show-origin`
+// spell it.  The file sits in the branch directory, above the commit.
+static char* read_origin(const char* deploy) {
+	char path[PATH_MAX], buf[256] = "";
+	char branch_dir[PATH_MAX];
+
+	snprintf(branch_dir, sizeof(branch_dir), "%s", deploy);
+	char* slash = strrchr(branch_dir, '/');
+	if (slash == NULL) return NULL;
+	*slash = '\0';
+	snprintf(path, sizeof(path), "%s/.origin", branch_dir);
+	FILE* f = fopen(path, "r");
+	if (f == NULL) return NULL;
+	if (fgets(buf, sizeof(buf), f) == NULL) buf[0] = '\0';
+	fclose(f);
+	buf[strcspn(buf, " \t\r\n")] = '\0';
+	return buf[0] != '\0' ? xstrdup(buf) : NULL;
+}
+
+static void aligned_line(size_t width, const char* label, const char* value) {
+	assert(label != NULL);
+	size_t l = strlen(label);
+	size_t pad = width > l ? width - l : 0;
+
+	fp_outl("%*s%s %s", (int)pad, "", label, value != NULL ? value : "-");
+}
+
+int cmd_info(const cli_req_t* r) {
+	assert(r != NULL);
+	const char* app_id = r->nops > 0 ? r->ops[0] : "";
 	sandbox_t sb;
 	fp_metadata_t meta;
 	if (store_resolve(app_id, &sb, &meta) != 0) return 1;
@@ -45,32 +96,107 @@ int cmd_info(const char* app_id) {
 	// metadata alone, so an override is never hidden from `info`.
 	overrides_apply(&meta, sb.app_id);
 
-	char v_appid[256], v_runtime[256], v_cmd[256];
-	char v_app_files[PATH_MAX], v_runtime_files[PATH_MAX];
-	const char* cells[KV_ROWS_MAX][KV_COLS];
-	const char** rows[KV_ROWS_MAX];
-	size_t m = 0;
-	snprintf(v_appid, sizeof(v_appid), "%s",
-		 meta.app_id ? meta.app_id : "(none)");
-	snprintf(v_runtime, sizeof(v_runtime), "%s",
-		 meta.runtime_ref ? meta.runtime_ref : "(none)");
-	snprintf(v_cmd, sizeof(v_cmd), "%s", meta.command);
-	snprintf(v_app_files, sizeof(v_app_files), "%s", sb.app_files_dir);
-	snprintf(v_runtime_files, sizeof(v_runtime_files), "%s",
-		 sb.runtime_dir);
-	const char* headers1[] = {"Property", "Value"};
-	kv_row(rows, cells, &m, "app id", v_appid);
-	kv_row(rows, cells, &m, "runtime", v_runtime);
-	kv_row(rows, cells, &m, "command", v_cmd);
-	kv_row(rows, cells, &m, "app files", v_app_files);
-	kv_row(rows, cells, &m, "runtime files", v_runtime_files);
-	fp_print_table(headers1, FP_TABLE_COLS(headers1),
-		       (const char* const* const*)rows, m, FP_TABLE_OUTPUT);
+	char deploy[PATH_MAX], arch[64], branch[64], commit[128];
+	deploy_parts(sb.app_files_dir, deploy, sizeof(deploy), arch,
+		     sizeof(arch), branch, sizeof(branch), commit,
+		     sizeof(commit));
+	char* origin = read_origin(deploy);
+	char ref[512];
+	snprintf(ref, sizeof(ref), "app/%s/%s/%s", sb.app_id, arch, branch);
+
+	bool machine = r->show_ref || r->show_origin || r->show_commit ||
+		       r->show_location || r->show_metadata ||
+		       r->show_permissions;
+	if (machine) {
+		// flatpak puts the selected values on one line, then the metadata
+		// and the permissions as their own text.
+		char line[4096];
+		size_t off = 0;
+		bool first = true;
+		const char* values[8];
+		size_t nv = 0;
+
+		if (r->show_ref) values[nv++] = ref;
+		if (r->show_origin) values[nv++] = origin != NULL ? origin : "-";
+		if (r->show_commit) values[nv++] = commit;
+		if (r->show_location) values[nv++] = deploy;
+		if (r->show_runtime)
+			values[nv++] = meta.runtime_ref != NULL
+					       ? meta.runtime_ref
+					       : "-";
+		if (r->show_sdk)
+			values[nv++] = meta.sdk_ref != NULL ? meta.sdk_ref
+							    : "-";
+		line[0] = '\0';
+		for (size_t i = 0; i < nv && off < sizeof(line); i++) {
+			off += (size_t)snprintf(line + off, sizeof(line) - off,
+						"%s%s", first ? "" : " ",
+						values[i]);
+			first = false;
+		}
+		if (nv > 0) fp_outl("%s", line);
+
+		if (r->show_metadata) {
+			char path[PATH_MAX];
+			snprintf(path, sizeof(path), "%s/metadata", deploy);
+			int fd = open(path, O_RDONLY);
+
+			if (fd >= 0) {
+				char chunk[4096];
+				ssize_t got;
+
+				while ((got = read(fd, chunk, sizeof(chunk))) > 0)
+					fp_out_raw(chunk, (size_t)got);
+				close(fd);
+			}
+		}
+		if (r->show_permissions) {
+			char* text = overrides_to_text(&meta);
+
+			if (text != NULL) {
+				fp_out_raw(text, strlen(text));
+				free(text);
+			}
+		}
+		free(origin);
+		fp_metadata_free(&meta);
+		free(sb.app_id);
+		free(sb.app_files_dir);
+		free(sb.runtime_dir);
+		return 0;
+	}
+
+	static const char* labels[] = {"ID:",		"Ref:",	     "Arch:",
+				       "Branch:",	"Version:",  "Origin:",
+				       "Installation:", "Runtime:",  "Sdk:",
+				       "Commit:"};
+	size_t width = 0;
+	for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++) {
+		size_t l = strlen(labels[i]);
+
+		if (l > width) width = l;
+	}
+
+	aligned_line(width, "ID:", sb.app_id);
+	aligned_line(width, "Ref:", ref);
+	aligned_line(width, "Arch:", arch);
+	aligned_line(width, "Branch:", branch);
+	if (meta.version != NULL && *meta.version != '\0')
+		aligned_line(width, "Version:", meta.version);
+	aligned_line(width, "Origin:", origin);
+	aligned_line(width, "Installation:", "default");
+	if (meta.runtime_ref != NULL && *meta.runtime_ref != '\0')
+		aligned_line(width, "Runtime:", meta.runtime_ref);
+	if (meta.sdk_ref != NULL && *meta.sdk_ref != '\0')
+		aligned_line(width, "Sdk:", meta.sdk_ref);
+	aligned_line(width, "Commit:", commit);
 
 	fp_out("\n");
 
 	const char* headers2[] = {"Permission", "Grant"};
-	m = 0;
+	const char* cells[KV_ROWS_MAX][KV_COLS];
+	const char** rows[KV_ROWS_MAX];
+	size_t m = 0;
 	for (size_t i = 0; i < meta.shared.count; i++)
 		kv_row(rows, cells, &m, "shared", meta.shared.items[i]);
 	for (size_t i = 0; i < meta.sockets.count; i++)
@@ -83,6 +209,7 @@ int cmd_info(const char* app_id) {
 	fp_print_table(headers2, FP_TABLE_COLS(headers2),
 		       (const char* const* const*)rows, m, FP_TABLE_OUTPUT);
 
+	free(origin);
 	fp_metadata_free(&meta);
 	free(sb.app_id);
 	free(sb.app_files_dir);
@@ -542,7 +669,11 @@ static int dispatch_local(const cli_req_t* r) {
 	case CMD_LIST:
 		return cmd_list();
 	case CMD_INFO:
-		return cmd_info(op[0]);
+		return cmd_info(r);
+	case CMD_REMOTE_INFO:
+		return cmd_remote_info(op[0], op[1], r->arch, r->commit,
+				       r->runtime, r->show_ref, r->show_commit,
+				       r->show_metadata, r->show_parent);
 	case CMD_SEARCH:
 		return cmd_search(op[0]);
 	case CMD_LIST_COMMITS:

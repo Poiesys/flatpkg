@@ -1035,6 +1035,15 @@ static void remote_delete_request(wctx_t* c, uint32_t id,
 	op_finish(c, rc, "remote-delete failed");
 }
 
+static void remote_modify_request(wctx_t* c, uint32_t id,
+				  const fp_req_t* r) {
+	op_start(c, id, 11, "remote-modify");
+	int rc = cmd_remote_modify(r->u.remote_modify.name,
+				   nz(r->u.remote_modify.changes));
+	if (rc == 0) emit_remote(r->u.remote_modify.name);
+	op_finish(c, rc, "remote-modify failed");
+}
+
 static void override_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	op_start(c, id, 10, "override");
 	int rc = cmd_override_system(r->u.override.app_id,
@@ -1128,6 +1137,9 @@ static void handle(wctx_t* c, uint32_t id, fp_req_t* r) {
 		return;
 	case FP_REQ_REMOTE_DELETE:
 		remote_delete_request(c, id, r);
+		return;
+	case FP_REQ_REMOTE_MODIFY:
+		remote_modify_request(c, id, r);
 		return;
 	case FP_REQ_OVERRIDE:
 		override_request(c, id, r);

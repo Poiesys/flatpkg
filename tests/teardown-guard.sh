@@ -18,7 +18,10 @@ command -v mdo >/dev/null 2>&1 &&
 	{ echo "SKIP: the daemon's logging object is not built"; exit 0; }
 
 T=$(mktemp -d /tmp/.fpkg-teardown.XXXXXX)
-trap 'rm -rf "$T"' EXIT
+# A harness killed mid-case (the fifo timeout is the one that does it) cannot
+# remove the roots it made, and they are outside $T: keep them out of the tree
+# the next run sees.  Only this harness creates tg.* under the run dir.
+trap 'rm -rf "$T"; mdo rm -rf /var/run/flatpkg/tg.* 2>/dev/null' EXIT INT TERM
 
 # sandbox.c under the test seam; the rest of its sections are dropped by
 # --gc-sections at link time.

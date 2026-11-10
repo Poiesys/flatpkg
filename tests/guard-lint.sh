@@ -301,6 +301,43 @@ else
 	echo "ok   no guard has a line the shell would run as a glob"
 fi
 
+# ---- rule 7: the last EXIT trap of a scratch-daemon guard stops it -----
+# A guard that starts a scratch daemon and later installs another EXIT trap
+# loses the first one, so the daemon and its tree outlive the run and the next
+# guard's build inherits a live store.
+: > "$TMP/r7"
+for f in "$TMP"/*.sh; do
+	b=$(basename "$f")
+	# This rule names the helpers, so it matches itself.
+	[ "$b" = guard-lint.sh ] && continue
+	grep -q 'scratchd_start' "$f" || continue
+	last=$(grep -E '^[[:space:]]*trap .*EXIT' "$f" | tail -1 || true)
+	[ -n "$last" ] || continue
+	case "$last" in
+	*scratchd_stop*) continue ;;
+	esac
+	# `trap cleanup EXIT` hides the call in a function: read that function.
+	fn=$(printf '%s\n' "$last" | sed -n 's/^[[:space:]]*trap \([A-Za-z_][A-Za-z_0-9]*\) .*/\1/p')
+	body=""
+	[ -n "$fn" ] && body=$(awk -v fn="$fn" '
+		$0 ~ "^" fn "\\(\\)[[:space:]]*\\{" { inside = 1 }
+		inside { print }
+		inside && /^}/ { exit }
+	' "$f")
+	case "$body" in
+	*scratchd_stop*) continue ;;
+	esac
+	echo "$b: $last" >>"$TMP/r7"
+done
+if [ -s "$TMP/r7" ]; then
+	echo "FAIL a guard that starts a scratch daemon has an EXIT trap that does"
+	echo "       not stop it, so the daemon and its store outlive the guard:"
+	head -4 "$TMP/r7" | sed 's/^/        /'
+	fail=1
+else
+	echo "ok   every scratch-daemon guard stops it in its last EXIT trap"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
 	echo "PASS: the guards obey the rules written down for them ($n_files files)"

@@ -79,7 +79,35 @@ typedef enum {
 	OPT_SYSTEM_NO_TALK_NAME,
 	OPT_A11Y_OWN_NAME,
 	OPT_SHOW,
-	OPT_RESET
+	OPT_RESET,
+	OPT_GL_DRIVERS,
+	OPT_SHOW_REF,
+	OPT_SHOW_ORIGIN,
+	OPT_SHOW_COMMIT,
+	OPT_SHOW_LOCATION,
+	OPT_SHOW_METADATA,
+	OPT_SHOW_SIZE,
+	OPT_SHOW_PERMISSIONS,
+	OPT_SHOW_EXTENSIONS,
+	OPT_SHOW_PARENT,
+	OPT_SHOW_RUNTIME,
+	OPT_SHOW_SDK,
+	OPT_INFO_ARCH,
+	OPT_CACHED,
+	OPT_APP,
+	OPT_LOG,
+	OPT_URL,
+	OPT_GPG_IMPORT,
+	OPT_GPG_VERIFY,
+	OPT_NO_GPG_VERIFY,
+	OPT_DEFAULT_BRANCH,
+	OPT_TITLE,
+	OPT_COMMENT_X,
+	OPT_DESCRIPTION,
+	OPT_HOMEPAGE,
+	OPT_ICON,
+	OPT_DISABLE,
+	OPT_ENABLE
 } cli_opt_id_t;
 
 #define OPTF_CHECK (1u << 0) // the value must be one of `choices`
@@ -133,6 +161,8 @@ static const cli_opt_t global_opts[] = {
 	FLAG(OPT_HELP, "--help", 'h',
 	     "Show help; after a command, that command's page"),
 	FLAG(OPT_VERSION, "--version", 0, "Print the version and exit"),
+	FLAG(OPT_GL_DRIVERS, "--gl-drivers", 0,
+	     "Print the list of active GL drivers and exit"),
 	FLAG(OPT_VERBOSE, "--verbose", 'v', "Show debug output"),
 	FLAG(OPT_OSTREE_VERBOSE, "--ostree-verbose", 0,
 	     "Also pass through the output of the ostree tool"),
@@ -230,6 +260,73 @@ static const cli_opt_t remote_add_opts[] = {
 	VALUE(OPT_FROM, "--from", 0, "URL",
 	      "Read the remote from this .flatpakrepo file or URL"),
 	FLAG(OPT_IF_NOT_EXISTS, "--if-not-exists", 0, STUB), NO_OPT};
+
+static const cli_opt_t info_opts[] = {
+	FLAG(OPT_SHOW_REF, "--show-ref", 'r', "Show the installed ref"),
+	FLAG(OPT_SHOW_ORIGIN, "--show-origin", 'o',
+	     "Show the remote the ref is installed from"),
+	FLAG(OPT_SHOW_COMMIT, "--show-commit", 'c',
+	     "Show the installed commit id"),
+	FLAG(OPT_SHOW_LOCATION, "--show-location", 'l',
+	     "Show the on-disk location of the app or runtime"),
+	FLAG(OPT_SHOW_METADATA, "--show-metadata", 'm', "Show the metadata"),
+	FLAG(OPT_SHOW_PERMISSIONS, "--show-permissions", 'M',
+	     "Show the effective permissions"),
+	FLAG(OPT_SHOW_RUNTIME, "--show-runtime", 0, "Show the runtime"),
+	FLAG(OPT_SHOW_SDK, "--show-sdk", 0, "Show the SDK"),
+	VALUE(OPT_INFO_ARCH, "--arch", 0, "ARCH",
+	      "Query for this architecture"),
+	REFUSED(OPT_SHOW_SIZE, "--show-size", NULL,
+		"flatpkg does not record a deploy size; measure the deploy "
+		"directory"),
+	REFUSED(OPT_SHOW_EXTENSIONS, "--show-extensions", NULL,
+		"list the installed refs instead: extensions are deploys of "
+		"their own"),
+	NO_OPT};
+
+static const cli_opt_t remote_info_opts[] = {
+	FLAG(OPT_CACHED, "--cached", 0,
+	     "Prefer locally cached information, which may be stale"),
+	FLAG(OPT_RUNTIME, "--runtime", 0,
+	     "Assume REF is a runtime if it does not say"),
+	FLAG(OPT_APP, "--app", 0,
+	     "Assume REF is an app if it does not say"),
+	VALUE(OPT_INFO_ARCH, "--arch", 0, "ARCH",
+	      "The architecture to look for, if the ref does not say"),
+	VALUE(OPT_COMMIT, "--commit", 0, "COMMIT",
+	      "Show information about this commit"),
+	FLAG(OPT_SHOW_REF, "--show-ref", 'r', "Show the matched ref"),
+	FLAG(OPT_SHOW_COMMIT, "--show-commit", 'c', "Show the commit id"),
+	FLAG(OPT_SHOW_PARENT, "--show-parent", 'p',
+	     "Show the parent commit id"),
+	FLAG(OPT_SHOW_METADATA, "--show-metadata", 'm', "Show the metadata"),
+	REFUSED(OPT_LOG, "--log", NULL,
+		"the remote's history is not kept; a commit is fetched by "
+		"ref, not by version"),
+	NO_OPT};
+
+static const cli_opt_t remote_modify_opts[] = {
+	FLAG(OPT_GPG_VERIFY, "--gpg-verify", 0, "Enable GPG verification"),
+	FLAG(OPT_NO_GPG_VERIFY, "--no-gpg-verify", 0,
+	     "Disable GPG verification"),
+	VALUE(OPT_URL, "--url", 0, "URL", "Set a new URL"),
+	VALUE(OPT_GPG_IMPORT, "--gpg-import", 0, "FILE",
+	      "Import GPG keys from FILE as trusted for the remote"),
+	VALUE(OPT_DEFAULT_BRANCH, "--default-branch", 0, "BRANCH",
+	      "A default branch for the remote"),
+	VALUE(OPT_TITLE, "--title", 0, "TITLE", "A title for the remote"),
+	VALUE(OPT_COMMENT_X, "--comment", 0, "COMMENT",
+	      "A single-line comment for the remote"),
+	VALUE(OPT_DESCRIPTION, "--description", 0, "DESCRIPTION",
+	      "A full-paragraph description for the remote"),
+	VALUE(OPT_HOMEPAGE, "--homepage", 0, "URL",
+	      "URL for a website for the remote"),
+	VALUE(OPT_ICON, "--icon", 0, "URL", "URL for an icon for the remote"),
+	REFUSED(OPT_DISABLE, "--disable", NULL,
+		"a configured remote is used; flatpkg keeps no disabled state"),
+	REFUSED(OPT_ENABLE, "--enable", NULL,
+		"nothing can be disabled, so nothing needs enabling"),
+	NO_OPT};
 
 static const cli_opt_t run_opts[] = {
 	CHOICE(OPT_SOCKET, "--socket", "NAME", "Expose a socket", sockets_set,
@@ -511,7 +608,7 @@ static const cli_cmd_t commands[] = {
 	 "Show metadata and effective permissions", "APP-ID",
 	 "Show the permissions the application actually runs with, overrides "
 	 "included.",
-	 no_opts, 1, 1, CLI_CMD_LOCAL},
+	 info_opts, 1, 1, CLI_CMD_LOCAL},
 	{CMD_SEARCH, "search", NULL, G_QUERY,
 	 "Search configured remotes for applications", "TEXT",
 	 "A TEXT that starts with '-' is searched for as it stands, not read "
@@ -556,6 +653,14 @@ static const cli_cmd_t commands[] = {
 	 "Add a remote repository", "NAME [URL]",
 	 "URL is the repository, or give --from a .flatpakrepo.",
 	 remote_add_opts, 1, 2, 0},
+	{CMD_REMOTE_INFO, "remote-info", NULL, G_REMOTE,
+	 "Show information about an application or runtime in a remote",
+	 "REMOTE REF", "REF may name a branch; the remote's own is used "
+	 "otherwise.", remote_info_opts, 2, 2, CLI_CMD_LOCAL},
+	{CMD_REMOTE_MODIFY, "remote-modify", NULL, G_REMOTE,
+	 "Modify a remote repository", "NAME",
+	 "Change the URL, the GPG settings or the imported keys of an "
+	 "existing remote.", remote_modify_opts, 1, 1, 0},
 	{CMD_REMOTE_LIST, "remote-list", "remotes", G_REMOTE,
 	 "List configured remotes", NULL, NULL, no_opts, 0, 0, CLI_CMD_LOCAL},
 	{CMD_REMOTE_DELETE, "remote-delete", NULL, G_REMOTE,
@@ -683,7 +788,12 @@ void cli_complete_operands(const char* cmd) {
 		fp_outl("instances");
 		break;
 	case CMD_REMOTE_DELETE:
+	case CMD_REMOTE_MODIFY:
 		fp_outl("remotes");
+		break;
+	case CMD_REMOTE_INFO:
+		fp_outl("remotes");
+		fp_outl("refs");
 		break;
 	case CMD_IMPORT:
 	case CMD_REMOTE_ADD:
@@ -1102,6 +1212,10 @@ static int cli_scan(int argc, char* const* argv, int first, cli_globals_t* g,
 			g->version = true;
 			return 0;
 		}
+		if (o->id == OPT_GL_DRIVERS) {
+			g->gl_drivers = true;
+			return 0;
+		}
 		apply_global(g, o->id, val);
 	}
 	if (g->cmd < 0) return 0;
@@ -1148,6 +1262,37 @@ static void set_str(char** dst, const char* v) {
 		fpkg_errorf("out of memory");
 		exit(1);
 	}
+}
+
+
+// `flatpak install REMOTE REF...` takes an optional leading remote.  It is a
+// remote only when the word names a configured one, so `install gedit` stays a
+// ref lookup; the refs are re-spelled as `REMOTE:REF` here, where argv is read.
+static void install_leading_remote(cli_req_t* r) {
+	const char* remote = r->ops[0];
+
+	if (strchr(remote, '.') != NULL || strchr(remote, ':') != NULL ||
+	    strchr(remote, '/') != NULL)
+		return;
+	if (!remote_name_valid(remote) || !ostree_remote_exists(remote))
+		return;
+	char** owned = calloc(r->nops - 1, sizeof(*owned));
+	if (owned == NULL) {
+		fpkg_errorf("out of memory");
+		exit(1);
+	}
+	r->owned_ops = owned;
+	r->nowned_ops = r->nops - 1;
+	for (size_t i = 1; i < r->nops; i++) {
+		// A ref that carries its own remote keeps it.
+		if (strchr(r->ops[i], ':') != NULL) {
+			r->ops[i - 1] = r->ops[i];
+			continue;
+		}
+		owned[i - 1] = xasprintf("%s:%s", remote, r->ops[i]);
+		r->ops[i - 1] = owned[i - 1];
+	}
+	r->nops--;
 }
 
 static void ops_add(cli_req_t* r, const char* v) {
@@ -1225,6 +1370,69 @@ static int apply_run(cli_req_t* r, int id, const char* v) {
 		break;
 	case OPT_ARCH:
 		set_str(&r->run.arch, v);
+		break;
+	case OPT_INFO_ARCH:
+		r->arch = v;
+		break;
+	case OPT_SHOW_REF:
+		r->show_ref = true;
+		break;
+	case OPT_SHOW_ORIGIN:
+		r->show_origin = true;
+		break;
+	case OPT_SHOW_COMMIT:
+		r->show_commit = true;
+		break;
+	case OPT_SHOW_LOCATION:
+		r->show_location = true;
+		break;
+	case OPT_SHOW_METADATA:
+		r->show_metadata = true;
+		break;
+	case OPT_SHOW_PERMISSIONS:
+		r->show_permissions = true;
+		break;
+	case OPT_SHOW_EXTENSIONS:
+		r->show_extensions = true;
+		break;
+	case OPT_SHOW_PARENT:
+		r->show_parent = true;
+		break;
+	case OPT_SHOW_RUNTIME:
+		r->show_runtime = true;
+		break;
+	case OPT_SHOW_SDK:
+		r->show_sdk = true;
+		break;
+	case OPT_URL:
+		r->url = v;
+		break;
+	case OPT_GPG_IMPORT:
+		r->gpg_import = v;
+		break;
+	case OPT_GPG_VERIFY:
+		r->gpg_verify = 1;
+		break;
+	case OPT_NO_GPG_VERIFY:
+		r->gpg_verify = 0;
+		break;
+	case OPT_DEFAULT_BRANCH:
+		r->branch_name = v;
+		break;
+	case OPT_TITLE:
+		r->title = v;
+		break;
+	case OPT_COMMENT_X:
+		r->comment = v;
+		break;
+	case OPT_DESCRIPTION:
+		r->description = v;
+		break;
+	case OPT_HOMEPAGE:
+		r->homepage = v;
+		break;
+	case OPT_ICON:
+		r->icon = v;
 		break;
 	case OPT_APPSTREAM:
 		r->appstream = true;
@@ -1372,6 +1580,69 @@ static int apply_opt(cli_req_t* r, int id, const char* v) {
 	case OPT_ARCH:
 		set_str(&r->run.arch, v);
 		break;
+	case OPT_INFO_ARCH:
+		r->arch = v;
+		break;
+	case OPT_SHOW_REF:
+		r->show_ref = true;
+		break;
+	case OPT_SHOW_ORIGIN:
+		r->show_origin = true;
+		break;
+	case OPT_SHOW_COMMIT:
+		r->show_commit = true;
+		break;
+	case OPT_SHOW_LOCATION:
+		r->show_location = true;
+		break;
+	case OPT_SHOW_METADATA:
+		r->show_metadata = true;
+		break;
+	case OPT_SHOW_PERMISSIONS:
+		r->show_permissions = true;
+		break;
+	case OPT_SHOW_EXTENSIONS:
+		r->show_extensions = true;
+		break;
+	case OPT_SHOW_PARENT:
+		r->show_parent = true;
+		break;
+	case OPT_SHOW_RUNTIME:
+		r->show_runtime = true;
+		break;
+	case OPT_SHOW_SDK:
+		r->show_sdk = true;
+		break;
+	case OPT_URL:
+		r->url = v;
+		break;
+	case OPT_GPG_IMPORT:
+		r->gpg_import = v;
+		break;
+	case OPT_GPG_VERIFY:
+		r->gpg_verify = 1;
+		break;
+	case OPT_NO_GPG_VERIFY:
+		r->gpg_verify = 0;
+		break;
+	case OPT_DEFAULT_BRANCH:
+		r->branch_name = v;
+		break;
+	case OPT_TITLE:
+		r->title = v;
+		break;
+	case OPT_COMMENT_X:
+		r->comment = v;
+		break;
+	case OPT_DESCRIPTION:
+		r->description = v;
+		break;
+	case OPT_HOMEPAGE:
+		r->homepage = v;
+		break;
+	case OPT_ICON:
+		r->icon = v;
+		break;
 	default:
 		break; // a global, already applied; or a no-op flag
 	}
@@ -1388,6 +1659,8 @@ void cli_req_free(cli_req_t* r) {
 			free(lists[k]->items[i]);
 		free(lists[k]->items);
 	}
+	for (size_t i = 0; i < r->nowned_ops; i++) free(r->owned_ops[i]);
+	free(r->owned_ops);
 	free(r->run.command);
 	free(r->run.branch);
 	free(r->run.arch);
@@ -1424,6 +1697,10 @@ int cli_parse(int argc, char* const* argv, cli_req_t* r) {
 
 	if (r->g.version) {
 		fp_outl("flatpkg %s", FLATPKG_VERSION);
+		return 0;
+	}
+	if (r->g.gl_drivers) {
+		cmd_gl_drivers();
 		return 0;
 	}
 	if (r->g.help) {
@@ -1467,6 +1744,8 @@ int cli_parse(int argc, char* const* argv, cli_req_t* r) {
 	}
 	if (cli_it_finish(&it) != 0) return 1;
 	if (c->flags & CLI_CMD_TAIL) r->rest = cli_it_rest(&it);
+	if (c->id == CMD_INSTALL && r->from == NULL && r->nops >= 2)
+		install_leading_remote(r);
 
 	if (c->id == CMD_HELP) {
 		if (r->nops == 0) {
