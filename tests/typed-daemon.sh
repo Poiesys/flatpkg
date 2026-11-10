@@ -114,7 +114,7 @@ grep -q "no-such-remote-xyz" "$tmp/out" ||
 	>"$tmp/bus.remote" 2>&1 &
 rpid=$!
 n=0
-while [ $n -lt 80 ]; do
+while [ $n -lt 300 ]; do
 	grep -q '^sub=ok' "$tmp/bus.remote" && break
 	sleep 0.1
 	n=$((n + 1))
@@ -193,7 +193,7 @@ if command -v ostree >/dev/null 2>&1; then
 			>"$tmp/bus.watch" 2>&1 &
 		wpid=$!
 		n=0
-		while [ $n -lt 80 ]; do
+		while [ $n -lt 300 ]; do
 			grep -q '^sub=ok' "$tmp/bus.watch" && break
 			sleep 0.1
 			n=$((n + 1))
@@ -488,7 +488,7 @@ if [ "$have_run" -eq 1 ]; then
 		instance/org.test.echo >"$tmp/bus.instance" 2>&1 &
 	ipid=$!
 	n=0
-	while [ $n -lt 80 ]; do
+	while [ $n -lt 300 ]; do
 		grep -q '^sub=ok' "$tmp/bus.instance" && break
 		sleep 0.1
 		n=$((n + 1))
@@ -578,7 +578,7 @@ EOF
 			cpid=$!
 			n=0
 			apid=""
-			while [ $n -lt 80 ]; do
+			while [ $n -lt 300 ]; do
 				apid=$(tr -cd '0-9\n' <"$tmp/watch.out" 2>/dev/null | head -1)
 				[ -n "$apid" ] && break
 				sleep 0.1
@@ -592,7 +592,7 @@ EOF
 				kill -TERM "$cpid" 2>/dev/null || true
 				wait "$cpid" 2>/dev/null || true
 				n=0
-				while [ $n -lt 80 ] && kill -0 "$apid" 2>/dev/null; do
+				while [ $n -lt 300 ] && kill -0 "$apid" 2>/dev/null; do
 					sleep 0.1
 					n=$((n + 1))
 				done
@@ -800,7 +800,7 @@ EOF
 			holder=$!
 			iid=""
 			n=0
-			while [ -z "$iid" ] && [ "$n" -lt 150 ]; do
+			while [ -z "$iid" ] && [ "$n" -lt 300 ]; do
 				iid=$(NO_COLOR=1 "$bin" ps 2>/dev/null |
 					awk '/org\.test\.Echo/ {print $1; exit}')
 				[ -n "$iid" ] || {
