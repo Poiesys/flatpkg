@@ -132,7 +132,8 @@ static char** rewrite_forwarded_args(const sandbox_plan_t* plan,
 	return out;
 }
 
-static int jail_process_count(int jid) {
+// How many processes run inside the jail: 0 means nobody is being served.
+int jail_process_count(int jid) {
 	assert(jid > 0);
 	struct kinfo_proc* procs;
 	int n = 0, count = 0;

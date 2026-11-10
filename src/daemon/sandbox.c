@@ -551,27 +551,33 @@ static int sandbox_remove_jail_root(const char* root) {
 	return 0;
 }
 
-// Is a jail still rooted at `path`?  A leaked tree has no jail; a live one
-// must not be swept when the daemon restarts.
-static bool jail_alive_for_path(const char* path) {
+// The jail rooted at `path`, if any.  `ours` says flatpkg made it: its name
+// carries the prefix, so a third party's jail of the same shape is not a
+// launch of ours to clean up.
+static int jail_for_path(const char* path, bool* ours) {
 	char jidstr[16] = "0";
-	char jpath[PATH_MAX];
+	char jpath[PATH_MAX], jname[MAXHOSTNAMELEN];
 
+	*ours = false;
 	for (;;) {
 		int jid = jail_getv(0, "lastjid", jidstr, NULL);
 
-		if (jid <= 0) return false;
+		if (jid <= 0) return 0;
 		snprintf(jidstr, sizeof(jidstr), "%d", jid);
-		jpath[0] = '\0';
-		if (jail_getv(0, "jid", jidstr, "path", jpath, NULL) != jid)
+		jpath[0] = jname[0] = '\0';
+		if (jail_getv(0, "jid", jidstr, "path", jpath, "name", jname,
+			      NULL) != jid)
 			continue;
 		{
 			char rpath[PATH_MAX];
 
-			if (realpath(jpath, rpath) != NULL &&
-			    strcmp(rpath, path) == 0)
-				return true;
+			if (realpath(jpath, rpath) == NULL ||
+			    strcmp(rpath, path) != 0)
+				continue;
 		}
+		*ours = strncmp(jname, FLATPKG_JAIL_NAME_PREFIX,
+				sizeof(FLATPKG_JAIL_NAME_PREFIX) - 1) == 0;
+		return jid;
 	}
 }
 
@@ -619,8 +625,9 @@ static bool root_is_held(const char* dir) {
 }
 
 // Jail roots left behind by a worker that died between mkdtemp and teardown.
-// Only trees no jail refers to, that no worker still holds, are touched; the
-// removal goes through the same guard as a normal teardown.
+// Only trees no worker still holds are touched; a jail still serving them is
+// left alone, and one of ours with nothing in it is dropped so its tree can
+// go.  The removal goes through the same guard as a normal teardown.
 void sandbox_gc_leaks(void) {
 	DIR* d = opendir(FLATPKG_RUN_DIR);
 
@@ -629,13 +636,21 @@ void sandbox_gc_leaks(void) {
 	while ((e = readdir(d)) != NULL) {
 		char path[PATH_MAX], rpath[PATH_MAX];
 		struct stat st;
+		bool ours;
+		int jid;
 
 		if (!jail_root_name(e->d_name)) continue;
 		snprintf(path, sizeof(path), "%s/%s", FLATPKG_RUN_DIR,
 			 e->d_name);
 		if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
 		if (realpath(path, rpath) == NULL) continue;
-		if (jail_alive_for_path(rpath) || root_is_held(rpath)) continue;
+		if (root_is_held(rpath)) continue;
+		jid = jail_for_path(rpath, &ours);
+		if (jid > 0) {
+			if (!ours || jail_process_count(jid) > 0) continue;
+			if (jail_remove(jid) != 0) continue;
+			fpkg_infof("removed abandoned jail %d", jid);
+		}
 		if (sandbox_remove_jail_root(rpath) == 0)
 			fpkg_infof("removed leaked sandbox %s", rpath);
 		else

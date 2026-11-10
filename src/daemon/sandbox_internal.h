@@ -4,6 +4,7 @@
 // Helpers shared by the sandbox translation units, not by the rest of the tree.
 void close_inherited_fds(void);
 int drm_devt_map(char* out, size_t outlen);
+int jail_process_count(int jid);
 
 void sb_track(sandbox_t* sb, const char* fstype, const char* from,
 	      const char* to);

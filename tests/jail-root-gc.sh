@@ -1,9 +1,10 @@
 #!/bin/sh
 # jail-root-gc.sh - a jail root no jail refers to is swept at daemon startup:
 # whatever is still mounted under it is unmounted first, even a mount flatpkg
-# never recorded, and then the tree goes.  A root a live jail points at, a root
-# whose worker still holds the lock, and a name that is not a jail root are all
-# left alone.
+# never recorded, and then the tree goes.  So does an empty jail of flatpkg's
+# own whose worker is gone: it is what would keep its root from being swept.
+# A root a live jail points at, a root whose worker still holds the lock, and a
+# name that is not a jail root are all left alone.
 #
 # Needs root (mdo) to make the trees, the mount and the live jail, and a scratch
 # daemon to run the sweep.
@@ -25,8 +26,10 @@ RUN=/var/run/flatpkg
 leaked="$RUN/leaked-gc.$$.aaa111"
 alive="$RUN/leaked-gc.$$.bbb222"
 held="$RUN/held-gc.$$.ccc333"
+abandoned="$RUN/leaked-gc.$$.fff666"
 other="$RUN/not-a-jail-root"
 jname="leaked-gc-$$"
+aname="flatpkg-leaked-gc-$$"
 T=$(mktemp -d /tmp/.fpkg-jailgc.XXXXXX)
 
 cleanup() {
@@ -35,18 +38,24 @@ cleanup() {
 		mdo kill "$(cat "$T/holder.pid")" >/dev/null 2>&1 || true
 	fi
 	mdo jail -r "$jname" >/dev/null 2>&1 || true
+	mdo jail -r "$aname" >/dev/null 2>&1 || true
 	mdo sh -c "umount '$leaked/mnt' 2>/dev/null;
-	    rm -rf '$leaked' '$alive' '$held' '$other'" >/dev/null 2>&1 || true
+	    rm -rf '$leaked' '$alive' '$held' '$abandoned' '$other'" >/dev/null 2>&1 || true
 	rm -rf "$T"
 }
 trap cleanup EXIT INT TERM
 
 # A root nobody owns, with a mount that never reached sb_track().
-mdo sh -c "mkdir -p '$leaked/mnt' '$alive' '$held' '$other'"
+mdo sh -c "mkdir -p '$leaked/mnt' '$alive' '$held' '$abandoned' '$other'"
 mdo sh -c "mount -t tmpfs tmpfs '$leaked/mnt' &&
     echo canary > '$leaked/mnt/canary'"
-# A root a live jail points at: the sweep must not touch it.
+# A root a live jail points at: the sweep must not touch it.  The jail is not
+# flatpkg's (no prefix), so it is not a launch of ours to clean up.
 mdo jail -c "path=$alive" "name=$jname" persist
+# A root whose jail is one of ours with nothing in it and no lock: its worker
+# died, and the jail would otherwise pin the tree forever.
+mdo sh -c "echo dead > '$abandoned/canary'"
+mdo jail -c "path=$abandoned" "name=$aname" persist
 # A root a worker still holds (a launch in progress): the lock says it is live.
 mdo sh -c ": > '$held/.lock'; echo held > '$held/canary';
     echo other > '$other/canary'"
@@ -81,7 +90,7 @@ scratchd_start
 # The sweep runs before the daemon serves, and scratchd_start only waits for
 # the socket; wait for the verdict instead of sampling it.
 n=0
-while [ -e "$leaked" ] && [ "$n" -lt 150 ]; do
+while { [ -e "$leaked" ] || [ -e "$abandoned" ]; } && [ "$n" -lt 150 ]; do
 	sleep 0.1
 	n=$((n + 1))
 done
@@ -95,10 +104,15 @@ grep -q 'removed leaked sandbox' "$SD_LOG" 2>/dev/null ||
 	note "the sweep removed a root a worker still holds the lock on"
 [ -d "$other" ] ||
 	note "the sweep removed a directory that is not a jail root"
+[ ! -e "$abandoned" ] ||
+	note "the sweep left the root of an abandoned jail of ours"
+mdo jls -h name 2>/dev/null | grep -qx "$aname" &&
+	note "the sweep left the abandoned jail itself"
 mdo jail -r "$jname" >/dev/null 2>&1 || true
 
 if [ "$fail" -eq 0 ]; then
-	echo "PASS: the startup sweep unmounts and removes a leaked jail root, and"
-	echo "      leaves a live jail's root, a held root and a non-root name alone"
+	echo "PASS: the startup sweep unmounts and removes a leaked jail root and"
+	echo "      drops an abandoned jail of ours with its root, and leaves a live"
+	echo "      jail's root, a held root and a non-root name alone"
 fi
 exit "$fail"
