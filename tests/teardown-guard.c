@@ -8,16 +8,19 @@
 #include <sys/mount.h>
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 #include "flatpkg.h"
 
 int sandbox_remove_jail_root(const char* root);
+bool root_is_held(const char* dir);
 
 static char g_root[PATH_MAX];
 static bool g_refuse;
@@ -105,6 +108,84 @@ int main(void) {
 			rc = 1;
 		}
 	}
-	if (rc == 0) printf("PASS: refusal, removal and the path shape\n");
+	// The lock probe judges the file it opened.  A lock that is not a regular
+	// file - a dangling symlink, a fifo, a directory - is one the sweep cannot
+	// read, so its root counts as held and is left alone; a symlink followed by
+	// the open would read as free and lose the root.
+	{
+		char lock[PATH_MAX];
+		int fd;
+
+		snprintf(tmpl, sizeof(tmpl), "/var/run/flatpkg/tg.XXXXXX");
+		if (mkdtemp(tmpl) == NULL) {
+			perror("mkdtemp");
+			return 2;
+		}
+		snprintf(g_root, sizeof(g_root), "%s", tmpl);
+		snprintf(lock, sizeof(lock), "%s/.lock", tmpl);
+
+		if (root_is_held(g_root)) {
+			fprintf(stderr, "FAIL: a root with no lock counts as held\n");
+			rc = 1;
+		}
+		fd = open(lock, O_CREAT | O_RDWR, 0600);
+		if (fd < 0) {
+			perror("open");
+			return 2;
+		}
+		close(fd);
+		if (root_is_held(g_root)) {
+			fprintf(stderr, "FAIL: an unlocked lock counts as held\n");
+			rc = 1;
+		}
+		fd = open(lock, O_RDWR);
+		if (fd < 0 || flock(fd, LOCK_EX | LOCK_NB) != 0) {
+			perror("flock");
+			return 2;
+		}
+		if (!root_is_held(g_root)) {
+			fprintf(stderr, "FAIL: a lock another process holds "
+					"counts as free\n");
+			rc = 1;
+		}
+		close(fd);
+
+		unlink(lock);
+		if (symlink("/nonexistent-fpkg", lock) != 0) {
+			perror("symlink");
+			return 2;
+		}
+		if (!root_is_held(g_root)) {
+			fprintf(stderr, "FAIL: a symlinked lock counts as free\n");
+			rc = 1;
+		}
+		unlink(lock);
+		if (mkfifo(lock, 0600) != 0) {
+			perror("mkfifo");
+			return 2;
+		}
+		if (!root_is_held(g_root)) {
+			fprintf(stderr, "FAIL: a fifo lock counts as free\n");
+			rc = 1;
+		}
+		unlink(lock);
+		if (mkdir(lock, 0755) != 0) {
+			perror("mkdir");
+			return 2;
+		}
+		if (!root_is_held(g_root)) {
+			fprintf(stderr, "FAIL: a directory named .lock counts as "
+					"free\n");
+			rc = 1;
+		}
+		rmdir(lock);
+		if (sandbox_remove_jail_root(g_root) != 0) {
+			fprintf(stderr, "FAIL: could not clean up the lock cases\n");
+			rc = 1;
+		}
+	}
+
+	if (rc == 0)
+		printf("PASS: refusal, removal, the path shape and the lock probe\n");
 	return rc;
 }

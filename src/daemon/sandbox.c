@@ -590,16 +590,25 @@ static bool jail_root_name(const char* name) {
 // The worker holds this from mkdtemp() until teardown; a root still locked is
 // a launch in progress, not a leak.  An unreadable lock is skipped, not
 // deleted: the sweep only removes what it can prove is unheld.
+#ifdef FLATPKG_TESTING
+bool root_is_held(const char* dir) {
+#else
 static bool root_is_held(const char* dir) {
+#endif
 	char path[PATH_MAX];
 	struct stat st;
 	int fd, e;
 
 	snprintf(path, sizeof(path), "%s/.lock", dir);
-	if (lstat(path, &st) != 0) return errno != ENOENT;
-	if (!S_ISREG(st.st_mode)) return true;
-	fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-	if (fd < 0) return true;
+	// Judge the opened file, not the name: a symlink swapped in between an
+	// lstat and the open would be followed.  O_NOFOLLOW makes that ELOOP,
+	// and O_NONBLOCK keeps a fifo from blocking the open before fstat.
+	fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+	if (fd < 0) return errno != ENOENT;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+		close(fd);
+		return true;
+	}
 	if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
 		close(fd);
 		return false;

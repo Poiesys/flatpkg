@@ -1,8 +1,9 @@
 #!/bin/sh
 # teardown-guard.sh - a jail root with a mount that cannot be taken down is
-# left alone.  The mount table and unmount are replaced at COMPILE time
-# (-DFLATPKG_TESTING), so the daemon has no runtime switch that could skip the
-# guard; the fakes exist only in this harness.
+# left alone, and the startup sweep's lock probe counts only the regular file
+# it opened as a lock.  The mount table and unmount are replaced at COMPILE
+# time (-DFLATPKG_TESTING), so the daemon has no runtime switch that could skip
+# the guard; the fakes exist only in this harness.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -43,5 +44,6 @@ if ! cc -O1 -I"$ROOT/include" -o "$T/teardown-guard" \
 fi
 
 # The harness creates its root under the run dir and exits non-zero on a
-# failure; mdo is only for the privilege.
-mdo "$T/teardown-guard"
+# failure; mdo is only for the privilege.  A hang is a failure: probing a fifo
+# without O_NONBLOCK never returns.
+mdo timeout 30 "$T/teardown-guard"
