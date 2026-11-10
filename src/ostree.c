@@ -411,7 +411,22 @@ static int capture_child(pid_t pid, int outfd, int errfd, tool_res_t* res,
 			}
 		} else {
 			if (done[0] && done[1]) break;
-			if (++grace > 10) break;
+			// Quiet for a while is not finished: ostree writes a remote's
+			// config after its last line, so returning here let the caller
+			// act on a half-run command (a --gpg-import raced with the
+			// config write and the import won).  Wait for the child.
+			if (++grace > 10) {
+				int status = 0;
+
+				if (!reaped &&
+				    waitpid(pid, &status, 0) == pid) {
+					reaped = 1;
+					res->rc = WIFEXITED(status)
+							  ? WEXITSTATUS(status)
+							  : 128 + WTERMSIG(status);
+				}
+				break;
+			}
 		}
 
 		if (reaped && done[0] && done[1]) break;
