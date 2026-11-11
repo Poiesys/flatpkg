@@ -138,6 +138,17 @@ static bool dict_lookup(DBusMessageIter* entry, const char** key,
 	return *key != NULL;
 }
 
+// A dict entry's value is a variant, and get_basic() is only legal on a basic
+// type: on a container it trips libdbus's own assertion and aborts the
+// portal, which one malformed call from any sandboxed app would do.
+static bool variant_is(DBusMessageIter* var, int type, DBusMessageIter* out) {
+	assert(var != NULL);
+	assert(out != NULL);
+	if (dbus_message_iter_get_arg_type(var) != DBUS_TYPE_VARIANT) return false;
+	dbus_message_iter_recurse(var, out);
+	return dbus_message_iter_get_arg_type(out) == type;
+}
+
 static char* proc_args(pid_t pid, size_t* len_out) {
 	size_t len = 8192;
 	for (;;) {
@@ -1481,10 +1492,24 @@ static DBusHandlerResult handle_message(DBusConnection* conn, DBusMessage* msg,
 	const char* path = dbus_message_get_path(msg);
 	if (path != NULL && strncmp(path, UPDATE_MONITOR_PREFIX,
 				    strlen(UPDATE_MONITOR_PREFIX)) == 0) {
-		for (size_t i = 0; i < nmonitors; i++)
-			if (monitors[i]->handle != NULL &&
-			    strcmp(monitors[i]->handle, path) == 0)
-				return monitor_message(conn, msg, monitors[i]);
+		const char* sender = dbus_message_get_sender(msg);
+
+		// Both halves of a handle are guessable: unique names are
+		// enumerable and the token is shared with whoever makes a
+		// monitor of their own.  The sender is what makes a handle the
+		// caller's.
+		for (size_t i = 0; i < nmonitors; i++) {
+			if (monitors[i]->handle == NULL ||
+			    strcmp(monitors[i]->handle, path) != 0)
+				continue;
+			if (sender == NULL || monitors[i]->sender == NULL ||
+			    strcmp(monitors[i]->sender, sender) != 0) {
+				reply_error(conn, msg,
+					    "not this caller's update monitor");
+				return DBUS_HANDLER_RESULT_HANDLED;
+			}
+			return monitor_message(conn, msg, monitors[i]);
+		}
 		return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
 	}
 
@@ -1574,55 +1599,84 @@ static fc_request_t* fc_track(pid_t pid, const char* path, const char* sender,
 	return e;
 }
 
-static void fc_parse_filters(DBusMessageIter* v, char*** filters,
+// A filter is (name, [(type, pattern)]), and every field is type-checked
+// before it is read: the pattern is what a file chooser is told to show, and a
+// field of the wrong type used to be dereferenced as a string.
+static void fc_parse_filters(DBusMessageIter* arr, char*** filters,
 			     size_t* nfilters) {
-	DBusMessageIter arr;
-
-	dbus_message_iter_recurse(v, &arr);
-	while (dbus_message_iter_get_arg_type(&arr) == DBUS_TYPE_STRUCT) {
-		DBusMessageIter name, rules;
+	assert(arr != NULL);
+	while (dbus_message_iter_get_arg_type(arr) == DBUS_TYPE_STRUCT) {
+		DBusMessageIter fields, name, rules;
 		const char* nm = NULL;
 		char* acc = NULL;
 		size_t alen = 0;
+		size_t npat = 0;
+		bool ok = true;
 
-		dbus_message_iter_recurse(&arr, &name);
-		dbus_message_iter_recurse(&arr, &rules);
-		dbus_message_iter_get_basic(&name, &nm);
+		if (*nfilters >= 64) break;
+		dbus_message_iter_recurse(arr, &fields);
+		if (dbus_message_iter_get_arg_type(&fields) == DBUS_TYPE_STRING)
+			dbus_message_iter_get_basic(&fields, &nm);
+		name = fields;
+		if (!dbus_message_iter_next(&name) ||
+		    dbus_message_iter_get_arg_type(&name) != DBUS_TYPE_ARRAY) {
+			dbus_message_iter_next(arr);
+			continue;
+		}
+		dbus_message_iter_recurse(&name, &rules);
 		while (dbus_message_iter_get_arg_type(&rules) ==
-		       DBUS_TYPE_STRUCT) {
-			DBusMessageIter t, pat;
+			       DBUS_TYPE_STRUCT &&
+		       npat < 64) {
+			DBusMessageIter rule, pat;
 			const char* patstr = NULL;
+			size_t pl;
 
-			dbus_message_iter_recurse(&rules, &t);
-			dbus_message_iter_recurse(&rules, &pat);
+			dbus_message_iter_recurse(&rules, &rule);
+			if (!dbus_message_iter_next(&rule) ||
+			    dbus_message_iter_get_arg_type(&rule) !=
+				    DBUS_TYPE_STRING) {
+				dbus_message_iter_next(&rules);
+				continue;
+			}
+			pat = rule;
 			dbus_message_iter_get_basic(&pat, &patstr);
-			if (patstr) {
-				size_t pl = strlen(patstr);
+			pl = patstr ? strlen(patstr) : 0;
+			if (pl > 0 && alen + pl + 2 <= 4096) {
 				char* grown = realloc(acc, alen + pl + 2);
-				if (!grown) break;
+
+				if (grown == NULL) {
+					ok = false;
+					break;
+				}
 				acc = grown;
 				if (alen) acc[alen++] = ' ';
-				memcpy(acc + alen, patstr, pl + 1);
+				memcpy(acc + alen, patstr, pl);
 				alen += pl;
+				acc[alen] = '\0';
 			}
+			npat++;
 			dbus_message_iter_next(&rules);
 		}
-		size_t need = (nm ? strlen(nm) : 0) + alen + 8;
-		char* spec = malloc(need);
-		if (spec) {
-			snprintf(spec, need, "%s | %s", nm ? nm : "",
-				 acc ? acc : "*");
-			char** g = realloc(*filters,
-					   (*nfilters + 1) * sizeof(char*));
-			if (g) {
-				*filters = g;
-				(*filters)[(*nfilters)++] = spec;
-			} else {
-				free(spec);
+		if (ok) {
+			size_t need = (nm ? strlen(nm) : 0) + alen + 8;
+			char* spec = malloc(need);
+
+			if (spec != NULL) {
+				snprintf(spec, need, "%s | %s",
+					 nm ? nm : "", acc ? acc : "*");
+				char** g = realloc(*filters,
+						   (*nfilters + 1) *
+							   sizeof(char*));
+				if (g != NULL) {
+					*filters = g;
+					(*filters)[(*nfilters)++] = spec;
+				} else {
+					free(spec);
+				}
 			}
 		}
 		free(acc);
-		dbus_message_iter_next(&arr);
+		dbus_message_iter_next(arr);
 	}
 }
 
@@ -1640,21 +1694,36 @@ static bool fc_parse_options(DBusMessageIter* opts, char** title_out,
 
 	dbus_message_iter_recurse(opts, &entry);
 	while (dbus_message_iter_get_arg_type(&entry) == DBUS_TYPE_DICT_ENTRY) {
-		DBusMessageIter v;
+		DBusMessageIter v, b;
 		const char* key = NULL;
 
 		if (!dict_lookup(&entry, &key, &v)) {
 			dbus_message_iter_next(&entry);
 			continue;
 		}
-		if (strcmp(key, "multiple") == 0)
-			dbus_message_iter_get_basic(&v, multiple);
-		else if (strcmp(key, "directory_select") == 0)
-			dbus_message_iter_get_basic(&v, dir_select);
-		else if (strcmp(key, "current_folder") == 0)
-			dbus_message_iter_get_basic(&v, folder);
-		else if (strcmp(key, "filters") == 0)
-			fc_parse_filters(&v, filters, nfilters);
+		if (strcmp(key, "multiple") == 0) {
+			if (variant_is(&v, DBUS_TYPE_BOOLEAN, &b))
+				dbus_message_iter_get_basic(&b, multiple);
+		} else if (strcmp(key, "directory_select") == 0) {
+			if (variant_is(&v, DBUS_TYPE_BOOLEAN, &b))
+				dbus_message_iter_get_basic(&b, dir_select);
+		} else if (strcmp(key, "current_folder") == 0) {
+			const char* val = NULL;
+
+			if (variant_is(&v, DBUS_TYPE_STRING, &b)) {
+				dbus_message_iter_get_basic(&b, &val);
+				// The message owns the string; the caller frees
+				// what it is given.
+				if (val != NULL) *folder = xstrdup(val);
+			}
+		} else if (strcmp(key, "filters") == 0) {
+			DBusMessageIter items;
+
+			if (variant_is(&v, DBUS_TYPE_ARRAY, &b)) {
+				dbus_message_iter_recurse(&b, &items);
+				fc_parse_filters(&items, filters, nfilters);
+			}
+		}
 		dbus_message_iter_next(&entry);
 	}
 	return true;
