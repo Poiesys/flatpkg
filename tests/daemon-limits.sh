@@ -66,8 +66,12 @@ prove() {
 	fi
 }
 
-sed 's/MSG_NOSIGNAL | MSG_DONTWAIT/MSG_NOSIGNAL/' "$T/send.inc" \
+sed 's/(nowait ? MSG_DONTWAIT : 0)/(0)/' "$T/send.inc" \
 	> "$T/plant-send.inc"
+if cmp -s "$T/send.inc" "$T/plant-send.inc"; then
+	echo "FAIL: the send plant was not applied"
+	exit 1
+fi
 prove "a blocking broker send" \
 	check "$T/plant-send.inc" "$T/main.inc" "$T/hello.inc"
 

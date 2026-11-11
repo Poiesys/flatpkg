@@ -40,9 +40,11 @@ static snap_t snaps[BUS_MAX_TOPICS * 8];
 // The peer sockets are SOCK_DGRAM, so one send is one frame, and it must not
 // block the daemon's single loop: a saturated listener is dropped by
 // peer_remove() in route(), which is what "a slow listener is dropped" means.
-static int send_frame(int fd, const void* buf, size_t n) {
+static int send_frame(int fd, const void* buf, size_t n, bool nowait) {
+	int flags = MSG_NOSIGNAL | (nowait ? MSG_DONTWAIT : 0);
+
 	for (;;) {
-		ssize_t w = send(fd, buf, n, MSG_NOSIGNAL | MSG_DONTWAIT);
+		ssize_t w = send(fd, buf, n, flags);
 
 		if (w < 0 && errno == EINTR) continue;
 		if (w < 0 || (size_t)w != n) return -1;
@@ -50,8 +52,12 @@ static int send_frame(int fd, const void* buf, size_t n) {
 	}
 }
 
-static int send_msg(int fd, uint32_t type, const void* a, size_t alen,
-		    const void* b, size_t blen) {
+// `nowait` is for frames the broker forwards to a client: the daemon's loop
+// serves every connection, so a saturated listener is dropped rather than
+// blocking it.  A worker publishing to the broker keeps the blocking send: a
+// dropped event is a client that never sees its operation finish.
+static int send_msg(int fd, bool nowait, uint32_t type, const void* a,
+		    size_t alen, const void* b, size_t blen) {
 	bus_hdr_t h;
 	size_t n = sizeof(h) + alen + blen;
 	char* buf;
@@ -63,7 +69,7 @@ static int send_msg(int fd, uint32_t type, const void* a, size_t alen,
 	memcpy(buf, &h, sizeof(h));
 	if (alen > 0) memcpy(buf + sizeof(h), a, alen);
 	if (blen > 0) memcpy(buf + sizeof(h) + alen, b, blen);
-	rc = send_frame(fd, buf, n);
+	rc = send_frame(fd, buf, n, nowait);
 	free(buf);
 	return rc;
 }
@@ -120,8 +126,8 @@ static void snap_send(int fd, const char* topic) {
 	if (s == NULL) return;
 	for (int i = 0; i < s->n; i++) {
 		int k = (s->head + i) % BUS_MAX_SNAP;
-		if (send_msg(fd, BUS_FORWARD, s->frame[k], s->len[k], NULL,
-			     0) != 0)
+		if (send_msg(fd, true, BUS_FORWARD, s->frame[k], s->len[k],
+			     NULL, 0) != 0)
 			return;
 	}
 }
@@ -194,7 +200,8 @@ static void route(const char* topic, const void* frame, size_t len,
 		peer_t* p = &peers[i];
 		if (p->fd == 0 || p->fd == from_fd) continue;
 		if (!peer_subscribed(p, topic)) continue;
-		if (send_msg(p->fd, BUS_FORWARD, frame, len, NULL, 0) != 0)
+		if (send_msg(p->fd, true, BUS_FORWARD, frame, len, NULL,
+			     0) != 0)
 			drop[ndrop++] = p->fd;
 	}
 	for (int i = 0; i < ndrop; i++) peer_remove(drop[i]);
@@ -229,7 +236,7 @@ void broker_handle(int fd) {
 		snprintf(p->topics[p->ntopics++], BUS_TOPIC_LEN, "%s", topic);
 		// The ack first: the worker answers the client before the
 		// snapshot frames, which the client reads as events.
-		(void)send_msg(fd, BUS_SUBSCRIBED, NULL, 0, NULL, 0);
+		(void)send_msg(fd, false, BUS_SUBSCRIBED, NULL, 0, NULL, 0);
 		snap_send(fd, topic);
 		return;
 	}
@@ -292,7 +299,7 @@ void broker_handle(int fd) {
 				(void)kill(ops[i].pid, SIGUSR1);
 				break;
 			}
-		(void)send_msg(fd, BUS_CANCELED, NULL, 0, NULL, 0);
+		(void)send_msg(fd, false, BUS_CANCELED, NULL, 0, NULL, 0);
 		return;
 	}
 	default:
@@ -326,13 +333,13 @@ int bus_publish(const char* topic, const void* frame, size_t len) {
 	memcpy(buf, &tlen, 4);
 	memcpy(buf + 4, topic, tlen);
 	memcpy(buf + 4 + tlen, frame, len);
-	rc = send_msg(worker_fd, BUS_PUBLISH, buf, n, NULL, 0);
+	rc = send_msg(worker_fd, false, BUS_PUBLISH, buf, n, NULL, 0);
 	free(buf);
 	return rc;
 }
 
 static int send_op(uint32_t type, uint64_t op) {
-	return send_msg(worker_fd, type, &op, sizeof(op), NULL, 0);
+	return send_msg(worker_fd, false, type, &op, sizeof(op), NULL, 0);
 }
 
 int bus_register(uint64_t op_id) { return send_op(BUS_REGISTER, op_id); }
@@ -341,13 +348,15 @@ int bus_cancel(uint64_t op_id) { return send_op(BUS_CANCEL, op_id); }
 
 int bus_subscribe(const char* topic) {
 	if (worker_fd < 0 || topic == NULL) return -1;
-	return send_msg(worker_fd, BUS_SUBSCRIBE, topic, strlen(topic), NULL,
+	return send_msg(worker_fd, false, BUS_SUBSCRIBE, topic,
+			strlen(topic), NULL,
 			0);
 }
 
 int bus_unsubscribe(const char* topic) {
 	if (worker_fd < 0 || topic == NULL) return -1;
-	return send_msg(worker_fd, BUS_UNSUBSCRIBE, topic, strlen(topic), NULL,
+	return send_msg(worker_fd, false, BUS_UNSUBSCRIBE, topic,
+			strlen(topic), NULL,
 			0);
 }
 
