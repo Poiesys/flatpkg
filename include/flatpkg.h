@@ -473,6 +473,12 @@ bool dir_has_live_instance(const char* base);
 int instance_alive(const char* dir, int jid);
 char** instance_load_run_environ(const char* inst_dir);
 const char* instances_dir(void);
+// The instance base the portal and the session helper read identity from: the
+// uid's own runtime directory, never a path from an activation environment.
+const char* session_instances_dir(void);
+// The app id the instance in `jid` recorded, or NULL for a jail no flatpkg
+// launch claims.
+char* instance_app_for_jid(int jid);
 int jail_exists(int jid);
 int kf_get(const char* path, const char* group, const char* key, char* out,
 	   size_t outlen);

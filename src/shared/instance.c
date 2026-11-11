@@ -243,6 +243,91 @@ int instance_uses_path(const char* path) {
 	return 0;
 }
 
+// The portal and the session helper are D-Bus activated, so their environment
+// is the activation environment: a sandboxed app can rewrite XDG_RUNTIME_DIR,
+// be served an instance directory it chose and claim another app's identity
+// from it.  A runtime directory is one of the shapes this host gives this uid,
+// so the value is checked against those rather than believed.
+static bool runtime_dir_is_ours(const char* dir) {
+	char real[PATH_MAX], want[PATH_MAX];
+	struct passwd* pw;
+	struct stat st;
+	uid_t uid = getuid();
+
+	if (dir == NULL || dir[0] != '/' || realpath(dir, real) == NULL)
+		return false;
+	if (stat(real, &st) != 0 || !S_ISDIR(st.st_mode)) return false;
+	if (st.st_uid != uid) return false;
+	if ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0) return false;
+	snprintf(want, sizeof(want), "/var/run/user/%u", (unsigned)uid);
+	if (strcmp(real, want) == 0) return true;
+	pw = getpwuid(uid);
+	if (pw != NULL && pw->pw_name != NULL && *pw->pw_name != '\0') {
+		snprintf(want, sizeof(want), "/var/run/xdg/%s", pw->pw_name);
+		if (strcmp(real, want) == 0) return true;
+	}
+	return false;
+}
+
+// The instance base the identity checks read: never a path the caller named,
+// only one of the uid's own runtime directories.
+const char* session_instances_dir(void) {
+	static char buf[PATH_MAX];
+	const char* xdg = cli_getenv("XDG_RUNTIME_DIR");
+	struct stat st;
+	char want[PATH_MAX];
+
+	if (xdg != NULL && runtime_dir_is_ours(xdg)) {
+		snprintf(buf, sizeof(buf), "%s/.flatpak", xdg);
+		return buf;
+	}
+	snprintf(want, sizeof(want), "/var/run/user/%u",
+		 (unsigned)getuid());
+	if (stat(want, &st) != 0) {
+		struct passwd* pw = getpwuid(getuid());
+
+		if (pw != NULL && pw->pw_name != NULL) {
+			char alt[PATH_MAX];
+
+			snprintf(alt, sizeof(alt), "/var/run/xdg/%s",
+				 pw->pw_name);
+			if (stat(alt, &st) == 0) snprintf(want, sizeof(want),
+							  "%s", alt);
+		}
+	}
+	snprintf(buf, sizeof(buf), "%s/.flatpak", want);
+	return buf;
+}
+
+// The app id the running instance in `jid` recorded, or NULL when no flatpkg
+// launch claims that jail: a spawn or a host command is only ever honoured
+// for one of ours.
+char* instance_app_for_jid(int jid) {
+	const char* base = session_instances_dir();
+	DIR* d;
+	char* app = NULL;
+
+	assert(jid > 0);
+	d = opendir(base);
+	if (d == NULL) return NULL;
+	for (struct dirent* de; (de = readdir(d)) != NULL;) {
+		char infof[PATH_MAX], name[256], buf[64];
+
+		if (de->d_name[0] == '.' || de->d_name[0] == '\0') continue;
+		snprintf(infof, sizeof(infof), "%s/%s/info", base, de->d_name);
+		if (kf_get(infof, "Instance", "jid", buf, sizeof(buf)) != 0)
+			continue;
+		if (atoi(buf) != jid) continue;
+		if (kf_get(infof, "Application", "name", name,
+			   sizeof(name)) != 0)
+			continue;
+		app = xstrdup(name);
+		break;
+	}
+	closedir(d);
+	return app;
+}
+
 const char* instances_dir(void) {
 	static char envbuf[PATH_MAX];
 	static char fallback[PATH_MAX];

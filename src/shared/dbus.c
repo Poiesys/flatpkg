@@ -30,11 +30,21 @@ static const char* proxy_candidates[] = {
 	NULL,
 };
 
+// FLATPAK_DBUSPROXY is caller-settable, and the path is what makes a process
+// "the proxy": only a file the caller could not have written may be one.
+static bool proxy_trusted(const char* path) {
+	struct stat st;
+
+	if (path == NULL || path[0] != '/' || stat(path, &st) != 0) return false;
+	return S_ISREG(st.st_mode) && st.st_uid == 0 &&
+	       (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
 const char* dbus_proxy_binary(void) {
 	const char* env = cli_getenv("FLATPAK_DBUSPROXY");
-	if (env && *env && access(env, X_OK) == 0) return env;
+	if (env && *env && proxy_trusted(env)) return env;
 	for (int i = 0; proxy_candidates[i]; i++) {
-		if (access(proxy_candidates[i], X_OK) == 0)
+		if (proxy_trusted(proxy_candidates[i]))
 			return proxy_candidates[i];
 	}
 	return NULL;
@@ -44,9 +54,10 @@ bool dbus_proxy_is_path(const char* path) {
 	const char* env = cli_getenv("FLATPAK_DBUSPROXY");
 
 	if (path == NULL || path[0] == '\0') return false;
-	if (env && *env && strcmp(path, env) == 0) return true;
+	if (env && *env && strcmp(path, env) == 0) return proxy_trusted(path);
 	for (int i = 0; proxy_candidates[i]; i++) {
-		if (strcmp(path, proxy_candidates[i]) == 0) return true;
+		if (strcmp(path, proxy_candidates[i]) == 0)
+			return proxy_trusted(path);
 	}
 	return false;
 }

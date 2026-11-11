@@ -170,12 +170,7 @@ static char* proc_args(pid_t pid, size_t* len_out) {
 }
 
 static void instance_base(char* out, size_t n) {
-	const char* env = cli_getenv("XDG_RUNTIME_DIR");
-	if (env && env[0] == '/') {
-		snprintf(out, n, "%s/.flatpak", env);
-		return;
-	}
-	snprintf(out, n, "/var/run/user/%u/.flatpak", (unsigned)getuid());
+	snprintf(out, n, "%s", session_instances_dir());
 }
 
 static char** snapshot_instances(void) {
@@ -275,28 +270,7 @@ static char* app_id_from_proxy_argv(pid_t pid) {
 	return app;
 }
 
-static char* app_id_from_jail(int jid) {
-	char base[PATH_MAX];
-	instance_base(base, sizeof(base));
-	DIR* d = opendir(base);
-	if (!d) return NULL;
-	char* app = NULL;
-	struct dirent* de;
-	while ((de = readdir(d)) != NULL) {
-		if (de->d_name[0] == '.' || !de->d_name[0]) continue;
-		char info[PATH_MAX];
-		snprintf(info, sizeof(info), "%s/%s/info", base, de->d_name);
-		char name[256];
-		int j = -1;
-		if (read_instance_info(info, name, sizeof(name), &j) == 0 &&
-		    j == jid) {
-			app = xstrdup(name);
-			break;
-		}
-	}
-	closedir(d);
-	return app;
-}
+static char* app_id_from_jail(int jid) { return instance_app_for_jid(jid); }
 
 static unsigned long bus_get_owner_pid(DBusConnection* conn, const char* name) {
 	DBusMessage* call = dbus_message_new_method_call(

@@ -145,6 +145,27 @@ static pid_t helper_caller_pid(GDBusConnection* connection,
 	return (pid_t)pid;
 }
 
+static uid_t helper_caller_uid(GDBusConnection* connection,
+			       const gchar* sender) {
+	GVariant* reply;
+	guint32 uid = (guint32)-1;
+	GError* err = NULL;
+
+	if (sender == NULL) return (uid_t)-1;
+	reply = g_dbus_connection_call_sync(
+		connection, "org.freedesktop.DBus", "/org/freedesktop/DBus",
+		"org.freedesktop.DBus", "GetConnectionUnixUser",
+		g_variant_new("(s)", sender), G_VARIANT_TYPE("(u)"),
+		G_DBUS_CALL_FLAGS_NONE, 10000, NULL, &err);
+	if (reply == NULL) {
+		g_clear_error(&err);
+		return (uid_t)-1;
+	}
+	g_variant_get(reply, "(u)", &uid);
+	g_variant_unref(reply);
+	return (uid_t)uid;
+}
+
 static void handle_host_command(GDBusConnection* connection,
 				const gchar* sender, const gchar* object_path,
 				const gchar* interface_name,
@@ -174,13 +195,40 @@ static void handle_host_command(GDBusConnection* connection,
 	// Spawn asks.
 	{
 		pid_t caller = helper_caller_pid(connection, sender);
+		uid_t caller_uid = helper_caller_uid(connection, sender);
 		char* exe = NULL;
+		int jid = 0;
 		fp_caller_t who =
-			(caller > 0) ? flatpkg_caller_check(caller, NULL, &exe)
+			(caller > 0) ? flatpkg_caller_check(caller, &jid, &exe)
 				     : FP_CALLER_UNREADABLE;
+		bool allowed = who == FP_CALLER_JAIL ||
+			       who == FP_CALLER_PROXY;
+		bool who_ok = allowed;
 
-		if (who != FP_CALLER_JAIL && who != FP_CALLER_PROXY) {
-			if (who == FP_CALLER_UNREADABLE)
+		// The session helper serves its own user: a client of another uid
+		// is not its to run a command for, and a jail that no flatpkg
+		// launch claims is somebody else's sandbox.
+		if (allowed && caller_uid != getuid()) {
+			fpkg_warnf("host command REFUSED from %s: uid %u is not "
+				   "this session's user",
+				   sender ? sender : "?", (unsigned)caller_uid);
+			allowed = false;
+		}
+		if (allowed && who == FP_CALLER_JAIL) {
+			char* app = instance_app_for_jid(jid);
+
+			if (app == NULL) {
+				fpkg_warnf("host command REFUSED from %s: jail "
+					   "%d is not a flatpkg launch",
+					   sender ? sender : "?", jid);
+				allowed = false;
+			}
+			free(app);
+		}
+		if (!allowed) {
+			if (who_ok)
+				; // the reason is already logged above
+			else if (who == FP_CALLER_UNREADABLE)
 				fpkg_warnf(
 					"host command REFUSED from %s: "
 					"cannot read pid %ld's executable, so "
