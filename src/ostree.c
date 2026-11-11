@@ -637,14 +637,11 @@ int ostree_run_cb(char* const argv[], tool_res_t* res, tool_line_cb cb,
 
 	int rc = run_direct_cb(argv, res, cb, arg, tick, tick_arg);
 
-	// The summary cache is root's to keep: ostree wrote it as whoever pulled
-	// and the planner trusts what it reads.
-	if (rc == 0)
-		for (size_t i = 0; argv[i] != NULL; i++)
-			if (strcmp(argv[i], "pull") == 0) {
-				ostree_summary_cache_own();
-				break;
-			}
+	// A pull refreshes repo/tmp/cache/summaries as whoever ran it, and the
+	// planner trusts what it reads there: take it back after any tool run
+	// that succeeded.  Cheap, idempotent, and a no-op when the caller
+	// is not root.
+	if (rc == 0) ostree_summary_cache_own();
 	return rc;
 }
 int ostree_run(char* const argv[], tool_res_t* res) {

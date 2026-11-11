@@ -14,6 +14,14 @@ CMDS="$ROOT/src/ostree_cmds.c"
 
 T=$(mktemp -d /tmp/.fpkg-sumcache.XXXXXX)
 trap 'rm -rf "$T"' EXIT
+# The environment the CLI half reads is owned here rather than inherited: a
+# name the host decides is a verdict the host can change.
+export HOME="$T" XDG_RUNTIME_DIR="$T/run"
+export PATH="/usr/bin:/bin"
+export TERM=dumb
+export XDG_CURRENT_DESKTOP= DBUS_SESSION_BUS_ADDRESS= WAYLAND_DISPLAY=
+export NO_COLOR= FORCE_COLOR=
+mkdir -p "$XDG_RUNTIME_DIR"
 
 strip_comments "$REPO" > "$T/ostree.c"
 strip_comments "$CMDS" > "$T/cmds.c"
@@ -51,10 +59,11 @@ check() {
 		bug "the xa.cache reader trusts a cache file it does not own"
 	grep -q 'summary_cache_trusted(path)' "$commit" ||
 		bug "the ref-commit reader trusts a cache file it does not own"
-	grep -q '"pull"' "$run" ||
-		bug "a pull no longer takes the cache back"
 	grep -q 'ostree_summary_cache_own()' "$run" ||
-		bug "nothing takes the cache back after a pull"
+		bug "nothing takes the cache back after a tool run"
+	if grep -q 'strcmp(argv' "$run"; then
+		bug "the tool argv is scanned for a subcommand"
+	fi
 	grep -q 'ostree_summary_cache_own()' "$main" ||
 		bug "the daemon does not repair the cache at startup"
 
