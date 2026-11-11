@@ -15,7 +15,17 @@ id -Gn | tr ' ' '\n' | grep -qx flatpkg ||
 # The environment the subject reads, owned here rather than inherited: every
 # name is PINNED, or the host decides the verdict.
 T=$(mktemp -d /tmp/.fpkg-mid.XXXXXX)
-trap 'rm -rf "$T"' EXIT
+# The worker stages into the caller's runtime dir as root, so a launch can
+# leave a directory here that this user cannot remove; a cleanup that fails
+# turns a passing guard into a failing one.
+cleanup() {
+	rm -rf "$T" 2>/dev/null || true
+	if [ -d "$T" ] && command -v mdo >/dev/null 2>&1; then
+		mdo rm -rf "$T" >/dev/null 2>&1 || true
+	fi
+	return 0
+}
+trap cleanup EXIT
 export HOME="$T"
 export XDG_RUNTIME_DIR="$T/run"
 export PATH="/usr/bin:/bin"
