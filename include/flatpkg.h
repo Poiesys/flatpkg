@@ -537,9 +537,12 @@ int cmd_kill(const char* jid);
 int cmd_remote_add(const char* name, const char* url, const char* from);
 int cmd_remote_list(void);
 int cmd_remote_delete(const char* name);
-// The changes are `key=value` lines from the client: url, gpg-import, branch,
-// title, comment, description, homepage, icon, gpg-verify, enable.
-int cmd_remote_modify(const char* name, const char* changes);
+// The changes are `key=value` lines from the client: url, branch, title,
+// comment, description, homepage, icon, gpg-verify.  `gpg_data` is the
+// keyring's text, already read by the caller; it is NULL when no key is
+// imported, and the worker never opens a caller-named path.
+int cmd_remote_modify(const char* name, const char* changes,
+		      const char* gpg_data);
 int cmd_remote_info(const char* remote, const char* request, const char* arch,
 		    const char* commit, bool runtime, bool show_ref,
 		    bool show_commit, bool show_metadata, bool show_parent);

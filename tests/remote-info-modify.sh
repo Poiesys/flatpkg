@@ -13,6 +13,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 command -v ostree >/dev/null 2>&1 ||
 	{ echo "SKIP: no ostree to build the remote"; exit 0; }
+# carve_function, for the source half of the key-import check.
+. "$(dirname "$0")/commentlib.sh"
 
 T=$(mktemp -d /tmp/.fpkg-rmtinfo.XXXXXX)
 tmp=$T
@@ -77,6 +79,33 @@ run remote-modify --url="$url" local >/dev/null 2>&1 || true
 run remote-list >"$T/list" 2>/dev/null || true
 grep -Eq 'local +[^ ]+ +true +true' "$T/list" ||
 	note "a modify that does not name the GPG flags turned them off"
+
+# A key import must never let the root worker open a path the caller named:
+# that turned group membership into a read of any root-owned file.  The bytes
+# are read by the caller and carried over the protocol.
+printf 'not a key\n' >"$T/notakey"
+if run remote-modify --gpg-import="$T/notakey" local >/dev/null 2>&1; then
+	note "a file that is not a PGP key was accepted as one"
+fi
+[ -e "$SD_STORE/keys/local.gpg" ] &&
+	note "the refused key import wrote a store key file anyway"
+mdo sh -c "printf 'root secret\n' > '$T/secret'; chmod 600 '$T/secret'" \
+	>/dev/null 2>&1 || true
+if run remote-modify --gpg-import="$T/secret" local >/dev/null 2>&1; then
+	note "the daemon read a caller-named file it could not read as the caller"
+fi
+grep -q 'root secret' "$SD_STORE/keys/local.gpg" 2>/dev/null &&
+	note "a root-only file reached the store through the key import"
+# Source half: the daemon's half of the path must not stat or copy a caller
+# path at all - the compile-time rule, not just the behaviour above.
+strip_comments <"$ROOT/src/ostree_cmds.c" >"$T/stripped.c"
+body=$(carve_function '^int cmd_remote_modify' "$T/stripped.c" || true)
+[ -n "$body" ] || note "cmd_remote_modify could not be carved for the source check"
+case "$body" in
+*"copy_file("*)
+	note "cmd_remote_modify still copies a caller-named file"
+	;;
+esac
 
 # A remote that does not exist is a refusal, not a new remote.
 if run remote-modify --url="$url" not-there >/dev/null 2>&1; then

@@ -184,10 +184,14 @@ typedef struct {
 		} remote_delete;
 		struct {
 			char* name;
-			// `key=value` lines: url, gpg-import, branch, title,
-			// comment, description, homepage, icon, gpg-verify,
-			// enable.  The daemon validates every key.
+			// `key=value` lines: url, branch, title, comment,
+			// description, homepage, icon, gpg-verify.  The daemon
+			// validates every key.
 			char* changes;
+			// The keyring's text, read by the CALLER and carried here:
+			// the worker must never open a path the caller named.  Empty
+			// when the modification does not import a key.
+			char* gpg_data;
 		} remote_modify;
 		struct {
 			char* remote; // "" means every remote

@@ -110,7 +110,6 @@ static char* remote_modify_text(const cli_req_t* req) {
 		const char* val;
 	} rows[] = {
 		{"url", req->url},
-		{"gpg-import", req->gpg_import},
 		{"branch", req->branch_name},
 		{"title", req->title},
 		{"comment", req->comment},
@@ -140,6 +139,50 @@ static char* remote_modify_text(const cli_req_t* req) {
 		return NULL;
 	}
 	return xstrdup(buf);
+}
+
+// Read the caller's key file here, where the caller's privileges are: the
+// daemon must never open a path the caller named as root (that turned group
+// membership into a read of any root-owned file).  Only an armored key is
+// accepted, and only up to the size the protocol carries.
+#define KEY_FILE_MAX (64 * 1024)
+static char* read_key_file(const char* path) {
+	FILE* f = fopen(path, "r");
+	if (f == NULL) {
+		fpkg_errorf("cannot read %s: %s", path, strerror(errno));
+		return NULL;
+	}
+	char* buf = malloc(KEY_FILE_MAX + 1);
+	if (buf == NULL) {
+		fclose(f);
+		fpkg_errorf("out of memory");
+		return NULL;
+	}
+	size_t n = fread(buf, 1, KEY_FILE_MAX + 1, f);
+	bool err = ferror(f) != 0;
+	fclose(f);
+	if (err) {
+		fpkg_errorf("cannot read %s", path);
+		free(buf);
+		return NULL;
+	}
+	if (n > KEY_FILE_MAX) {
+		fpkg_errorf("%s is too large for a key file", path);
+		free(buf);
+		return NULL;
+	}
+	buf[n] = '\0';
+	if (strlen(buf) != n) {
+		fpkg_errorf("%s is not a text key file", path);
+		free(buf);
+		return NULL;
+	}
+	if (strncmp(buf, "-----BEGIN PGP", 14) != 0) {
+		fpkg_errorf("%s is not an armored PGP key", path);
+		free(buf);
+		return NULL;
+	}
+	return buf;
 }
 
 static void free_refs(char** v, size_t n) {
@@ -175,6 +218,14 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned,
 			return false;
 		}
 		out->u.remote_modify.changes = *owned;
+		if (req->gpg_import != NULL) {
+			out->u.remote_modify.gpg_data =
+				read_key_file(req->gpg_import);
+			if (out->u.remote_modify.gpg_data == NULL) {
+				*reported = true;
+				return false;
+			}
+		}
 		return n > 0;
 	case CMD_OVERRIDE:
 		// Only the system scope is a request (cli_req_is_local() keeps the rest in the

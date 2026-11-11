@@ -352,7 +352,8 @@ static int remote_config_unset(const char* name, const char* key) {
 
 // remote-modify's changes are `key=value` lines: the client wrote what the
 // parser understood, and this is the only other reader.
-int cmd_remote_modify(const char* name, const char* changes) {
+int cmd_remote_modify(const char* name, const char* changes,
+		      const char* gpg_data) {
 	assert(name != NULL);
 	if (!remote_name_valid(name)) {
 		fpkg_errorf("invalid remote name '%s'", name);
@@ -364,7 +365,7 @@ int cmd_remote_modify(const char* name, const char* changes) {
 	}
 
 	const char* url = NULL;
-	const char* gpg_import = NULL;
+	bool want_key = gpg_data != NULL && *gpg_data != '\0';
 	int gpg_verify = -1;
 	const char* branch = NULL;
 	const char* title = NULL;
@@ -387,7 +388,6 @@ int cmd_remote_modify(const char* name, const char* changes) {
 		}
 		*val++ = '\0';
 		if (strcmp(line, "url") == 0) url = val;
-		else if (strcmp(line, "gpg-import") == 0) gpg_import = val;
 		else if (strcmp(line, "gpg-verify") == 0)
 			gpg_verify = atoi(val) != 0;
 		else if (strcmp(line, "branch") == 0) branch = val;
@@ -404,39 +404,27 @@ int cmd_remote_modify(const char* name, const char* changes) {
 		line = nl != NULL ? nl + 1 : NULL;
 	}
 
-	if (url == NULL && gpg_import == NULL && gpg_verify < 0 &&
-	    branch == NULL && title == NULL && comment == NULL &&
-	    desc == NULL && homepage == NULL && icon == NULL) {
+	if (url == NULL && !want_key && gpg_verify < 0 && branch == NULL &&
+	    title == NULL && comment == NULL && desc == NULL &&
+	    homepage == NULL && icon == NULL) {
 		fpkg_errorf("nothing to change: give the remote an option");
 		free(text);
 		return 1;
 	}
 
 	// A new keyring replaces the one ostree trusts for this remote.  The
-	// path ostree imports from is ours, so a caller cannot point it at a
-	// file of theirs.
-	if (gpg_import != NULL) {
+	// bytes came over the protocol: the worker writes its own path and never
+	// opens a file the caller named, which would read anything root can.
+	if (want_key) {
 		char key_host[PATH_MAX];
-		struct stat st;
-
-		if (stat(gpg_import, &st) != 0 || !S_ISREG(st.st_mode)) {
-			fpkg_errorf("cannot read the key file %s: %s",
-				    gpg_import, strerror(errno));
-			free(text);
-			return 1;
-		}
-		store_path(key_host, sizeof(key_host), "keys/%s.gpg", name);
 		char keysdir[PATH_MAX];
+
+		store_path(key_host, sizeof(key_host), "keys/%s.gpg", name);
 		snprintf(keysdir, sizeof(keysdir), "%s", key_host);
 		char* slash = strrchr(keysdir, '/');
 		if (slash != NULL) *slash = '\0';
 		mkdir_p(keysdir, 0755);
-		// The caller may name the file the remote already uses; copying it
-		// onto itself would truncate the source before it is read.
-		struct stat dst;
-		bool same = stat(key_host, &dst) == 0 &&
-			    dst.st_dev == st.st_dev && dst.st_ino == st.st_ino;
-		if (!same && copy_file(gpg_import, key_host, 0644) != FPKG_OK) {
+		if (write_file(key_host, gpg_data, 0644) != 0) {
 			fpkg_errorf("cannot store %s: %s", key_host,
 				    strerror(errno));
 			free(text);
@@ -447,7 +435,7 @@ int cmd_remote_modify(const char* name, const char* changes) {
 	int rc = 0;
 	if (url != NULL && remote_config_set(name, "url", url) != 0)
 		rc = 1;
-	if (rc == 0 && gpg_import != NULL) {
+	if (rc == 0 && want_key) {
 		// ostree has no "remote modify".  Re-adding an existing remote keeps
 		// its section but drops what --set would have applied (and its own
 		// defaults then turn verification off), and the write can land after

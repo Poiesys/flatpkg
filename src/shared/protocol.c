@@ -383,6 +383,7 @@ int fp_req_encode(fp_wbuf_t* w, uint32_t id, const fp_req_t* r) {
 	case FP_REQ_REMOTE_MODIFY:
 		fp_w_str(w, r->u.remote_modify.name);
 		fp_w_str(w, r->u.remote_modify.changes);
+		fp_w_str(w, r->u.remote_modify.gpg_data);
 		break;
 	case FP_REQ_APPSTREAM:
 		fp_w_str(w, r->u.appstream.remote);
@@ -550,6 +551,7 @@ void fp_req_free(fp_req_t* r) {
 	case FP_REQ_REMOTE_MODIFY:
 		free(r->u.remote_modify.name);
 		free(r->u.remote_modify.changes);
+		free(r->u.remote_modify.gpg_data);
 		break;
 	case FP_REQ_APPSTREAM:
 		free(r->u.appstream.remote);
@@ -785,6 +787,7 @@ int fp_req_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 	case FP_REQ_REMOTE_MODIFY:
 		out->u.remote_modify.name = fp_r_str(&r);
 		out->u.remote_modify.changes = fp_r_str(&r);
+		out->u.remote_modify.gpg_data = fp_r_str(&r);
 		break;
 	case FP_REQ_APPSTREAM:
 		out->u.appstream.remote = fp_r_str(&r);

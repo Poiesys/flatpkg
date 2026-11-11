@@ -1039,7 +1039,8 @@ static void remote_modify_request(wctx_t* c, uint32_t id,
 				  const fp_req_t* r) {
 	op_start(c, id, 11, "remote-modify");
 	int rc = cmd_remote_modify(r->u.remote_modify.name,
-				   nz(r->u.remote_modify.changes));
+				   nz(r->u.remote_modify.changes),
+				   nz(r->u.remote_modify.gpg_data));
 	if (rc == 0) emit_remote(r->u.remote_modify.name);
 	op_finish(c, rc, "remote-modify failed");
 }
