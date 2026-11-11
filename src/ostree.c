@@ -2,6 +2,11 @@
 
 #include "ostree_internal.h"
 
+// Every file this reads is small (an .origin, a repo config): the ceiling is
+// what keeps a caller-named device or a runaway file from being an allocation
+// the daemon pays for.
+#define SLURP_MAX (1u << 20)
+
 char* slurp_file(const char* path) {
 	assert(path != NULL);
 	FILE* f = fopen(path, "r");
@@ -15,6 +20,11 @@ char* slurp_file(const char* path) {
 	for (;;) {
 		size_t r = fread(chunk, 1, sizeof(chunk), f);
 		if (r > 0) {
+			if (len + r > SLURP_MAX) {
+				free(buf);
+				fclose(f);
+				return NULL;
+			}
 			if (len + r + 1 > cap) {
 				cap = cap ? cap * 2 : 8192;
 				while (len + r + 1 > cap) cap *= 2;
@@ -96,21 +106,6 @@ static bool ref_kind_word(const char* s) {
 	return strcmp(s, "app") == 0 || strcmp(s, "runtime") == 0 ||
 	       strcmp(s, "extension") == 0;
 }
-// One ref component: an id, an arch, a branch or a remote name.  A dot is
-// fine inside a name (org.gnome.Gedit, 24.08), never first and never doubled,
-// and no component starts with '-', so none can climb out when it becomes a
-// path or be read as an option when it becomes an argv word.
-static bool ref_component_ok(const char* s) {
-	if (s == NULL || *s == '\0' || *s == '.' || *s == '-') return false;
-	for (const char* c = s; *c; c++) {
-		bool ok = (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'z') ||
-			  (*c >= 'A' && *c <= 'Z') || *c == '.' || *c == '_' ||
-			  *c == '-';
-		if (!ok) return false;
-		if (*c == '.' && c[1] == '.') return false;
-	}
-	return true;
-}
 int ref_parse(const char* s, fpkg_ref_t* out) {
 	assert(s != NULL);
 	assert(out != NULL);
@@ -121,7 +116,17 @@ int ref_parse(const char* s, fpkg_ref_t* out) {
 	const char* colon = strchr(s, ':');
 	const char* slash = strchr(s, '/');
 	if (colon && (!slash || colon < slash)) {
+		// An empty prefix names no remote, and a prefix is an argv
+		// word for root's ostree as well as a store path: same grammar.
+		if (colon == s) {
+			ref_free(out);
+			return -1;
+		}
 		out->remote = strndup(s, colon - s);
+		if (out->remote == NULL || !remote_name_valid(out->remote)) {
+			ref_free(out);
+			return -1;
+		}
 		rest = colon + 1;
 	}
 	if (!*rest) {
@@ -144,34 +149,48 @@ int ref_parse(const char* s, fpkg_ref_t* out) {
 		return -1;
 	}
 
+	// An over-long component is refused, not silently cut to the first
+	// 255 bytes and then judged: the two spellings would be one ref.
 	char id[256] = "", arch[64] = "", branch[64] = "";
 	const char* p1 = strchr(rest, '/');
-	if (!p1) {
-		snprintf(id, sizeof(id), "%s", rest);
-	} else {
-		snprintf(id, sizeof(id), "%.*s", (int)(p1 - rest), rest);
-		const char* p2 = strchr(p1 + 1, '/');
-		if (!p2) {
-			snprintf(arch, sizeof(arch), "%s", p1 + 1);
-		} else {
-			if (p2 > p1 + 1)
-				snprintf(arch, sizeof(arch), "%.*s",
-					 (int)(p2 - p1 - 1), p1 + 1);
-			snprintf(branch, sizeof(branch), "%s", p2 + 1);
+	size_t idlen = p1 != NULL ? (size_t)(p1 - rest) : strlen(rest);
+	if (idlen >= sizeof(id)) {
+		ref_free(out);
+		return -1;
+	}
+	memcpy(id, rest, idlen);
+	id[idlen] = '\0';
+	if (p1 != NULL) {
+		const char* a = p1 + 1;
+		const char* p2 = strchr(a, '/');
+		size_t alen = p2 != NULL ? (size_t)(p2 - a) : strlen(a);
+		if (alen >= sizeof(arch)) {
+			ref_free(out);
+			return -1;
+		}
+		memcpy(arch, a, alen);
+		arch[alen] = '\0';
+		if (p2 != NULL) {
+			size_t blen = strlen(p2 + 1);
+			if (blen >= sizeof(branch)) {
+				ref_free(out);
+				return -1;
+			}
+			memcpy(branch, p2 + 1, blen + 1);
 		}
 	}
 
-	if (!id[0] || ref_kind_word(id) || !ref_component_ok(id)) {
+	if (!id[0] || ref_kind_word(id) || !fpkg_component_ok(id)) {
 		ref_free(out);
 		return -1;
 	}
 	// An arch or branch becomes a path component too: same grammar, so a
 	// crafted ref cannot walk out of the store.
-	if (arch[0] && !ref_component_ok(arch)) {
+	if (arch[0] && !fpkg_component_ok(arch)) {
 		ref_free(out);
 		return -1;
 	}
-	if (branch[0] && !ref_component_ok(branch)) {
+	if (branch[0] && !fpkg_component_ok(branch)) {
 		ref_free(out);
 		return -1;
 	}
@@ -872,6 +891,12 @@ int ensure_repo(void) {
 static void* pull_thread(void* arg) {
 	pull_job_t* job = arg;
 	tool_ctx_t tc;
+	if (!remote_name_valid(job->remote)) {
+		fpkg_errorf("refusing an invalid remote name '%s'",
+			    job->remote);
+		job->rc = -1;
+		return NULL;
+	}
 	tool_ctx_init(&tc);
 	char repo_arg[PATH_MAX + 32];
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
@@ -1045,6 +1070,10 @@ static void prefetched_clear(void) {
 int tool_pull(const char* remote, const char* refstr) {
 	assert(remote != NULL);
 	assert(refstr != NULL);
+	if (!remote_name_valid(remote)) {
+		fpkg_errorf("refusing an invalid remote name '%s'", remote);
+		return -1;
+	}
 	if (prefetched_take(refstr)) return 0;
 	tool_ctx_t tc;
 	tool_ctx_init(&tc);
@@ -1063,6 +1092,7 @@ int tool_pull(const char* remote, const char* refstr) {
 // pulls the whole runtime object by object, with no static delta.  The
 // commit object already carries the keyfile (xa.metadata), so stop there.
 int tool_pull_metadata(const char* remote, const char* refstr) {
+	if (!remote_name_valid(remote)) return -1;
 	tool_ctx_t tc;
 	tool_ctx_init(&tc);
 	char repo_arg[PATH_MAX + 32];
@@ -1115,6 +1145,29 @@ int tool_rev_probe(const tool_ctx_t* tc, const char* refstr,
 			  char* commit_out, size_t len) {
 	return tool_rev_parse_impl(tc, refstr, commit_out, len, true);
 }
+// True when the nearest ancestor of `path` that exists is under the store.
+// mkdir_p follows a symlink that is already there, so the question has to be
+// answered before it creates anything, not after.
+static bool store_parent_contained(const char* path) {
+	char root[PATH_MAX], probe[PATH_MAX], real[PATH_MAX];
+
+	if (realpath(store_root(), root) == NULL) return false;
+	snprintf(probe, sizeof(probe), "%s", path);
+	for (;;) {
+		size_t rl;
+		char* slash;
+
+		if (realpath(probe, real) != NULL) {
+			rl = strlen(root);
+			return strncmp(real, root, rl) == 0 &&
+			       (real[rl] == '/' || real[rl] == '\0');
+		}
+		slash = strrchr(probe, '/');
+		if (slash == NULL || slash == probe) return false;
+		*slash = '\0';
+	}
+}
+
 int deploy_checkout(const tool_ctx_t* tc, const char* type,
 			   const fpkg_ref_t* ref, const char* commit,
 			   char* deploy_out, size_t outlen) {
@@ -1127,6 +1180,10 @@ int deploy_checkout(const tool_ctx_t* tc, const char* type,
 	snprintf(parent, sizeof(parent), "%s", host_deploy);
 	char* slash = strrchr(parent, '/');
 	if (slash) *slash = '\0';
+	if (!store_parent_contained(parent)) {
+		fpkg_errorf("refusing to deploy outside the store: %s", parent);
+		return -1;
+	}
 	if (mkdir_p(parent, 0755) != 0) {
 		fpkg_errorf("mkdir %s: %s", parent, strerror(errno));
 		return -1;
@@ -1211,6 +1268,7 @@ int make_active(const char* deploy_host_path) {
 }
 void write_origin(const char* deploy_host_path, const char* remote) {
 	char origin[PATH_MAX];
+	if (!remote_name_valid(remote)) return;
 	snprintf(origin, sizeof(origin), "%s", deploy_host_path);
 	char* slash = strrchr(origin, '/');
 	if (!slash) return;
@@ -1259,6 +1317,7 @@ char** fetch_remote_refs(const char* remote, size_t* n_out,
 	assert(remote != NULL);
 	assert(n_out != NULL);
 	*n_out = 0;
+	if (!remote_name_valid(remote)) return NULL;
 
 	char local_repo[PATH_MAX];
 	bool is_local =
@@ -1422,6 +1481,12 @@ int ostree_fetch_ref_metadata(const char* remote, const char* request,
 		ref_free(&r);
 		return -1;
 	}
+	if (!remote_name_valid(rem)) {
+		fpkg_errorf("refusing an invalid remote name '%s'", rem);
+		free(rem);
+		ref_free(&r);
+		return -1;
+	}
 
 	char* body = NULL;
 	char mcommit[256] = "";
@@ -1493,50 +1558,121 @@ static char* zlib_decompress_str(const guint8* src, gsize srclen) {
 	return NULL;
 }
 // The planner trusts this cache, and it is written by whoever pulled, so a
-// group member could rewrite it.  Root takes it over after a pull and a reader
-// accepts only a regular root-owned file in a root-owned directory: ostree
-// verifies the signature of what it writes, not of what it later reads.
-static bool summary_cache_trusted(const char* path) {
+// group member could rewrite it.  Root takes it over after a pull, and a reader
+// judges the descriptor it opened: this tree is group-writable.
+static int summary_cache_open(const char* path) {
 	char dir[PATH_MAX];
+	const char* base;
 	char* slash;
 	struct stat st;
+	int dfd, fd;
 
 	assert(path != NULL);
-	if (lstat(path, &st) != 0) return false;
-	if (!S_ISREG(st.st_mode) || st.st_uid != 0) return false;
-	if ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0) return false;
 	snprintf(dir, sizeof(dir), "%s", path);
 	slash = strrchr(dir, '/');
-	if (slash == NULL) return false;
+	if (slash == NULL) return -1;
 	*slash = '\0';
-	if (lstat(dir, &st) != 0) return false;
-	return S_ISDIR(st.st_mode) && st.st_uid == 0 &&
-	       (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+	base = path + (slash - dir) + 1;
+	dfd = open(dir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (dfd < 0) return -1;
+	if (fstat(dfd, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != 0 ||
+	    (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+		close(dfd);
+		return -1;
+	}
+	fd = openat(dfd, base, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	close(dfd);
+	if (fd < 0) return -1;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_uid != 0 ||
+	    (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+		close(fd);
+		return -1;
+	}
+	return fd;
 }
 
+// The bytes of the file the descriptor names: the map is of the object that
+// was judged, never of a path a swap could re-point.
+static GBytes* summary_cache_bytes(const char* path) {
+	int fd = summary_cache_open(path);
+	GMappedFile* mf;
+	GBytes* bytes;
+
+	if (fd < 0) return NULL;
+	mf = g_mapped_file_new_from_fd(fd, FALSE, NULL);
+	close(fd);
+	if (mf == NULL) return NULL;
+	bytes = g_mapped_file_get_bytes(mf);
+	g_mapped_file_unref(mf);
+	return bytes;
+}
+
+// Root takes the cache back through the descriptors it opened: the store's tmp
+// tree is group-writable, so a path looked at and then changed by name is a
+// path a swap can choose.  A file root did not write is dropped, never adopted:
+// taking it over would bless whatever a group member planted before the pull.
 void ostree_summary_cache_own(void) {
-	char dir[PATH_MAX];
+	char tmpdir[PATH_MAX];
 	struct stat st;
 	DIR* d;
+	int tfd, cd, dfd;
 
 	if (geteuid() != 0) return;
-	store_path(dir, sizeof(dir), "repo/tmp/cache");
-	(void)chmod(dir, 0755);
-	(void)chown(dir, 0, 0);
-	store_path(dir, sizeof(dir), "repo/tmp/cache/summaries");
-	if (stat(dir, &st) != 0) return;
-	(void)chmod(dir, 0755);
-	(void)chown(dir, 0, 0);
-	d = opendir(dir);
-	if (d == NULL) return;
+	store_path(tmpdir, sizeof(tmpdir), "repo/tmp");
+	tfd = open(tmpdir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (tfd < 0) return;
+	cd = openat(tfd, "cache", O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+					 O_CLOEXEC);
+	close(tfd);
+	if (cd < 0) return;
+	if (fstat(cd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+		close(cd);
+		return;
+	}
+	(void)fchmod(cd, 0755);
+	(void)fchown(cd, 0, 0);
+	dfd = openat(cd, "summaries", O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+					   O_CLOEXEC);
+	close(cd);
+	if (dfd < 0) return;
+	if (fstat(dfd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+		close(dfd);
+		return;
+	}
+	(void)fchmod(dfd, 0755);
+	(void)fchown(dfd, 0, 0);
+	d = fdopendir(dfd);
+	if (d == NULL) {
+		close(dfd);
+		return;
+	}
+	dfd = dirfd(d);
+	if (dfd < 0) {
+		closedir(d);
+		return;
+	}
 	for (struct dirent* de; (de = readdir(d)) != NULL;) {
-		char p[PATH_MAX];
+		int fd;
 
 		if (de->d_name[0] == '.') continue;
-		snprintf(p, sizeof(p), "%s/%s", dir, de->d_name);
-		if (lstat(p, &st) != 0 || !S_ISREG(st.st_mode)) continue;
-		(void)chmod(p, 0644);
-		(void)chown(p, 0, 0);
+		fd = openat(dfd, de->d_name, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+		if (fd < 0) {
+			// A name root cannot open as itself (a symlink, or
+			// something that is not a regular file) was not
+			// written by root: drop it.
+			if (errno != ENOENT)
+				(void)unlinkat(dfd, de->d_name, 0);
+			continue;
+		}
+		if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+		    st.st_uid != 0) {
+			close(fd);
+			(void)unlinkat(dfd, de->d_name, 0);
+			continue;
+		}
+		(void)fchmod(fd, 0644);
+		(void)fchown(fd, 0, 0);
+		close(fd);
 	}
 	closedir(d);
 }
@@ -1548,14 +1684,11 @@ static char* summary_xa_metadata(const char* remote, const char* refstr) {
 	if (!remote_name_valid(remote)) return NULL;
 	char path[PATH_MAX];
 	store_path(path, sizeof(path), "repo/tmp/cache/summaries/%s", remote);
-	if (!summary_cache_trusted(path)) {
+	GBytes* bytes = summary_cache_bytes(path);
+	if (bytes == NULL) {
 		fpkg_debugf("summary cache %s is not root's; ignoring it", path);
 		return NULL;
 	}
-	GMappedFile* mf = g_mapped_file_new(path, FALSE, NULL);
-	if (!mf) return NULL;
-	GBytes* bytes = g_mapped_file_get_bytes(mf);
-	g_mapped_file_unref(mf);
 	GVariant* sum = g_variant_new_from_bytes(
 		G_VARIANT_TYPE("(a(s(taya{sv}))a{sv})"), bytes, FALSE);
 	g_bytes_unref(bytes);
@@ -1626,14 +1759,11 @@ char* summary_ref_commit(const char* remote, const char* refstr) {
 	}
 	char path[PATH_MAX];
 	store_path(path, sizeof(path), "repo/tmp/cache/summaries/%s", remote);
-	if (!summary_cache_trusted(path)) {
+	GBytes* bytes = summary_cache_bytes(path);
+	if (bytes == NULL) {
 		fpkg_debugf("summary cache %s is not root's; ignoring it", path);
 		return NULL;
 	}
-	GMappedFile* mf = g_mapped_file_new(path, FALSE, NULL);
-	if (!mf) return NULL;
-	GBytes* bytes = g_mapped_file_get_bytes(mf);
-	g_mapped_file_unref(mf);
 	GVariant* sum = g_variant_new_from_bytes(
 		G_VARIANT_TYPE("(a(s(taya{sv}))a{sv})"), bytes, FALSE);
 	g_bytes_unref(bytes);
@@ -2400,7 +2530,7 @@ bool remote_name_valid(const char* name) {
 	// A remote name is an argv word for root's ostree (and a store path
 	// component): no leading dash, or it is parsed as an ostree flag.
 	if (name == NULL || *name == '\0' || name[0] == '-') return false;
-	return ref_component_ok(name);
+	return fpkg_component_ok(name);
 }
 // Is this name a commit directory? Commit hashes are 64-char SHA-256 hex.
 bool is_commit_dir_name(const char* name) {

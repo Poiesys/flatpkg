@@ -177,6 +177,7 @@ static int fp_metadata_parse_internal(const char* path, fp_metadata_t* out,
 	char group[128] = "";
 	char cur_ext[128] = "";
 	char cur_extof[128] = "";
+	bool ext_skip = false;
 	size_t total = 0;
 
 	while (fgets(line, sizeof(line), fp)) {
@@ -318,8 +319,17 @@ static int fp_metadata_parse_internal(const char* path, fp_metadata_t* out,
 			}
 		} else if (strncmp(group, "Extension ", 10) == 0) {
 			fp_ext_group_t* g;
-			if (cur_ext[0] == '\0' || strcmp(cur_ext, group) != 0) {
+			if (strcmp(cur_ext, group) != 0) {
 				snprintf(cur_ext, sizeof(cur_ext), "%s", group);
+				// The id becomes a ref and a store path; a group
+				// whose id is not one component is dropped whole.
+				ext_skip = !fpkg_component_ok(group + 10);
+				if (ext_skip) {
+					fpkg_warnf("%s: invalid extension id "
+						   "'%s', ignored",
+						   path, group + 10);
+					continue;
+				}
 				out->ext_groups =
 					realloc(out->ext_groups,
 						(out->next_groups + 1) *
@@ -331,6 +341,8 @@ static int fp_metadata_parse_internal(const char* path, fp_metadata_t* out,
 				g = &out->ext_groups[out->next_groups++];
 				memset(g, 0, sizeof(*g));
 				g->id = xstrdup(group + 10);
+			} else if (ext_skip) {
+				continue;
 			} else {
 				g = &out->ext_groups[out->next_groups - 1];
 			}

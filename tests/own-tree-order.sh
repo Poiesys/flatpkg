@@ -15,6 +15,7 @@ trap 'rm -rf "$T"' EXIT
 strip_comments "$ROOT/src/daemon/ops/run.c" > "$T/run.c"
 strip_comments "$ROOT/src/daemon/sandbox.c" > "$T/sandbox.c"
 strip_comments "$ROOT/src/daemon/sandbox_exec.c" > "$T/exec.c"
+strip_comments "$ROOT/src/daemon/ops/instance_ctl.c" > "$T/instance.c"
 
 carve_function '^int cmd_run\(' "$T/run.c" > "$T/cmd_run.inc" ||
 	{ echo "FAIL: cmd_run() not found in run.c"; exit 1; }
@@ -26,6 +27,9 @@ carve_function '^static bool unmount_entry\(' "$T/sandbox.c" > "$T/unmount.inc" 
 	{ echo "FAIL: unmount_entry() not found"; exit 1; }
 carve_function '^static void write_instance_pid\(' "$T/exec.c" > "$T/pid.inc" ||
 	{ echo "FAIL: write_instance_pid() not found"; exit 1; }
+carve_function '^void instance_write_bwrapinfo\(' "$T/instance.c" \
+	> "$T/bwrap.inc" ||
+	{ echo "FAIL: instance_write_bwrapinfo() not found"; exit 1; }
 
 pos() {
 	grep -n "$1" "$2" | head -1 | cut -d: -f1
@@ -88,10 +92,27 @@ $(head -3 "$T/after.hits" | sed 's/^/       /')"
 	fi
 }
 
+# bwrapinfo.json is the other file written into the instance directory after
+# it is the caller's: it goes through the opened directory too, never a name.
+check_bwrap() {
+	body=$1
+
+	grep -q 'open(inst_dir,' "$body" ||
+		bug "the instance directory is not opened as a directory"
+	grep -q 'O_RDONLY | O_DIRECTORY | O_NOFOLLOW' "$body" ||
+		bug "the instance directory may be a symlink"
+	grep -q 'write_file_at(dfd, "bwrapinfo.json"' "$body" ||
+		bug "bwrapinfo.json is written by path"
+	if grep -q 'write_file(bi_path' "$body"; then
+		bug "bwrapinfo.json still goes through write_file() by path"
+	fi
+}
+
 # A check that fails exits its own subshell, so the plants below can observe
 # the failure instead of being taken down with it.
 ( check "$T/cmd_run.inc" "$T/own.inc" "$T/create.inc" "$T/pid.inc" \
 	"$T/unmount.inc" )
+( check_bwrap "$T/bwrap.inc" )
 
 # --- the plants: each rule must fire on the tree it was written for --------
 prove() {
@@ -140,5 +161,14 @@ sed 's/MNT_BYFSID/0/' "$T/unmount.inc" > "$T/plant-unmount.inc"
 prove "the unmount by path" \
 	check "$T/cmd_run.inc" "$T/own.inc" "$T/create.inc" "$T/pid.inc" \
 	"$T/plant-unmount.inc"
+
+# 6. bwrapinfo.json back on a path
+sed 's/write_file_at(dfd, "bwrapinfo.json", bi, 0644)/write_file(bi_path, bi, 0644)/' \
+	"$T/bwrap.inc" > "$T/plant-bwrap.inc"
+if cmp -s "$T/bwrap.inc" "$T/plant-bwrap.inc"; then
+	echo "FAIL: the bwrapinfo plant was not applied"
+	exit 1
+fi
+prove "bwrapinfo.json written by path" check_bwrap "$T/plant-bwrap.inc"
 
 echo "PASS: jail-root writes precede the handover, and the rest hold a handle"

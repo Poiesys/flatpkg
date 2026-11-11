@@ -75,6 +75,14 @@ bool fpkg_buf_append(char* buf, size_t len, size_t* off, const char* fmt,
 fpkg_error_t chown_nofollow(const char* path, uid_t uid, gid_t gid);
 // Replace `path` with `content`.
 fpkg_error_t write_file(const char* path, const char* content, mode_t mode);
+// A write through an opened directory: the name may be one a caller can swap,
+// so it is never followed through a symlink and never inherits a stale mode.
+fpkg_error_t write_file_at(int dirfd, const char* name, const char* content,
+			   mode_t mode);
+// A key or another file only root may read: replaced, never followed, and
+// created 0600 before its first byte.
+fpkg_error_t write_secret_file_at(int dirfd, const char* name,
+				  const char* content);
 // Remove a tree; symlinks are not followed and other mounts are not crossed.
 int rm_rf(const char* path);
 // Fork/exec a program with no shell; fds < 0 inherit.  Returns its exit
@@ -157,7 +165,17 @@ typedef struct {
 bool ext_id_matches_declared(const char* id, const char* branch,
 			     const fp_ext_group_t* g);
 
+// One name component: a ref id, arch or branch, a remote name or an
+// extension id.  Letters, digits, '.', '_' and '-'; never a leading '.',
+// '-' or a '..'.  One definition, so a component that becomes a path or an
+// argv word for root's ostree is refused everywhere.
+bool fpkg_component_ok(const char* s);
+
 bool remote_name_valid(const char* name);
+
+// A .flatpakrepo file is a few KB; the cap also keeps the bytes inside one
+// protocol string when the caller carries them over the wire.
+#define REPO_FILE_MAX (64u << 10)
 
 // One "[ExtensionOf <parent>]" group; priority= orders extension handling.
 typedef struct {
@@ -546,7 +564,8 @@ void instance_complete_list(void);
 int cmd_enter(const char* jid, char* const extra_argv[]);
 int cmd_kill(const char* jid);
 
-int cmd_remote_add(const char* name, const char* url, const char* from);
+int cmd_remote_add(const char* name, const char* url, const char* from,
+		   const char* data);
 int cmd_remote_list(void);
 int cmd_remote_delete(const char* name);
 // The changes are `key=value` lines from the client: url, branch, title,

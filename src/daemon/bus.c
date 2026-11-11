@@ -17,12 +17,14 @@ typedef struct {
 	uid_t uid;
 	char topics[BUS_MAX_TOPICS][BUS_TOPIC_LEN];
 	int ntopics;
+	int slow; // consecutive forwarded frames this peer could not take
 } peer_t;
 
 typedef struct {
 	uint64_t op;
 	int fd;
 	pid_t pid;
+	uid_t uid; // the user that registered it; only they may cancel or watch
 } op_t;
 
 typedef struct {
@@ -168,6 +170,14 @@ int broker_peer_count(void) {
 	return n;
 }
 
+int broker_peer_count_uid(uid_t uid) {
+	int n = 0;
+
+	for (size_t i = 0; i < sizeof(peers) / sizeof(peers[0]); i++)
+		if (peers[i].fd != 0 && peers[i].uid == uid) n++;
+	return n;
+}
+
 int broker_add(int fd, pid_t pid, uid_t uid) {
 	for (size_t i = 0; i < sizeof(peers) / sizeof(peers[0]); i++)
 		if (peers[i].fd == 0) {
@@ -191,20 +201,60 @@ int broker_pollfds(struct pollfd* out, int max) {
 	return n;
 }
 
+// The firehose carries every operation of every user; a non-root subscriber
+// sees the ones its own user published, which is what the op topic meant.
 static void route(const char* topic, const void* frame, size_t len,
 		  int from_fd) {
 	int drop[BUS_MAX_PEERS];
 	int ndrop = 0;
+	peer_t* src = peer_for(from_fd);
+	uid_t publisher = src != NULL ? src->uid : 0;
+	bool firehose = strcmp(topic, "op") == 0;
 
 	for (size_t i = 0; i < sizeof(peers) / sizeof(peers[0]); i++) {
 		peer_t* p = &peers[i];
+
 		if (p->fd == 0 || p->fd == from_fd) continue;
 		if (!peer_subscribed(p, topic)) continue;
+		if (firehose && p->uid != 0 && p->uid != publisher) continue;
 		if (send_msg(p->fd, true, BUS_FORWARD, frame, len, NULL,
-			     0) != 0)
-			drop[ndrop++] = p->fd;
+			     0) == 0) {
+			p->slow = 0;
+			continue;
+		}
+		// A full socket is a listener that is not reading right now
+		// (a worker inside a synchronous operation), not necessarily a
+		// dead one: only a listener that keeps missing frames is
+		// dropped.
+		if ((errno == EAGAIN || errno == EWOULDBLOCK) &&
+		    ++p->slow < BUS_SLOW_GRACE)
+			continue;
+		drop[ndrop++] = p->fd;
 	}
 	for (int i = 0; i < ndrop; i++) peer_remove(drop[i]);
+}
+
+// An authorization answer is small and must not wait either; a peer that
+// cannot take it is gone as far as this broker is concerned.
+static void reply(int fd, uint32_t type) {
+	if (send_msg(fd, true, type, NULL, 0, NULL, 0) != 0) peer_remove(fd);
+}
+
+// `op/<id>` names one operation, and only the peer that registered it (or
+// root) may watch it.  The literal `op` is the firehose; route() filters it
+// per publisher.  Every other topic is installation-wide.
+static bool peer_may_watch(const peer_t* p, const char* topic) {
+	uint64_t want;
+	char* end;
+
+	if (strncmp(topic, "op/", 3) != 0) return true;
+	want = strtoull(topic + 3, &end, 10);
+	if (end == topic + 3 || *end != '\0') return false;
+	for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
+		if (ops[i].op == want && ops[i].fd != 0 &&
+		    (p->uid == 0 || ops[i].uid == p->uid))
+			return true;
+	return false;
 }
 
 void broker_handle(int fd) {
@@ -232,11 +282,22 @@ void broker_handle(int fd) {
 		memcpy(topic, payload, h.len);
 		topic[h.len] = '\0';
 		if (peer_subscribed(p, topic)) return;
-		if (p->ntopics >= BUS_MAX_TOPICS) return;
+		if (p->ntopics >= BUS_MAX_TOPICS) {
+			reply(fd, BUS_SUB_DENIED);
+			return;
+		}
+		if (!peer_may_watch(p, topic)) {
+			reply(fd, BUS_SUB_DENIED);
+			return;
+		}
 		snprintf(p->topics[p->ntopics++], BUS_TOPIC_LEN, "%s", topic);
 		// The ack first: the worker answers the client before the
-		// snapshot frames, which the client reads as events.
-		(void)send_msg(fd, false, BUS_SUBSCRIBED, NULL, 0, NULL, 0);
+		// snapshot frames, which the client reads as events.  A full
+		// socket is not the daemon's loop to block on.
+		if (send_msg(fd, true, BUS_SUBSCRIBED, NULL, 0, NULL, 0) != 0) {
+			peer_remove(fd);
+			return;
+		}
 		snap_send(fd, topic);
 		return;
 	}
@@ -277,6 +338,7 @@ void broker_handle(int fd) {
 				ops[i].op = op;
 				ops[i].fd = fd;
 				ops[i].pid = p->pid;
+				ops[i].uid = p->uid;
 				return;
 			}
 		return;
@@ -292,14 +354,21 @@ void broker_handle(int fd) {
 	}
 	case BUS_CANCEL: {
 		uint64_t op;
+		bool cancelled = false;
+
 		if (h.len != sizeof(op)) return;
 		memcpy(&op, payload, sizeof(op));
+		// The op id is random and the registration records its owner:
+		// naming someone else's operation is a refusal, not a signal.
 		for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
-			if (ops[i].op == op && ops[i].pid > 0) {
-				(void)kill(ops[i].pid, SIGUSR1);
+			if (ops[i].op == op && ops[i].fd != 0 &&
+			    (p->uid == 0 || ops[i].uid == p->uid)) {
+				if (ops[i].pid > 0)
+					(void)kill(ops[i].pid, SIGUSR1);
+				cancelled = true;
 				break;
 			}
-		(void)send_msg(fd, false, BUS_CANCELED, NULL, 0, NULL, 0);
+		reply(fd, cancelled ? BUS_CANCELED : BUS_CANCEL_DENIED);
 		return;
 	}
 	default:

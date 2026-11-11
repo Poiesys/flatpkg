@@ -399,6 +399,10 @@ static int iter_bytes_to_string(DBusMessageIter* it, char* out, size_t n) {
 	dbus_message_iter_recurse(it, &sub);
 	size_t pos = 0;
 	while (dbus_message_iter_get_arg_type(&sub) != DBUS_TYPE_INVALID) {
+		// get_basic writes as the element's own type: an as or an au
+		// element would land a pointer, not a byte, in `b`.
+		if (dbus_message_iter_get_arg_type(&sub) != DBUS_TYPE_BYTE)
+			return -1;
 		if (pos + 1 >= n) return -1;
 		unsigned char b;
 		dbus_message_iter_get_basic(&sub, &b);
@@ -658,9 +662,12 @@ static bool spawn_validate_request(DBusConnection* conn, DBusMessage* msg,
 // Per-spawn nonce: --env=FLATPKG_SPAWN_NONCE=<nonce> lands in the sandbox
 // env, and the pid-file candidate is verified against it.
 static void spawn_make_nonce(char* out, size_t n, DBusMessage* msg) {
-	snprintf(out, n, "FLATPKG_SPAWN_NONCE=%lx%lx%lx",
-		 (unsigned long)getpid(), (unsigned long)time(NULL),
-		 (unsigned long)(uintptr_t)msg ^ arc4random());
+	(void)msg;
+	// Nothing about the process goes into it: the file it lands in is
+	// readable by the caller's uid, and a pointer there leaks the layout.
+	snprintf(out, n, "FLATPKG_SPAWN_NONCE=%08lx%08lx%08lx%08lx",
+		 (unsigned long)arc4random(), (unsigned long)arc4random(),
+		 (unsigned long)arc4random(), (unsigned long)arc4random());
 }
 
 // Build the re-exec argv in one pass; the nonce must be in the request
@@ -1553,11 +1560,19 @@ typedef struct {
 static fc_request_t* fc_requests;
 static size_t fc_nrequests;
 
+// Each outstanding chooser is a forked zenity with a pipe: a caller that
+// opens them faster than they are answered would otherwise run the shared
+// portal out of descriptors and children.
+#define FC_MAX_REQUESTS 64
+
 static long fc_timeout = 600;
 
 static fc_request_t* fc_track(pid_t pid, const char* path, const char* sender,
 			      const char* cwd, bool multiple, bool save) {
-	fc_request_t* r = realloc(fc_requests, (fc_nrequests + 1) * sizeof(*r));
+	fc_request_t* r;
+
+	if (fc_nrequests >= FC_MAX_REQUESTS) return NULL;
+	r = realloc(fc_requests, (fc_nrequests + 1) * sizeof(*r));
 	if (!r) return NULL;
 	fc_requests = r;
 	fc_request_t* e = &fc_requests[fc_nrequests++];
@@ -1906,6 +1921,16 @@ static void handle_file_chooser(DBusConnection* conn, DBusMessage* msg,
 			   "FileChooser will answer with an error rather than "
 			   "open a dialog");
 	}
+	if (fc_nrequests >= FC_MAX_REQUESTS) {
+		fpkg_warnf("refusing a file chooser: %zu dialogs are open",
+			   fc_nrequests);
+		free(own_title);
+		free(folder);
+		for (size_t i = 0; i < nfilters; i++) free(filters[i]);
+		free(filters);
+		reply_error(conn, msg, "too many open file choosers");
+		return;
+	}
 
 	int pipefd[2];
 	if (pipe(pipefd) != 0) {
@@ -1964,7 +1989,16 @@ static void handle_file_chooser(DBusConnection* conn, DBusMessage* msg,
 		_exit(127);
 	}
 	close(pipefd[1]);
-	fc_track(pid, path, sender, folder, multiple, save);
+	if (fc_track(pid, path, sender, folder, multiple, save) == NULL) {
+		(void)kill(pid, SIGKILL);
+		close(pipefd[0]);
+		free(own_title);
+		free(folder);
+		for (size_t i = 0; i < nfilters; i++) free(filters[i]);
+		free(filters);
+		reply_error(conn, msg, "cannot track a file chooser");
+		return;
+	}
 	fc_requests[fc_nrequests - 1].fd = pipefd[0];
 
 	DBusMessage* reply = dbus_message_new_method_return(msg);

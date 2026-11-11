@@ -198,10 +198,13 @@ if command -v ostree >/dev/null 2>&1; then
 			>"$tmp/bus.sub" 2>&1 || true
 		grep -q '^sub=ok' "$tmp/bus.sub" ||
 			note "SUBSCRIBE was not acknowledged"
+		# Operation 0 was never registered, so the broker must answer
+		# with a refusal rather than signal a process by a guessed id.
 		"$busprobe" cancel "$tmp/s/control.sock" 0 \
 			>"$tmp/bus.cancel" 2>&1 || true
-		grep -q '^ack=ok' "$tmp/bus.cancel" ||
-			note "CANCEL was not acknowledged"
+		grep -q '^ack=error: cannot cancel that operation' \
+			"$tmp/bus.cancel" ||
+			note "a CANCEL naming no operation was not refused"
 		"$busprobe" watch-topic "$tmp/s/control.sock" op \
 			>"$tmp/bus.watch" 2>&1 &
 		wpid=$!

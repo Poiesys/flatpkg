@@ -257,6 +257,11 @@ static int resolve_xdg(const char* home, const char* token, char* out,
 	return -1;
 }
 
+// Staging sorts the grants by depth and is quadratic in their number; the
+// metadata file is remote-controlled, so the list is bounded like every other
+// field of it.
+#define FP_MAX_FS_GRANTS 4096
+
 static void plan_add_grant(sandbox_plan_t* plan, const char* host_path,
 			   const char* jail_path, fs_grant_mode_t mode,
 			   bool persistent) {
@@ -276,6 +281,17 @@ static void plan_add_grant(sandbox_plan_t* plan, const char* host_path,
 			free(g->host_path);
 			g->host_path = xstrdup(host_path);
 			g->persistent = persistent;
+		}
+		return;
+	}
+	if (plan->ngrants >= FP_MAX_FS_GRANTS) {
+		static bool warned;
+
+		if (!warned) {
+			fpkg_warnf("more than %d filesystem grants, the rest "
+				   "ignored",
+				   FP_MAX_FS_GRANTS);
+			warned = true;
 		}
 		return;
 	}

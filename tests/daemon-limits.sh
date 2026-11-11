@@ -1,9 +1,11 @@
 #!/bin/sh
 # daemon-limits.sh - the daemon forks one root worker per connection and
 # serves the event broker from its own single loop, so both are bounded: a
-# connection is refused before the fork when the broker is full, the frames
-# the broker sends are non-blocking so a saturated listener cannot stall every
-# other client, and a worker that never says HELLO is dropped on a timeout.
+# connection is refused before the fork when the broker is full (or when one
+# user already holds its share), the frames the broker sends are non-blocking
+# so a saturated listener cannot stall every other client, a worker that never
+# says HELLO is dropped on a timeout, and an authenticated client that asks
+# for nothing is reaped rather than parked in the pool forever.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -33,7 +35,7 @@ pos() {
 }
 
 check() {
-	send=$1 main=$2 hello=$3
+	send=$1 main=$2 hello=$3 worker=$4
 
 	grep -q 'MSG_DONTWAIT' "$send" ||
 		bug "a broker frame blocks the daemon's loop"
@@ -47,14 +49,35 @@ check() {
 	[ -n "$fork" ] || bug "daemon_main() no longer forks a worker"
 	[ "$count" -lt "$fork" ] ||
 		bug "the connection cap is checked after the worker is forked"
+	grep -q 'broker_peer_count_uid(uid) >= BUS_MAX_PEERS_PER_UID' "$main" ||
+		bug "one user can hold every connection in the pool"
 	grep -q 'SO_RCVTIMEO' "$main" ||
 		bug "a connection that never sends a frame is never timed out"
 
 	grep -q 'SO_RCVTIMEO' "$hello" ||
 		bug "the timeout is not cleared at HELLO, so an idle client dies"
+	grep -q 'if (c.hello && c.nsubs == 0) {' "$worker" ||
+		bug "an authenticated idle connection is never judged"
+	grep -q 'idle >= FP_IDLE_TIMEOUT' "$worker" ||
+		bug "an authenticated idle connection is never reaped"
+	grep -q 'timeout = (int)(FP_IDLE_TIMEOUT - idle) \* 1000' "$worker" ||
+		bug "the idle reaper does not wake the worker to run"
+
+	# The boundary's own presentation: a socket or a directory the world can
+	# write is a control socket anybody can unlink.
+	grep -q 'mkdir_p(FPKG_RUNDIR, 0770)' "$main" ||
+		bug "the run directory is not the flatpkg group's alone"
+	grep -q 'chmod(FPKG_SOCKET, 0660)' "$main" ||
+		bug "the control socket is world-writable"
+
+	# An event is rendered by clients this worker does not own.
+	grep -q 'event_text_safe' "$worker" ||
+		bug "an event can carry a control byte"
+	grep -q 'event_ref_ok(row->ref)' "$worker" ||
+		bug "a changeset ref is announced without the grammar"
 }
 
-( check "$T/send.inc" "$T/main.inc" "$T/hello.inc" )
+( check "$T/send.inc" "$T/main.inc" "$T/hello.inc" "$T/worker.c" )
 
 # --- the plants ----------------------------------------------------------
 prove() {
@@ -73,21 +96,55 @@ if cmp -s "$T/send.inc" "$T/plant-send.inc"; then
 	exit 1
 fi
 prove "a blocking broker send" \
-	check "$T/plant-send.inc" "$T/main.inc" "$T/hello.inc"
+	check "$T/plant-send.inc" "$T/main.inc" "$T/hello.inc" "$T/worker.c"
 
 sed 's/broker_peer_count() >= BUS_MAX_PEERS/0/' "$T/main.inc" \
 	> "$T/plant-cap.inc"
 prove "no connection cap" \
-	check "$T/send.inc" "$T/plant-cap.inc" "$T/hello.inc"
+	check "$T/send.inc" "$T/plant-cap.inc" "$T/hello.inc" "$T/worker.c"
 
-sed 's/(void)setsockopt(c->conn, SOL_SOCKET, SO_RCVTIMEO, \&tv,/(void)tv;/' \
+sed 's/broker_peer_count_uid(uid) >= BUS_MAX_PEERS_PER_UID/0/' "$T/main.inc" \
+	> "$T/plant-uid.inc"
+prove "no per-user share of the pool" \
+	check "$T/send.inc" "$T/plant-uid.inc" "$T/hello.inc" "$T/worker.c"
+
+sed 's/(void)setsockopt(c->conn, SOL_SOCKET, SO_RCVTIMEO, &tv,/(void)tv;/' \
 	"$T/hello.inc" > "$T/plant-hello.inc"
 if cmp -s "$T/hello.inc" "$T/plant-hello.inc"; then
 	echo "FAIL: the HELLO plant was not applied"
 	exit 1
 fi
 prove "the timeout left on an idle client" \
-	check "$T/send.inc" "$T/main.inc" "$T/plant-hello.inc"
+	check "$T/send.inc" "$T/main.inc" "$T/plant-hello.inc" "$T/worker.c"
 
-echo "PASS: the worker count is capped before the fork, the broker never"
-echo "      blocks its loop, and a silent connection is timed out until HELLO"
+sed 's/if (c.hello \&\& c.nsubs == 0) {/if (0) {/' "$T/worker.c" \
+	> "$T/plant-idle.inc"
+if cmp -s "$T/worker.c" "$T/plant-idle.inc"; then
+	echo "FAIL: the idle plant was not applied"
+	exit 1
+fi
+prove "an authenticated connection never reaped" \
+	check "$T/send.inc" "$T/main.inc" "$T/hello.inc" "$T/plant-idle.inc"
+
+sed 's/mkdir_p(FPKG_RUNDIR, 0770)/mkdir_p(FPKG_RUNDIR, 0775)/' "$T/main.inc" \
+	> "$T/plant-rundir.inc"
+prove "a group-writable run directory" \
+	check "$T/send.inc" "$T/plant-rundir.inc" "$T/hello.inc" "$T/worker.c"
+
+sed 's/chmod(FPKG_SOCKET, 0660)/chmod(FPKG_SOCKET, 0666)/' "$T/main.inc" \
+	> "$T/plant-socket.inc"
+prove "a world-writable control socket" \
+	check "$T/send.inc" "$T/plant-socket.inc" "$T/hello.inc" "$T/worker.c"
+
+sed 's/event_ref_ok(row->ref)/1/' "$T/worker.c" > "$T/plant-event.inc"
+if cmp -s "$T/worker.c" "$T/plant-event.inc"; then
+	echo "FAIL: the event-ref plant was not applied"
+	exit 1
+fi
+prove "a ref announced without the grammar" \
+	check "$T/send.inc" "$T/main.inc" "$T/hello.inc" "$T/plant-event.inc"
+
+echo "PASS: the worker count is capped before the fork and shared per user,"
+echo "      the broker never blocks its loop, a silent connection is timed"
+echo "      out until HELLO, an idle one is reaped after it, and the run"
+echo "      directory and control socket belong to the flatpkg group"

@@ -311,13 +311,17 @@ char* instance_app_for_jid(int jid) {
 	d = opendir(base);
 	if (d == NULL) return NULL;
 	for (struct dirent* de; (de = readdir(d)) != NULL;) {
-		char infof[PATH_MAX], name[256], buf[64];
+		char dir[PATH_MAX], infof[PATH_MAX], name[256], buf[64];
 
 		if (de->d_name[0] == '.' || de->d_name[0] == '\0') continue;
+		snprintf(dir, sizeof(dir), "%s/%s", base, de->d_name);
 		snprintf(infof, sizeof(infof), "%s/%s/info", base, de->d_name);
 		if (kf_get(infof, "Instance", "jid", buf, sizeof(buf)) != 0)
 			continue;
 		if (atoi(buf) != jid) continue;
+		// A directory the worker left behind is not a claim on a jid:
+		// the sweep's liveness test is what makes an entry current.
+		if (!instance_alive(dir, jid)) continue;
 		if (kf_get(infof, "Application", "name", name,
 			   sizeof(name)) != 0)
 			continue;

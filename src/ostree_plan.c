@@ -1436,6 +1436,17 @@ static int install_req_prepare(const char* request, flatpkg_dep_kind_t kind,
 					char refhdr[600];
 					flatpak_ref_header(refstr, refhdr,
 							   sizeof(refhdr));
+					if (!remote_name_valid(out->remote)) {
+						fpkg_errorf("refusing an "
+							    "invalid remote name "
+							    "'%s'",
+							    out->remote
+								    ? out->remote
+								    : "");
+						fpkg_span_end(&phase_meta);
+						install_req_free(out);
+						return 1;
+					}
 					char* argv[] = {
 						"ostree", "pull",
 						"--disable-fsync", out->remote,

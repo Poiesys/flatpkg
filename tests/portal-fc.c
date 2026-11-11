@@ -160,6 +160,56 @@ static void run(DBusMessage* m, bool want_multiple, bool want_multiple_set,
 	free(title);
 }
 
+// Spawn's cwd and argv arrive as ay, and get_basic() writes as the element's
+// own type: an as element would put a pointer where the one-byte object is.
+static void check_byte_arrays(void) {
+	const unsigned char bytes[3] = {'a', 'b', 'c'};
+	const char* str = "pointer";
+	dbus_uint32_t num = 7;
+	DBusMessage* m;
+	DBusMessageIter it, arr;
+	char out[16];
+
+	m = dbus_message_new_method_call("a.b", "/a", "a.b", "X");
+	assert(m != NULL);
+	dbus_message_iter_init_append(m, &it);
+	dbus_message_iter_open_container(&it, DBUS_TYPE_ARRAY, "y", &arr);
+	for (size_t i = 0; i < sizeof(bytes); i++)
+		dbus_message_iter_append_basic(&arr, DBUS_TYPE_BYTE, &bytes[i]);
+	dbus_message_iter_close_container(&it, &arr);
+	assert(dbus_message_iter_init(m, &it));
+	if (iter_bytes_to_string(&it, out, sizeof(out)) != 0 ||
+	    strcmp(out, "abc") != 0)
+		note("an array of bytes was not read");
+	if (iter_bytes_to_string(&it, out, 3) == 0)
+		note("a byte array longer than the buffer was accepted");
+	dbus_message_unref(m);
+
+	m = dbus_message_new_method_call("a.b", "/a", "a.b", "X");
+	assert(m != NULL);
+	dbus_message_iter_init_append(m, &it);
+	dbus_message_iter_open_container(&it, DBUS_TYPE_ARRAY, "s", &arr);
+	dbus_message_iter_append_basic(&arr, DBUS_TYPE_STRING, &str);
+	dbus_message_iter_close_container(&it, &arr);
+	assert(dbus_message_iter_init(m, &it));
+	memset(out, 0, sizeof(out));
+	if (iter_bytes_to_string(&it, out, sizeof(out)) == 0)
+		note("a string array element was read as a byte");
+	dbus_message_unref(m);
+
+	m = dbus_message_new_method_call("a.b", "/a", "a.b", "X");
+	assert(m != NULL);
+	dbus_message_iter_init_append(m, &it);
+	dbus_message_iter_open_container(&it, DBUS_TYPE_ARRAY, "u", &arr);
+	dbus_message_iter_append_basic(&arr, DBUS_TYPE_UINT32, &num);
+	dbus_message_iter_close_container(&it, &arr);
+	assert(dbus_message_iter_init(m, &it));
+	memset(out, 0, sizeof(out));
+	if (iter_bytes_to_string(&it, out, sizeof(out)) == 0)
+		note("a uint32 array element was read as a byte");
+	dbus_message_unref(m);
+}
+
 int main(void) {
 	DBusMessage* m = dbus_message_new_method_call("a.b", "/a", "a.b", "X");
 	DBusMessage* m2 = dbus_message_new_method_call("a.b", "/a", "a.b", "X");
@@ -184,7 +234,9 @@ int main(void) {
 
 	dbus_message_unref(m);
 	dbus_message_unref(m2);
+	check_byte_arrays();
 	if (bad) return 1;
-	printf("ok   a variant's value is read, and a container is not\n");
+	printf("ok   a variant's value is read, a container is not, and only a\n"
+	       "     byte array becomes a byte string\n");
 	return 0;
 }

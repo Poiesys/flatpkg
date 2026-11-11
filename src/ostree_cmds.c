@@ -33,9 +33,47 @@ static int libfetch_init(void) {
 	return 0;
 }
 // The repo file carries the key the remote is then trusted against, so it is
-// fetched over https only and it is small: over plain http the answer chooses
-// the key, and an endless body is an allocation the daemon pays for.
-#define REPO_FILE_MAX (1u << 20)
+// fetched over https only and it is small (REPO_FILE_MAX): over plain http the
+// answer chooses the key, and an endless body is an allocation the daemon pays
+// for.
+
+// The keys directory holds the trust anchor for everything pulled from this
+// remote: root owns it 0755, and the key file is 0600, written through the
+// directory descriptor so a name a group member can swap is not followed.
+static int write_key_file(const char* name, const char* armored) {
+	char keysdir[PATH_MAX], fname[320];
+	struct stat st;
+	int dfd, rc, e;
+
+	store_path(keysdir, sizeof(keysdir), "keys");
+	if (mkdir_p(keysdir, 0755) != 0) return -1;
+	dfd = open(keysdir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (dfd < 0) return -1;
+	if (fstat(dfd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+		close(dfd);
+		errno = ENOTDIR;
+		return -1;
+	}
+	if (st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+		if (fchmod(dfd, 0755) != 0 || fchown(dfd, 0, 0) != 0) {
+			e = errno;
+			close(dfd);
+			errno = e;
+			return -1;
+		}
+	}
+	if (snprintf(fname, sizeof(fname), "%s.gpg", name) >=
+	    (int)sizeof(fname)) {
+		close(dfd);
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	rc = write_secret_file_at(dfd, fname, armored) == 0 ? 0 : -1;
+	e = errno;
+	close(dfd);
+	errno = e;
+	return rc;
+}
 
 static char* fetch_url(const char* url, size_t max, size_t* out_len,
 		       fp_spin_t* sp) {
@@ -247,6 +285,9 @@ static int flatpakrepo_parse(const char* buf, char** url_out, char** key_out,
 
 	if (!buf) return -1;
 	while (*p) {
+		// A continued value is indented, and trim() below removes the
+		// marker: remember it while it is still there.
+		bool continuation = (*p == ' ' || *p == '\t');
 		const char* nl = strchr(p, '\n');
 		size_t len = nl ? (size_t)(nl - p) : strlen(p);
 		char* next = strndup(p, len);
@@ -270,7 +311,7 @@ static int flatpakrepo_parse(const char* buf, char** url_out, char** key_out,
 		}
 		if (!in_repo) continue;
 
-		if (in_key && line[0] == ' ') {
+		if (in_key && continuation) {
 			char* kp = line;
 			while (*kp == ' ') kp++;
 			if (key_out && *key_out) {
@@ -432,16 +473,8 @@ int cmd_remote_modify(const char* name, const char* changes,
 	// bytes came over the protocol: the worker writes its own path and never
 	// opens a file the caller named, which would read anything root can.
 	if (want_key) {
-		char key_host[PATH_MAX];
-		char keysdir[PATH_MAX];
-
-		store_path(key_host, sizeof(key_host), "keys/%s.gpg", name);
-		snprintf(keysdir, sizeof(keysdir), "%s", key_host);
-		char* slash = strrchr(keysdir, '/');
-		if (slash != NULL) *slash = '\0';
-		mkdir_p(keysdir, 0755);
-		if (write_file(key_host, gpg_data, 0644) != 0) {
-			fpkg_errorf("cannot store %s: %s", key_host,
+		if (write_key_file(name, gpg_data) != 0) {
+			fpkg_errorf("cannot store the key for %s: %s", name,
 				    strerror(errno));
 			free(text);
 			return 1;
@@ -680,7 +713,14 @@ int cmd_remote_info(const char* remote, const char* request, const char* arch,
 	return 0;
 }
 
-int cmd_remote_add(const char* name, const char* url, const char* from) {
+// A word naming a file on the caller's side: the daemon must never open one,
+// and the CLI has already read it and sent the bytes.
+static bool repo_file_word(const char* s) {
+	return s != NULL && (strncmp(s, "file://", 7) == 0 || s[0] == '/');
+}
+
+int cmd_remote_add(const char* name, const char* url, const char* from,
+		   const char* data) {
 	if (!name || !*name) {
 		fpkg_errorf("usage: remote-add [--from=URL] NAME [URL]");
 		return 1;
@@ -696,35 +736,36 @@ int cmd_remote_add(const char* name, const char* url, const char* from) {
 	char* gpgkey = NULL;
 	char* default_branch = NULL;
 	char* repo_buf = NULL;
+	const char* where = NULL;
 	int rc = 1;
-	if (from) {
-		char* buf = NULL;
-		if (strncmp(from, "file://", 7) == 0)
-			buf = slurp_file(from + 7);
-		else if (from[0] == '/')
-			buf = slurp_file(from);
-		else if (strncmp(from, "https://", 8) != 0) {
+	if (data != NULL && *data != '\0') {
+		// The caller read its own file; these bytes are all root sees.
+		repo_buf = xstrdup(data);
+		where = "the repo file";
+	} else if (from != NULL) {
+		char* buf;
+
+		if (repo_file_word(from)) {
+			fpkg_errorf("refusing %s: a repo file is read by the "
+				    "caller, never by the daemon",
+				    from);
+			goto fail;
+		}
+		if (strncmp(from, "https://", 8) != 0) {
 			fpkg_errorf("refusing to fetch %s: a repo file is the "
 				    "key's source and must come over https",
 				    from);
 			goto fail;
-		} else
-			buf = fetch_url(from, REPO_FILE_MAX, NULL, NULL);
-		if (!buf) {
-			// Say why: a bare rc=1 with no output reads as a hung pull.
+		}
+		buf = fetch_url(from, REPO_FILE_MAX, NULL, NULL);
+		if (buf == NULL) {
+			// Say why: a bare rc=1 with no output reads as a hung
+			// pull.
 			fpkg_errorf("cannot read flatpak repo file %s", from);
 			goto fail;
 		}
 		repo_buf = buf;
-		if (flatpakrepo_parse(buf, &repo_url, &gpgkey,
-				      &default_branch) != 0) {
-			fpkg_errorf("cannot parse flatpak repo file %s", from);
-			goto fail;
-		}
-		if (!repo_url) {
-			fpkg_errorf("no Url= in %s", from);
-			goto fail;
-		}
+		where = from;
 	} else {
 		if (!url || !*url) {
 			fpkg_errorf(
@@ -732,38 +773,45 @@ int cmd_remote_add(const char* name, const char* url, const char* from) {
 			return 1;
 		}
 		if (strstr(url, ".flatpakrepo") != NULL) {
-			char* buf = NULL;
-			if (strncmp(url, "file://", 7) == 0)
-				buf = slurp_file(url + 7);
-			else if (url[0] == '/')
-				buf = slurp_file(url);
-			else if (strncmp(url, "https://", 8) != 0) {
+			// This operand is the repo file, not a remote URL: a
+			// file:// remote URL is ordinary and stays allowed.
+			if (repo_file_word(url)) {
+				fpkg_errorf("refusing %s: a repo file is "
+					    "read by the caller, never by the "
+					    "daemon",
+					    url);
+				goto fail;
+			}
+			if (strncmp(url, "https://", 8) != 0) {
 				fpkg_errorf("refusing to fetch %s: a repo "
 					    "file is the key's source and must "
 					    "come over https",
 					    url);
 				goto fail;
-			} else
-				buf = fetch_url(url, REPO_FILE_MAX, NULL, NULL);
-			if (!buf) {
+			}
+			repo_buf = fetch_url(url, REPO_FILE_MAX, NULL, NULL);
+			if (repo_buf == NULL) {
 				fpkg_errorf("cannot read flatpak repo file "
 					    "%s",
 					    url);
 				goto fail;
 			}
-			repo_buf = buf;
-			if (flatpakrepo_parse(buf, &repo_url, &gpgkey,
-					      &default_branch) != 0) {
-				fpkg_errorf("cannot parse flatpak repo file %s",
-					    url);
-				goto fail;
-			}
-			if (!repo_url) {
-				fpkg_errorf("no Url= in %s", url);
-				goto fail;
-			}
+			where = url;
 		} else {
 			repo_url = xstrdup(url);
+		}
+	}
+	if (repo_buf != NULL) {
+		if (flatpakrepo_parse(repo_buf, &repo_url, &gpgkey,
+				      &default_branch) != 0) {
+			fpkg_errorf("cannot parse flatpak repo file %s",
+				    where != NULL ? where : "the repo file");
+			goto fail;
+		}
+		if (!repo_url) {
+			fpkg_errorf("no Url= in %s",
+				    where != NULL ? where : "the repo file");
+			goto fail;
 		}
 	}
 
@@ -771,22 +819,17 @@ int cmd_remote_add(const char* name, const char* url, const char* from) {
 
 	// The flatpakrepo GPGKey is bare base64, so re-armor it or
 	// --gpg-import will not parse it.
-	char key_host[PATH_MAX] = "", key_arg[PATH_MAX] = "";
+	char key_arg[PATH_MAX] = "";
 	if (gpgkey && *gpgkey) {
 		char* armored = armor_gpg_key(gpgkey);
 		if (!armored) {
 			fpkg_errorf("cannot decode the GPGKey from %s",
-				    from ? from : "the repo file");
+				    where != NULL ? where : "the repo file");
 			goto fail;
 		}
-		store_path(key_host, sizeof(key_host), "keys/%s.gpg", name);
-		char keysdir[PATH_MAX];
-		snprintf(keysdir, sizeof(keysdir), "%s", key_host);
-		char* slash = strrchr(keysdir, '/');
-		if (slash) *slash = '\0';
-		mkdir_p(keysdir, 0755);
-		if (write_file(key_host, armored, 0644) != 0) {
-			fpkg_errorf("write %s: %s", key_host, strerror(errno));
+		if (write_key_file(name, armored) != 0) {
+			fpkg_errorf("cannot store the key for remote '%s': %s",
+				    name, strerror(errno));
 			free(armored);
 			goto fail;
 		}
@@ -1283,6 +1326,7 @@ static int pull_remote_ref(tool_ctx_t* tc, const char* origin,
 	int failed;
 
 	if (origin == NULL || *origin == '\0') return -1;
+	if (!remote_name_valid(origin)) return -1;
 
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc->repo);
 	snprintf(hdr, sizeof(hdr), "--http-header=Flatpak-Ref=%s", ref);
@@ -1310,6 +1354,7 @@ static int pull_remote_ref(tool_ctx_t* tc, const char* origin,
 static int pull_child_repo(tool_ctx_t* tc, const char* child_repo,
 			   const char* origin, const char* commit) {
 	char repo_arg[PATH_MAX + 32], url[PATH_MAX + 16];
+	if (!remote_name_valid(origin)) return -1;
 	tool_res_t res;
 	int failed;
 

@@ -376,6 +376,7 @@ int fp_req_encode(fp_wbuf_t* w, uint32_t id, const fp_req_t* r) {
 		fp_w_str(w, r->u.remote_add.name);
 		fp_w_str(w, r->u.remote_add.url);
 		fp_w_str(w, r->u.remote_add.from);
+		fp_w_str(w, r->u.remote_add.data);
 		break;
 	case FP_REQ_REMOTE_DELETE:
 		fp_w_str(w, r->u.remote_delete.name);
@@ -544,6 +545,7 @@ void fp_req_free(fp_req_t* r) {
 		free(r->u.remote_add.name);
 		free(r->u.remote_add.url);
 		free(r->u.remote_add.from);
+		free(r->u.remote_add.data);
 		break;
 	case FP_REQ_REMOTE_DELETE:
 		free(r->u.remote_delete.name);
@@ -780,6 +782,7 @@ int fp_req_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 		out->u.remote_add.name = fp_r_str(&r);
 		out->u.remote_add.url = fp_r_str(&r);
 		out->u.remote_add.from = fp_r_str(&r);
+		out->u.remote_add.data = fp_r_str(&r);
 		break;
 	case FP_REQ_REMOTE_DELETE:
 		out->u.remote_delete.name = fp_r_str(&r);

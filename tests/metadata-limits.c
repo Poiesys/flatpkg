@@ -52,11 +52,27 @@ static void long_line_case(void) {
 	char* body = calloc(1, len);
 	size_t n = 0;
 
-	n += (size_t)snprintf(body + n, len - n, "[Application]\nname=Demo\ncommand=demo\n");
-	n += (size_t)snprintf(body + n, len - n, "[Environment]\nKEY=");
+	if (body == NULL) {
+		note("out of memory");
+		return;
+	}
+	// fpkg_buf_append() refuses rather than overflowing; this is the same
+	// append every other buffer in the tree uses.
+	if (!fpkg_buf_append(body, len, &n,
+			     "[Application]\nname=Demo\ncommand=demo\n") ||
+	    !fpkg_buf_append(body, len, &n, "[Environment]\nKEY=") ||
+	    n + longlen + 32 > len) {
+		free(body);
+		note("could not build the long-line case");
+		return;
+	}
 	memset(body + n, 'x', longlen);
 	n += longlen;
-	n += (size_t)snprintf(body + n, len - n, "INJECTED=yes\nAFTER=ok\n");
+	if (!fpkg_buf_append(body, len, &n, "INJECTED=yes\nAFTER=ok\n")) {
+		free(body);
+		note("could not build the long-line case");
+		return;
+	}
 
 	int id = write_temp(body, n);
 	free(body);
@@ -97,12 +113,15 @@ static void long_group_case(void) {
 
 	memset(prefix, 'g', sizeof(prefix));
 	prefix[sizeof(prefix) - 1] = '\0';
-	n += (size_t)snprintf(body + n, sizeof(body) - n,
-			      "[Application]\nname=Demo\ncommand=demo\n");
-	n += (size_t)snprintf(body + n, sizeof(body) - n,
-			      "[Extension %sAAA]\nversion=1\n", prefix);
-	n += (size_t)snprintf(body + n, sizeof(body) - n,
-			      "[Extension %sBBB]\nversion=2\n", prefix);
+	if (!fpkg_buf_append(body, sizeof(body), &n,
+			     "[Application]\nname=Demo\ncommand=demo\n") ||
+	    !fpkg_buf_append(body, sizeof(body), &n,
+			     "[Extension %sAAA]\nversion=1\n", prefix) ||
+	    !fpkg_buf_append(body, sizeof(body), &n,
+			     "[Extension %sBBB]\nversion=2\n", prefix)) {
+		note("could not build the long-group case");
+		return;
+	}
 
 	int id = write_temp(body, n);
 	if (id < 0) {
@@ -131,10 +150,19 @@ static void env_cap_case(void) {
 	char* body = calloc(1, len);
 	size_t n = 0;
 
-	n += (size_t)snprintf(body + n, len - n, "[Application]\nname=Demo\ncommand=demo\n");
-	n += (size_t)snprintf(body + n, len - n, "[Environment]\n");
+	if (body == NULL) {
+		note("out of memory");
+		return;
+	}
+	if (!fpkg_buf_append(body, len, &n,
+			     "[Application]\nname=Demo\ncommand=demo\n") ||
+	    !fpkg_buf_append(body, len, &n, "[Environment]\n")) {
+		free(body);
+		note("could not build the environment case");
+		return;
+	}
 	for (int i = 0; i < 4000; i++)
-		n += (size_t)snprintf(body + n, len - n, "E%d=v\n", i);
+		if (!fpkg_buf_append(body, len, &n, "E%d=v\n", i)) break;
 
 	int id = write_temp(body, n);
 	free(body);
@@ -157,12 +185,42 @@ static void env_cap_case(void) {
 	remove(temp_path(id));
 }
 
+// An extension id becomes a ref and a deploy path, so a group whose id is
+// not one component is dropped whole; an ordinary dotted id still parses.
+static void bad_extension_case(void) {
+	static const char body[] =
+		"[Application]\nname=Demo\ncommand=demo\n"
+		"[Extension ../pwn]\nversion=1\n"
+		"[Extension org.example.Ok]\nversion=2\n";
+	int id = write_temp(body, sizeof(body) - 1);
+	fp_metadata_t m;
+
+	if (id < 0) {
+		note("could not write the extension case");
+		return;
+	}
+	if (fp_metadata_parse(temp_path(id), &m) != 0) {
+		note("the extension case did not parse");
+		remove(temp_path(id));
+		return;
+	}
+	if (m.next_groups != 1 ||
+	    strcmp(m.ext_groups[0].id, "org.example.Ok") != 0) {
+		printf("FAIL: an invalid extension id was kept, or a valid one "
+		       "was dropped\n");
+		bad = 1;
+	}
+	fp_metadata_free(&m);
+	remove(temp_path(id));
+}
+
 int main(void) {
 	long_line_case();
 	long_group_case();
 	env_cap_case();
+	bad_extension_case();
 	if (bad) return 1;
-	printf("ok   a long line, a long group name and an endless environment "
-	       "list are all bounded\n");
+	printf("ok   a long line, a long group name, an endless environment "
+	       "list and a hostile extension id are all bounded\n");
 	return 0;
 }

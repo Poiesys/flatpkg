@@ -282,8 +282,18 @@ void instance_write_bwrapinfo(const char* inst_dir, const char* container_path,
 		 "}\n",
 		 esc, pid);
 
-	if (write_file(bi_path, bi, 0644) != 0)
+	// The instance directory is the caller's by now: open it as a
+	// directory and write inside that descriptor, so a name swapped for a
+	// symlink between registration and exec is not followed by root.
+	int dfd = open(inst_dir,
+		       O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (dfd < 0) {
+		fpkg_warnf("cannot open %s: %s", inst_dir, strerror(errno));
+		return;
+	}
+	if (write_file_at(dfd, "bwrapinfo.json", bi, 0644) != 0)
 		fpkg_warnf("write %s: %s", bi_path, strerror(errno));
+	close(dfd);
 }
 
 static void rmdir_contents(const char* dir);
@@ -1006,7 +1016,10 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 		argv[ai++] = (char*)cmd;
 		for (size_t i = 1; i < nargs; i++) argv[ai++] = extra_argv[i];
 		argv[ai] = NULL;
-		umask(0);
+		// There is no terminal handover here, but the app still creates
+		// files on host mounts: the launch path uses 022 for the same
+		// reason.
+		umask(022);
 		execvp(cmd, argv);
 		dprintf(2, "flatpkg enter: execvp %s: %s\n", cmd,
 			strerror(errno));

@@ -103,11 +103,13 @@ int daemon_main(void) {
 	// in-kernel only and are wiped on reboot.
 	install_devfs_base_rulesets();
 
-	if (mkdir_p(FPKG_RUNDIR, 0775) != 0) {
+	// Only the flatpkg group may look in or write here: a world-writable
+	// run directory lets anyone unlink the control socket.
+	if (mkdir_p(FPKG_RUNDIR, 0770) != 0) {
 		fpkg_errorf("mkdir %s: %s", FPKG_RUNDIR, strerror(errno));
 		return 1;
 	}
-	(void)chmod(FPKG_RUNDIR, 0775);
+	(void)chmod(FPKG_RUNDIR, 0770);
 	{
 		struct group* g = getgrnam("flatpkg");
 		if (g) (void)chown(FPKG_RUNDIR, 0, g->gr_gid);
@@ -142,7 +144,7 @@ int daemon_main(void) {
 		fpkg_errorf("bind %s: %s", FPKG_SOCKET, strerror(errno));
 		return 1;
 	}
-	if (chmod(FPKG_SOCKET, 0666) != 0) {
+	if (chmod(FPKG_SOCKET, 0660) != 0) {
 		fpkg_errorf("chmod %s: %s", FPKG_SOCKET, strerror(errno));
 		return 1;
 	}
@@ -203,11 +205,18 @@ int daemon_main(void) {
 		}
 		// One root worker per connection, so the count is a resource:
 		// refuse before the fork instead of after it.
-		if (broker_peer_count() >= BUS_MAX_PEERS) {
-			fpkg_errorf("refused uid=%u: %d connections already",
-				    (unsigned)uid, broker_peer_count());
-			typed_refuse(conn, "the daemon is serving as many "
-					   "connections as it can");
+		if (broker_peer_count() >= BUS_MAX_PEERS ||
+		    broker_peer_count_uid(uid) >= BUS_MAX_PEERS_PER_UID) {
+			fpkg_errorf("refused uid=%u: %d connections (%d for "
+				    "this user)",
+				    (unsigned)uid, broker_peer_count(),
+				    broker_peer_count_uid(uid));
+			typed_refuse(conn, broker_peer_count() >= BUS_MAX_PEERS
+						   ? "the daemon is serving as "
+						     "many connections as it can"
+						   : "this user is holding as "
+						     "many connections as it "
+						     "may");
 			close(conn);
 			continue;
 		}

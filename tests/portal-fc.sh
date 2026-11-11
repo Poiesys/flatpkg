@@ -34,6 +34,7 @@ strip_comments "$SRC" > "$T/portal.c"
 
 : > "$T/fc.inc"
 for sig in '^static bool dict_lookup\(' '^static bool variant_is\(' \
+	   '^static int iter_bytes_to_string\(' \
 	   '^static void fc_parse_filters\(' '^static bool fc_parse_options\('; do
 	if ! carve_function "$sig" "$T/portal.c" >> "$T/fc.inc"; then
 		echo "FAIL: cannot carve $sig out of $SRC"
@@ -90,4 +91,18 @@ if try >/dev/null 2>&1; then
 fi
 cp "$T/fc.real" "$T/fc.inc"
 
-echo "PASS: FileChooser reads typed values, and a container cannot abort it"
+# 3. the element type not checked, as the code did
+sed 's/if (dbus_message_iter_get_arg_type(&sub) != DBUS_TYPE_BYTE)/if (0)/' \
+	"$T/fc.inc" > "$T/plant3.inc"
+if cmp -s "$T/fc.inc" "$T/plant3.inc"; then
+	echo "FAIL: the third plant was not applied"
+	exit 1
+fi
+cp "$T/plant3.inc" "$T/fc.inc"
+if try >/dev/null 2>&1; then
+	echo "FAIL: the guard passes when an array element's type is not checked"
+	exit 1
+fi
+cp "$T/fc.real" "$T/fc.inc"
+
+echo "PASS: the FileChooser and Spawn parsers read typed elements, and a container cannot abort the portal"

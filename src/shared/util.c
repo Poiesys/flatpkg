@@ -29,21 +29,46 @@ char* xstrdup(const char* s) {
 	return r;
 }
 
+bool fpkg_component_ok(const char* s) {
+	if (s == NULL || *s == '\0' || *s == '.' || *s == '-') return false;
+	for (const char* c = s; *c; c++) {
+		bool ok = (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'z') ||
+			  (*c >= 'A' && *c <= 'Z') || *c == '.' || *c == '_' ||
+			  *c == '-';
+		if (!ok) return false;
+		if (*c == '.' && c[1] == '.') return false;
+	}
+	return true;
+}
+
+// EEXIST is only success when what is there is the directory we asked for:
+// a file in its place would otherwise be mistaken for it and the next write
+// would follow it.
+static fpkg_error_t mkdir_step(const char* dir, mode_t mode) {
+	struct stat st;
+
+	if (mkdir(dir, mode) == 0) return FPKG_OK;
+	if (errno != EEXIST) return fpkg_error_from_errno(errno);
+	if (stat(dir, &st) != 0) return fpkg_error_from_errno(errno);
+	if (!S_ISDIR(st.st_mode)) return fpkg_error_from_errno(ENOTDIR);
+	return FPKG_OK;
+}
+
 fpkg_error_t mkdir_p(const char* path, mode_t mode) {
 	assert(path != NULL);
 	char tmp[PATH_MAX];
 
 	snprintf(tmp, sizeof(tmp), "%s", path);
 	for (char* p = tmp + 1; *p; p++) {
+		fpkg_error_t e;
+
 		if (*p != '/') continue;
 		*p = '\0';
-		if (mkdir(tmp, mode) != 0 && errno != EEXIST)
-			return fpkg_error_from_errno(errno);
+		e = mkdir_step(tmp, mode);
 		*p = '/';
+		if (e != FPKG_OK) return e;
 	}
-	if (mkdir(tmp, mode) != 0 && errno != EEXIST)
-		return fpkg_error_from_errno(errno);
-	return FPKG_OK;
+	return mkdir_step(tmp, mode);
 }
 char* xasprintf(const char* fmt, ...) {
 	va_list ap;
@@ -130,6 +155,32 @@ fpkg_error_t chown_nofollow(const char* path, uid_t uid, gid_t gid) {
 	return FPKG_OK;
 }
 
+// Loop a string onto a descriptor, so a short write or EINTR cannot leave a
+// half a keyfile behind.
+static int write_all(int fd, const char* content) {
+	size_t len = strlen(content), off = 0;
+
+	while (off < len) {
+		ssize_t w = write(fd, content + off, len - off);
+
+		if (w < 0) {
+			if (errno == EINTR) continue;
+			return errno;
+		}
+		if (w == 0) return EIO;
+		off += (size_t)w;
+	}
+	return 0;
+}
+
+static fpkg_error_t write_fd_result(int fd, const char* content) {
+	int e = write_all(fd, content);
+
+	if (close(fd) != 0 && e == 0) e = errno;
+	errno = e;
+	return e == 0 ? FPKG_OK : fpkg_error_from_errno(e);
+}
+
 // Write `content` to `path`, replacing what is there.  The write is looped over
 // short writes and EINTR, and a failed close is an error: a truncated keyfile
 // or /etc/passwd is worse than no file.
@@ -138,25 +189,36 @@ fpkg_error_t write_file(const char* path, const char* content, mode_t mode) {
 	assert(content != NULL);
 	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
 	if (fd < 0) return fpkg_error_from_errno(errno);
-	size_t len = strlen(content), off = 0;
-	int e = 0;
+	return write_fd_result(fd, content);
+}
 
-	while (off < len) {
-		ssize_t w = write(fd, content + off, len - off);
-		if (w < 0) {
-			if (errno == EINTR) continue;
-			e = errno;
-			break;
-		}
-		if (w == 0) {
-			e = EIO;
-			break;
-		}
-		off += (size_t)w;
-	}
-	if (close(fd) != 0 && e == 0) e = errno;
-	errno = e;
-	return e == 0 ? FPKG_OK : fpkg_error_from_errno(e);
+fpkg_error_t write_file_at(int dirfd, const char* name, const char* content,
+			   mode_t mode) {
+	assert(name != NULL);
+	assert(content != NULL);
+	int fd = openat(dirfd, name,
+			O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+			mode);
+	if (fd < 0) return fpkg_error_from_errno(errno);
+	// The create mode is masked by the umask and an existing file keeps its
+	// own; the descriptor is what makes the answer the same either way.
+	(void)fchmod(fd, mode);
+	return write_fd_result(fd, content);
+}
+
+fpkg_error_t write_secret_file_at(int dirfd, const char* name,
+				  const char* content) {
+	assert(name != NULL);
+	assert(content != NULL);
+	// A key is replaced, not truncated in place: whatever stands under the
+	// name is unlinked (never followed) and the new file is created 0600.
+	(void)unlinkat(dirfd, name, 0);
+	int fd = openat(dirfd, name,
+			O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+			0600);
+	if (fd < 0) return fpkg_error_from_errno(errno);
+	(void)fchmod(fd, 0600);
+	return write_fd_result(fd, content);
 }
 
 static int rm_cb(const char* path, const struct stat* st, int type,

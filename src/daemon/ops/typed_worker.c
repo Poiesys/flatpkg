@@ -11,6 +11,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "flatpkg.h"
@@ -26,19 +27,38 @@ typedef struct {
 	int conn;
 	uid_t uid;
 	gid_t gid;
-	uint32_t seq;	  // per-connection event sequence
-	uint64_t next_op; // op ids handed out on this connection
-	uint64_t op_id;	  // the running operation, 0 when none
+	uint32_t seq;	 // per-connection event sequence
+	uint64_t op_id;	 // the running operation, 0 when none
 	bool hello;
 	char client[65]; // the caller's declared state namespace
 	char* client_files[16]; // files this connection declared
 	size_t nclient_files;
 	bool dead; // the client went away; keep going, stop writing
+	bool bus_lost;	  // the broker went away; the operation still answers
+	bool subscribed;  // this connection follows at least one topic
+	int nsubs;
+	time_t last_client; // when this connection last asked for something
 	int stdio[FP_STDIO_FDS]; // the caller's stdin, stdout, stderr
 	bool have_stdio;
 	uint32_t pending_sub;	  // request waiting for the broker's ack
 	uint32_t pending_cancel;
 } wctx_t;
+
+// After HELLO a connection may idle, but not forever in the worker pool: a
+// connection following events is exempt, because waiting is its purpose.
+#define FP_IDLE_TIMEOUT 900
+
+// The op id is what a cancel names and what a subscription asks to watch, and
+// it is broadcast on the firehose: a predictable one names another user's
+// operation.  Random, and never zero (zero means "no operation").
+static uint64_t fresh_op_id(void) {
+	uint64_t id;
+
+	do {
+		arc4random_buf(&id, sizeof(id));
+	} while (id == 0);
+	return id;
+}
 
 // The worker runs as root, so a caller-sent name is one root's tools read:
 // no PATH, LD_PRELOAD, HOME or FLATPKG_STORE crosses.
@@ -251,9 +271,7 @@ static bool sink_table(void* ctx, const char* const* headers, size_t ncols,
 
 static void op_start(wctx_t* c, uint32_t req_id, uint32_t kind,
 		     const char* label) {
-	// The high half is the worker's pid, so two workers never publish the
-	// same op topic.
-	c->op_id = ((uint64_t)(uint32_t)getpid() << 32) | c->next_op++;
+	c->op_id = fresh_op_id();
 	(void)bus_register(c->op_id);
 	ack_ok(c, req_id, c->op_id);
 	fp_event_t ev;
@@ -704,8 +722,52 @@ static void run_request(wctx_t* c, uint32_t id, fp_req_t* r, int* fds,
 	op_finish(c, rc, "");
 }
 
+// A ref, remote name or app id is rendered by clients this worker does not
+// own: a control byte there is a new log line or a terminal escape sequence,
+// not part of a name.
+static bool event_text_safe(const char* s) {
+	if (s == NULL) return true;
+	for (const unsigned char* c = (const unsigned char*)s; *c; c++)
+		if (*c < 0x20 || *c == 0x7f) return false;
+	return true;
+}
+
+// A changeset ref is a ref: `remote:type/id/arch/branch` or a bare id, each
+// component through the same grammar a path or an argv word goes through.
+static bool event_ref_ok(const char* s) {
+	char buf[512];
+	char* colon;
+
+	if (s == NULL || *s == '\0' || strlen(s) >= sizeof(buf)) return false;
+	snprintf(buf, sizeof(buf), "%s", s);
+	colon = strchr(buf, ':');
+	char* p;
+
+	if (colon != NULL) {
+		*colon = '\0';
+		if (!remote_name_valid(buf)) return false;
+		p = colon + 1;
+	} else {
+		p = buf;
+	}
+	for (;;) {
+		char* slash = strchr(p, '/');
+
+		if (slash != NULL) *slash = '\0';
+		if (!fpkg_component_ok(p)) return false;
+		if (slash == NULL) break;
+		p = slash + 1;
+	}
+	return true;
+}
+
 static void emit_store(const char* action, const char* ref) {
 	fp_event_t ev;
+
+	if (!event_text_safe(action) || !event_text_safe(ref)) {
+		fpkg_warnf("not announcing a store change with a control byte");
+		return;
+	}
 	memset(&ev, 0, sizeof(ev));
 	ev.type = FP_EV_STORE_CHANGED;
 	ev.u.store.action = (char*)action;
@@ -715,6 +777,8 @@ static void emit_store(const char* action, const char* ref) {
 
 static void emit_remote(const char* name) {
 	fp_event_t ev;
+
+	if (!event_text_safe(name)) return;
 	memset(&ev, 0, sizeof(ev));
 	ev.type = FP_EV_REMOTE_CHANGED;
 	ev.u.remote.name = (char*)name;
@@ -725,7 +789,8 @@ static void emit_instance(bool started, const char* app_id) {
 	char topic[FP_PROTO_MAX_TOPIC + 1];
 	char lower[128];
 	fp_event_t ev;
-	if (app_id == NULL || *app_id == '\0') return;
+	if (app_id == NULL || *app_id == '\0' || !event_text_safe(app_id))
+		return;
 	// Topics are lowercase by contract; an app id is not.
 	snprintf(lower, sizeof(lower), "%s", app_id);
 	for (char* p = lower; *p; p++)
@@ -750,6 +815,7 @@ static void hello_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	}
 	snprintf(c->client, sizeof(c->client), "%s", r->u.hello.client);
 	c->hello = true;
+	c->last_client = time(NULL);
 	{
 		// Past HELLO the connection is an authenticated client that may
 		// wait for events; the pre-HELLO timeout has done its work.
@@ -778,8 +844,10 @@ static void unsubscribe_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	if (!fp_topic_valid(r->u.sub.topic) ||
 	    bus_unsubscribe(r->u.sub.topic) != 0)
 		ack_err(c, id, FP_E_INVALID, "cannot drop that topic");
-	else
+	else {
 		ack_ok(c, id, 0);
+		if (c->nsubs > 0) c->nsubs--;
+	}
 }
 
 static void cancel_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
@@ -830,7 +898,8 @@ static void changeset_announce(const flatpkg_changeset_t* cs) {
 		case FP_CHANGE_REINSTALL: action = "reinstall"; break;
 		default: break;
 		}
-		if (action != NULL) emit_store(action, row->ref);
+		if (action != NULL && event_ref_ok(row->ref))
+			emit_store(action, row->ref);
 	}
 }
 
@@ -839,6 +908,11 @@ static void apply_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	int rc = 1;
 
 	op_start(c, id, 14, "apply");
+	if (r->u.apply.remote != NULL && r->u.apply.remote[0] != '\0' &&
+	    !remote_name_valid(r->u.apply.remote)) {
+		op_finish(c, 1, "invalid remote name");
+		return;
+	}
 	changeset_build(r, &cs);
 	if (r->u.apply.nrows > 0 && cs.items == NULL) {
 		fpkg_errorf("out of memory");
@@ -861,6 +935,11 @@ static void prefetch_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	int rc = 0;
 
 	op_start(c, id, 15, "prefetch");
+	if (r->u.prefetch.remote != NULL && r->u.prefetch.remote[0] != '\0' &&
+	    !remote_name_valid(r->u.prefetch.remote)) {
+		op_finish(c, 1, "invalid remote name");
+		return;
+	}
 	for (size_t k = 0; k < r->u.prefetch.nrefs; k++) {
 		char* commit = NULL;
 		char* meta = NULL;
@@ -898,25 +977,31 @@ static bool client_owner_ok(const wctx_t* c) {
 	if (mkdir(dir, 0755) != 0 && errno != EEXIST) return false;
 	snprintf(path, sizeof(path), "%s/%s", dir, c->client);
 	snprintf(want, sizeof(want), "%u\n", (unsigned)c->uid);
-	fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-	if (fd >= 0) {
-		ssize_t n = read(fd, buf, sizeof(buf) - 1);
+	// Trying the create may lose a race with another connection of the same
+	// uid: EEXIST is then the file to read, not a refusal.
+	for (int attempt = 0; attempt < 2; attempt++) {
+		fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+		if (fd >= 0) {
+			ssize_t n = read(fd, buf, sizeof(buf) - 1);
 
-		close(fd);
-		if (n <= 0) return false;
-		buf[n] = '\0';
-		return strcmp(buf, want) == 0;
-	}
-	if (errno != ENOENT) return false;
-	fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
-	if (fd < 0) return false;
-	{
-		ssize_t n = write(fd, want, strlen(want));
+			close(fd);
+			if (n <= 0) return false;
+			buf[n] = '\0';
+			return strcmp(buf, want) == 0;
+		}
+		if (errno != ENOENT) return false;
+		fd = open(path,
+			  O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+			  0644);
+		if (fd >= 0) {
+			ssize_t n = write(fd, want, strlen(want));
 
-		close(fd);
-		if (n != (ssize_t)strlen(want)) return false;
+			close(fd);
+			return n == (ssize_t)strlen(want);
+		}
+		if (errno != EEXIST) return false;
 	}
-	return true;
+	return false;
 }
 
 // The client's state namespace is created on first use, never named by the
@@ -1067,7 +1152,8 @@ static void remote_add_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	op_start(c, id, 9, "remote-add");
 	int rc = cmd_remote_add(r->u.remote_add.name,
 				nz(r->u.remote_add.url),
-				nz(r->u.remote_add.from));
+				nz(r->u.remote_add.from),
+				nz(r->u.remote_add.data));
 	if (rc == 0) emit_remote(r->u.remote_add.name);
 	op_finish(c, rc, "remote-add failed");
 }
@@ -1218,15 +1304,41 @@ static int pump_bus(wctx_t* c) {
 	size_t len;
 	uint32_t type;
 
+	if (c->bus_lost) return 0;
 	for (;;) {
 		int rc = bus_next(frame, sizeof(frame), &len, &type);
-		if (rc == -2) return -1;
+		if (rc == -2) {
+			// The broker is gone.  The operation's own events go to
+			// the caller over its own connection, so losing the bus
+			// mid-operation is not a reason to abandon it.
+			c->bus_lost = true;
+			if (c->pending_sub != 0) {
+				ack_err(c, c->pending_sub, FP_E_INTERNAL,
+					"the event bus went away");
+				c->pending_sub = 0;
+			}
+			if (c->pending_cancel != 0) {
+				ack_err(c, c->pending_cancel, FP_E_INTERNAL,
+					"the event bus went away");
+				c->pending_cancel = 0;
+			}
+			return 0;
+		}
 		if (rc != 0) return 0;
 		if (type == BUS_SUBSCRIBED) {
+			c->subscribed = true;
+			c->nsubs++;
 			if (c->pending_sub != 0) {
 				ack_ok(c, c->pending_sub, 0);
 				c->pending_sub = 0;
 			}
+			continue;
+		}
+		if (type == BUS_SUB_DENIED) {
+			if (c->pending_sub != 0)
+				ack_err(c, c->pending_sub, FP_E_DENIED,
+					"cannot follow that topic");
+			c->pending_sub = 0;
 			continue;
 		}
 		if (type == BUS_CANCELED) {
@@ -1234,6 +1346,13 @@ static int pump_bus(wctx_t* c) {
 				ack_ok(c, c->pending_cancel, 0);
 				c->pending_cancel = 0;
 			}
+			continue;
+		}
+		if (type == BUS_CANCEL_DENIED) {
+			if (c->pending_cancel != 0)
+				ack_err(c, c->pending_cancel, FP_E_DENIED,
+					"cannot cancel that operation");
+			c->pending_cancel = 0;
 			continue;
 		}
 		if (type != BUS_FORWARD) continue;
@@ -1256,8 +1375,10 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 	close(conn);
 	conn = high;
 
-	wctx_t c = {
-		.conn = conn, .uid = peer_uid, .gid = peer_gid, .next_op = 1};
+	wctx_t c = {.conn = conn,
+		    .uid = peer_uid,
+		    .gid = peer_gid,
+		    .last_client = time(NULL)};
 	char uidb[32], gidb[32];
 
 	// A fresh environment: the caller's comes over the wire, allowlisted.
@@ -1299,15 +1420,25 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 		// not wait for the next client request.
 		if (pump_bus(&c) != 0) break;
 		struct pollfd pfd[2] = {{conn, POLLIN, 0}, {bus_fd, POLLIN, 0}};
+		int timeout = -1;
+		if (c.hello && c.nsubs == 0) {
+			time_t idle = time(NULL) - c.last_client;
+
+			if (idle >= FP_IDLE_TIMEOUT) break;
+			timeout = (int)(FP_IDLE_TIMEOUT - idle) * 1000;
+			if (timeout < 1000) timeout = 1000;
+		}
 		int pr;
-		do pr = poll(pfd, 2, -1);
+		do pr = poll(pfd, 2, timeout);
 		while (pr < 0 && errno == EINTR);
+		if (pr == 0) break;
 		if (pr < 0) break;
 		if ((pfd[1].revents & (POLLIN | POLLHUP)) != 0 &&
 		    pump_bus(&c) != 0)
 			break;
 		if ((pfd[0].revents & POLLIN) == 0) continue;
 
+		c.last_client = time(NULL);
 		fp_frame_hdr_t hdr;
 		uint8_t* payload = NULL;
 		int fds[FP_MAX_FDS];

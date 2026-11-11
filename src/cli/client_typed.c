@@ -117,7 +117,7 @@ static char* remote_modify_text(const cli_req_t* req) {
 		{"homepage", req->homepage},
 		{"icon", req->icon},
 	};
-	char buf[8192];
+	char buf[8192] = "";
 	size_t off = 0;
 
 	for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
@@ -139,6 +139,53 @@ static char* remote_modify_text(const cli_req_t* req) {
 		return NULL;
 	}
 	return xstrdup(buf);
+}
+
+// A word naming a file on the caller's side.
+static bool caller_repo_path(const char* s) {
+	return s != NULL && (strncmp(s, "file://", 7) == 0 || s[0] == '/');
+}
+
+// Read a repo file here, where the caller's privileges are.  The bytes are all
+// the daemon sees; it never opens a path the caller named.  A repo file is a
+// few KB of text, so the cap is the point as much as the grammar.
+static char* read_repo_file(const char* word) {
+	const char* path = strncmp(word, "file://", 7) == 0 ? word + 7 : word;
+	FILE* f = fopen(path, "r");
+	char* buf;
+	size_t n;
+	bool err;
+
+	if (f == NULL) {
+		fpkg_errorf("cannot read %s: %s", path, strerror(errno));
+		return NULL;
+	}
+	buf = malloc(REPO_FILE_MAX + 1);
+	if (buf == NULL) {
+		fclose(f);
+		fpkg_errorf("out of memory");
+		return NULL;
+	}
+	n = fread(buf, 1, REPO_FILE_MAX + 1, f);
+	err = ferror(f) != 0;
+	fclose(f);
+	if (err) {
+		fpkg_errorf("cannot read %s", path);
+		free(buf);
+		return NULL;
+	}
+	if (n > REPO_FILE_MAX) {
+		fpkg_errorf("%s is too large for a repo file", path);
+		free(buf);
+		return NULL;
+	}
+	buf[n] = '\0';
+	if (strlen(buf) != n) {
+		fpkg_errorf("%s is not a text repo file", path);
+		free(buf);
+		return NULL;
+	}
+	return buf;
 }
 
 // Read the caller's key file here, where the caller's privileges are: the
@@ -199,12 +246,37 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned,
 	memset(out, 0, sizeof(*out));
 	*reported = false;
 	switch (cli_req_cmd(req)) {
-	case CMD_REMOTE_ADD:
+	case CMD_REMOTE_ADD: {
+		const char* from = req->from;
+		const char* url = n > 1 ? op[1] : "";
+
 		out->type = FP_REQ_REMOTE_ADD;
 		out->u.remote_add.name = (char*)(n > 0 ? op[0] : "");
-		out->u.remote_add.url = (char*)(n > 1 ? op[1] : "");
-		out->u.remote_add.from = (char*)(req->from ? req->from : "");
+		// A repo file is the caller's to read: it is the key's source,
+		// and root opening a caller-named path is exactly the primitive
+		// the key import no longer has.
+		if (from != NULL && caller_repo_path(from)) {
+			*owned = read_repo_file(from);
+			if (*owned == NULL) {
+				*reported = true;
+				return false;
+			}
+			out->u.remote_add.data = *owned;
+			from = "";
+		} else if (from == NULL && caller_repo_path(url) &&
+			   strstr(url, ".flatpakrepo") != NULL) {
+			*owned = read_repo_file(url);
+			if (*owned == NULL) {
+				*reported = true;
+				return false;
+			}
+			out->u.remote_add.data = *owned;
+			url = "";
+		}
+		out->u.remote_add.url = (char*)url;
+		out->u.remote_add.from = (char*)(from != NULL ? from : "");
 		return n > 0;
+	}
 	case CMD_REMOTE_DELETE:
 		out->type = FP_REQ_REMOTE_DELETE;
 		out->u.remote_delete.name = (char*)(n > 0 ? op[0] : "");

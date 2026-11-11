@@ -10,7 +10,7 @@
 #define FP_PROTO_MAGIC 0x4650u
 // An unknown event type cannot be skipped, only refused, so a new type is a
 // new version and the mismatch fails at the first frame, not mid-operation.
-#define FP_PROTO_VERSION 7u
+#define FP_PROTO_VERSION 8u
 #define FP_PROTO_HDR_LEN 16u
 #define FP_PROTO_MAX_PAYLOAD (1u << 20)
 #define FP_PROTO_MAX_STR (64u << 10)
@@ -178,6 +178,10 @@ typedef struct {
 			char* name;
 			char* url;
 			char* from;
+			// A repo file the CALLER read (a path or file:// word
+			// is cleared from url/from when this is set): the worker
+			// never opens a caller-named file as root.
+			char* data;
 		} remote_add;
 		struct {
 			char* name;
