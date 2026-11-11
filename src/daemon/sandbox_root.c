@@ -2645,8 +2645,31 @@ static void ld_cache_key(sandbox_t* sb, char* out, size_t n) {
 	snprintf(out, n, "%016llx", (unsigned long long)hash);
 }
 
+// Executing a store binary as root is only safe when the store owns it: a
+// deploy from a verified remote is root's, an imported one is the caller's own
+// tree, so its ldconfig is code the caller chose.  Judge the file itself -
+// regular, root's, not writable by anybody else - never the ref that named
+// it.
+bool ldconfig_trusted(const char* path) {
+	assert(path != NULL);
+	struct stat st;
+
+	if (lstat(path, &st) != 0) return false;
+	if (!S_ISREG(st.st_mode)) return false;
+	if (st.st_uid != 0) return false;
+	if ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0) return false;
+	return true;
+}
+
 // Bounded: a stuck ldconfig once pinned a worker, a jail and its mounts.
 static void run_ldconfig(sandbox_t* sb, const char* cache_dest) {
+	// Re-judged here, not only where the path was picked: this is the fork
+	// that would run it as root.
+	if (sb->ldconfig_path == NULL || !ldconfig_trusted(sb->ldconfig_path)) {
+		fpkg_warnf("not running %s as root: the store does not own it",
+			   sb->ldconfig_path != NULL ? sb->ldconfig_path : "?");
+		return;
+	}
 	pid_t lcp = fork();
 	int status = -1;
 

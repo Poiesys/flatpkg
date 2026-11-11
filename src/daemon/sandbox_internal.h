@@ -5,6 +5,8 @@
 void close_inherited_fds(void);
 int drm_devt_map(char* out, size_t outlen);
 int jail_process_count(int jid);
+// True when a binary in the launch tree is the store's to execute as root.
+bool ldconfig_trusted(const char* path);
 
 void sb_track(sandbox_t* sb, const char* fstype, const char* from,
 	      const char* to);

@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "flatpkg.h"
+#include "sandbox_internal.h"
 #define FPKG_MODULE "extensions"
 #include "fpkglog.h"
 
@@ -310,7 +311,8 @@ int fp_extensions_apply(const fp_metadata_t* app_meta, sandbox_t* sb) {
 	for (int i = 0; ldconfig_rel[i]; i++) {
 		snprintf(ldconfig, sizeof(ldconfig), "%s%s", sb->jailroot,
 			 ldconfig_rel[i]);
-		if (access(ldconfig, X_OK) == 0) {
+		if (access(ldconfig, X_OK) == 0 &&
+		    ldconfig_trusted(ldconfig)) {
 			use_ld_so_cache = true;
 			break;
 		}
