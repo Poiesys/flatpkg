@@ -25,6 +25,8 @@ carve_function '^char\* summary_ref_commit\(' "$T/ostree.c" > "$T/commit.inc" ||
 	{ echo "FAIL: summary_ref_commit() not found"; exit 1; }
 carve_function '^int ostree_run_cb\(' "$T/ostree.c" > "$T/run.inc" ||
 	{ echo "FAIL: ostree_run_cb() not found"; exit 1; }
+carve_function '^static char\* zlib_decompress_str\(' "$T/ostree.c" \
+	> "$T/zlib.inc" || { echo "FAIL: zlib_decompress_str() not found"; exit 1; }
 strip_comments "$ROOT/src/daemon/daemon.c" > "$T/daemon.c"
 carve_function '^int daemon_main\(' "$T/daemon.c" > "$T/main.inc" ||
 	{ echo "FAIL: daemon_main() not found"; exit 1; }
@@ -35,7 +37,7 @@ bug() {
 }
 
 check() {
-	remote=$1 xa=$2 commit=$3 run=$4 main=$5
+	remote=$1 xa=$2 commit=$3 run=$4 main=$5 zlib=$6
 
 	hits=$(grep -c 'strncmp(\(from\|url\), "https://", 8) != 0' "$remote" || true)
 	[ "$hits" -eq 2 ] ||
@@ -55,10 +57,17 @@ check() {
 		bug "nothing takes the cache back after a pull"
 	grep -q 'ostree_summary_cache_own()' "$main" ||
 		bug "the daemon does not repair the cache at startup"
+
+	# The xa.cache entry is deflated and hostile until the signature says
+	# otherwise: the expansion needs a ceiling, not just doublings.
+	grep -q 'SUMMARY_META_MAX' "$zlib" ||
+		bug "a summary's metadata decompresses without a size ceiling"
+	grep -q 'dstlen <= SUMMARY_META_MAX' "$zlib" ||
+		bug "the expansion loop does not stop at the ceiling"
 }
 
 ( check "$T/remote.inc" "$T/xa.inc" "$T/commit.inc" "$T/run.inc" \
-	"$T/main.inc" )
+	"$T/main.inc" "$T/zlib.inc" )
 
 # --- the plants ----------------------------------------------------------
 prove() {
@@ -74,13 +83,13 @@ sed 's/strncmp(from, "https:\/\/", 8) != 0/0/' "$T/remote.inc" \
 	> "$T/plant-http.inc"
 prove "an http repo file accepted" \
 	check "$T/plant-http.inc" "$T/xa.inc" "$T/commit.inc" "$T/run.inc" \
-	"$T/main.inc"
+	"$T/main.inc" "$T/zlib.inc"
 
 sed 's/if (!summary_cache_trusted(path)) {/if (0) {/' "$T/commit.inc" \
 	> "$T/plant-cache.inc"
 prove "an untrusted cache file read" \
 	check "$T/remote.inc" "$T/xa.inc" "$T/plant-cache.inc" "$T/run.inc" \
-	"$T/main.inc"
+	"$T/main.inc" "$T/zlib.inc"
 
 # --- behaviour: the refusal and the ownership ---------------------------
 if [ -x "$FLATPKG" ] && [ -S /var/run/flatpkg/control.sock ] &&
@@ -114,5 +123,13 @@ else
 	echo "SKIP: no summary cache in this store"
 fi
 
-echo "PASS: a repo file is https-only and bounded, and the summary cache is"
-echo "      root's after a pull and at daemon startup"
+# 3. the expansion back without a ceiling
+sed 's/dstlen <= SUMMARY_META_MAX/dstlen > 0/' "$T/zlib.inc" \
+	> "$T/plant-zlib.inc"
+prove "an unbounded summary expansion" \
+	check "$T/remote.inc" "$T/xa.inc" "$T/commit.inc" "$T/run.inc" \
+	"$T/main.inc" "$T/plant-zlib.inc"
+
+echo "PASS: a repo file is https-only and bounded, the summary cache is root's"
+echo "      after a pull and at daemon startup, and its deflated metadata has"
+echo "      a ceiling"

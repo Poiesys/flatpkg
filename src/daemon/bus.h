@@ -33,6 +33,9 @@ typedef struct {
 } bus_hdr_t;
 
 int broker_add(int fd, pid_t pid, uid_t uid);
+// How many connections the broker is serving: the daemon refuses a new one
+// before it forks a worker for it.
+int broker_peer_count(void);
 void broker_handle(int fd);
 int broker_pollfds(struct pollfd* out, int max);
 

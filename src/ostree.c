@@ -1472,11 +1472,15 @@ int ostree_fetch_ref_metadata(const char* remote, const char* request,
 }
 // Decompress a zlib-format buffer (with 2-byte header and Adler-32 trailer)
 // into a NUL-terminated string. Returns NULL on error; caller frees the result.
+// A summary's xa.cache entry is a few hundred bytes of keyfile; the bound is
+// what keeps a hostile one from asking the daemon for gigabytes.
+#define SUMMARY_META_MAX (64u << 20)
+
 static char* zlib_decompress_str(const guint8* src, gsize srclen) {
-	if (srclen == 0) return NULL;
-	// Start with a 4x estimate; grow if needed (up to 8 doublings).
+	if (srclen == 0 || srclen > SUMMARY_META_MAX) return NULL;
+	// Start with a 4x estimate; grow if needed, but never past the cap.
 	uLongf dstlen = (uLongf)(srclen * 4 + 128);
-	for (int tries = 0; tries < 8; tries++) {
+	for (int tries = 0; tries < 8 && dstlen <= SUMMARY_META_MAX; tries++) {
 		char* buf = malloc(dstlen + 1);
 		if (!buf) return NULL;
 		uLongf got = dstlen;

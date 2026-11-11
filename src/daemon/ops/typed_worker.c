@@ -750,6 +750,14 @@ static void hello_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	}
 	snprintf(c->client, sizeof(c->client), "%s", r->u.hello.client);
 	c->hello = true;
+	{
+		// Past HELLO the connection is an authenticated client that may
+		// wait for events; the pre-HELLO timeout has done its work.
+		struct timeval tv = {0, 0};
+
+		(void)setsockopt(c->conn, SOL_SOCKET, SO_RCVTIMEO, &tv,
+				 sizeof(tv));
+	}
 	ack_ok(c, id, 0);
 }
 

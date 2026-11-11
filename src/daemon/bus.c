@@ -37,18 +37,17 @@ static peer_t peers[BUS_MAX_PEERS];
 static op_t ops[128];
 static snap_t snaps[BUS_MAX_TOPICS * 8];
 
-static int send_all(int fd, const void* buf, size_t n) {
-	const char* p = buf;
-	while (n > 0) {
-		ssize_t w = send(fd, p, n, MSG_NOSIGNAL);
-		if (w < 0) {
-			if (errno == EINTR) continue;
-			return -1;
-		}
-		p += w;
-		n -= (size_t)w;
+// The peer sockets are SOCK_DGRAM, so one send is one frame, and it must not
+// block the daemon's single loop: a saturated listener is dropped by
+// peer_remove() in route(), which is what "a slow listener is dropped" means.
+static int send_frame(int fd, const void* buf, size_t n) {
+	for (;;) {
+		ssize_t w = send(fd, buf, n, MSG_NOSIGNAL | MSG_DONTWAIT);
+
+		if (w < 0 && errno == EINTR) continue;
+		if (w < 0 || (size_t)w != n) return -1;
+		return 0;
 	}
-	return 0;
 }
 
 static int send_msg(int fd, uint32_t type, const void* a, size_t alen,
@@ -64,7 +63,7 @@ static int send_msg(int fd, uint32_t type, const void* a, size_t alen,
 	memcpy(buf, &h, sizeof(h));
 	if (alen > 0) memcpy(buf + sizeof(h), a, alen);
 	if (blen > 0) memcpy(buf + sizeof(h) + alen, b, blen);
-	rc = send_all(fd, buf, n);
+	rc = send_frame(fd, buf, n);
 	free(buf);
 	return rc;
 }
@@ -153,6 +152,14 @@ static void peer_remove(int fd) {
 	op_forget(fd);
 	close(fd);
 	memset(p, 0, sizeof(*p));
+}
+
+int broker_peer_count(void) {
+	int n = 0;
+
+	for (size_t i = 0; i < sizeof(peers) / sizeof(peers[0]); i++)
+		if (peers[i].fd != 0) n++;
+	return n;
 }
 
 int broker_add(int fd, pid_t pid, uid_t uid) {

@@ -201,6 +201,25 @@ int daemon_main(void) {
 			close(conn);
 			continue;
 		}
+		// One root worker per connection, so the count is a resource:
+		// refuse before the fork instead of after it.
+		if (broker_peer_count() >= BUS_MAX_PEERS) {
+			fpkg_errorf("refused uid=%u: %d connections already",
+				    (unsigned)uid, broker_peer_count());
+			typed_refuse(conn, "the daemon is serving as many "
+					   "connections as it can");
+			close(conn);
+			continue;
+		}
+		{
+			// A connection that sends half a frame and sleeps holds a
+			// root worker; the timeout only lasts until HELLO, so a
+			// subscribed client can then idle.
+			struct timeval tv = {120, 0};
+
+			(void)setsockopt(conn, SOL_SOCKET, SO_RCVTIMEO, &tv,
+					 sizeof(tv));
+		}
 		int sp[2];
 		if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sp) != 0) {
 			close(conn);

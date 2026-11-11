@@ -175,17 +175,52 @@ static int fp_metadata_parse_internal(const char* path, fp_metadata_t* out,
 
 	char line[4096];
 	char group[128] = "";
-	char cur_ext[96] = "";
-	char cur_extof[96] = "";
+	char cur_ext[128] = "";
+	char cur_extof[128] = "";
+	size_t total = 0;
 
 	while (fgets(line, sizeof(line), fp)) {
-		char* l = trim(line);
+		char* l;
+		size_t len = strlen(line);
+
+		// A value longer than the buffer used to be read in two pieces,
+		// and the tail parsed as a fresh key=value pair.  The whole line
+		// is dropped, never the tail.
+		if (len + 1 == sizeof(line) && line[len - 1] != '\n' &&
+		    !feof(fp)) {
+			int ch;
+
+			while ((ch = fgetc(fp)) != EOF && ch != '\n')
+				continue;
+			fpkg_warnf("%s: a line longer than %zu bytes, ignored",
+				   path, sizeof(line) - 1);
+			continue;
+		}
+		// Metadata is whatever a remote published; a handful of megabytes
+		// is already far more than the format uses.
+		total += len;
+		if (total > 16u << 20) {
+			fpkg_warnf("%s: larger than 16 MiB, the rest ignored",
+				   path);
+			break;
+		}
+		l = trim(line);
 		if (*l == '\0' || *l == '#') continue;
 
 		if (*l == '[') {
 			char* end = strchr(l, ']');
 			if (!end) continue;
 			*end = '\0';
+			// A name that does not fit is not truncated into another
+			// group: the group is dropped instead.
+			if (strlen(l + 1) >= sizeof(group)) {
+				fpkg_warnf("%s: group name longer than %zu "
+					   "bytes, ignored",
+					   path, sizeof(group) - 1);
+				group[0] = '\0';
+				cur_ext[0] = '\0';
+				continue;
+			}
 			snprintf(group, sizeof(group), "%s", l + 1);
 			continue;
 		}
@@ -244,6 +279,15 @@ static int fp_metadata_parse_internal(const char* path, fp_metadata_t* out,
 						sizeof(context_keys[0]));
 		} else if (strcmp(group, "Environment") == 0) {
 			char kv[4224];
+
+			if (out->env_pairs.count >= 1024) {
+				if (out->env_pairs.count == 1024)
+					fpkg_warnf("%s: more than 1024 "
+						   "environment entries, the "
+						   "rest ignored",
+						   path);
+				continue;
+			}
 			snprintf(kv, sizeof(kv), "%s=%s", key, val);
 			strlist_push(&out->env_pairs, kv);
 		} else if (strcmp(group, "Session Bus Policy") == 0 ||
