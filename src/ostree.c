@@ -96,6 +96,21 @@ static bool ref_kind_word(const char* s) {
 	return strcmp(s, "app") == 0 || strcmp(s, "runtime") == 0 ||
 	       strcmp(s, "extension") == 0;
 }
+// One ref component: an id, an arch, a branch or a remote name.  A dot is
+// fine inside a name (org.gnome.Gedit, 24.08), never first and never doubled,
+// and no component starts with '-', so none can climb out when it becomes a
+// path or be read as an option when it becomes an argv word.
+static bool ref_component_ok(const char* s) {
+	if (s == NULL || *s == '\0' || *s == '.' || *s == '-') return false;
+	for (const char* c = s; *c; c++) {
+		bool ok = (*c >= '0' && *c <= '9') || (*c >= 'a' && *c <= 'z') ||
+			  (*c >= 'A' && *c <= 'Z') || *c == '.' || *c == '_' ||
+			  *c == '-';
+		if (!ok) return false;
+		if (*c == '.' && c[1] == '.') return false;
+	}
+	return true;
+}
 int ref_parse(const char* s, fpkg_ref_t* out) {
 	assert(s != NULL);
 	assert(out != NULL);
@@ -146,21 +161,50 @@ int ref_parse(const char* s, fpkg_ref_t* out) {
 		}
 	}
 
-	if (!id[0] || ref_kind_word(id)) {
+	if (!id[0] || ref_kind_word(id) || !ref_component_ok(id)) {
 		ref_free(out);
 		return -1;
 	}
-	for (char* c = id; *c; c++) {
-		if (isspace((unsigned char)*c) || *c == '/' || *c == ':') {
-			ref_free(out);
-			return -1;
-		}
+	// An arch or branch becomes a path component too: same grammar, so a
+	// crafted ref cannot walk out of the store.
+	if (arch[0] && !ref_component_ok(arch)) {
+		ref_free(out);
+		return -1;
+	}
+	if (branch[0] && !ref_component_ok(branch)) {
+		ref_free(out);
+		return -1;
 	}
 	out->id = xstrdup(id);
 	if (arch[0]) free(out->arch), out->arch = xstrdup(arch);
 	if (branch[0]) out->branch = xstrdup(branch);
 	return 0;
 }
+// True when `path` is the store root or under it once canonicalized.  A
+// destructive store operation calls this before it touches anything: a
+// component that still escapes cannot reach a file outside the store even if
+// the grammar above is ever loosened.
+bool store_path_contained(const char* path) {
+	assert(path != NULL);
+	char root[PATH_MAX], real[PATH_MAX];
+
+	if (realpath(store_root(), root) == NULL) return false;
+	size_t rl = strlen(root);
+	if (realpath(path, real) != NULL)
+		return strncmp(real, root, rl) == 0 &&
+		       (real[rl] == '/' || real[rl] == '\0');
+	// The leaf may not exist yet (a checkout still to come): judge the
+	// directory it will be created in.
+	char parent[PATH_MAX];
+	snprintf(parent, sizeof(parent), "%s", path);
+	char* slash = strrchr(parent, '/');
+	if (slash == NULL || slash == parent) return false;
+	*slash = '\0';
+	if (realpath(parent, real) == NULL) return false;
+	return strncmp(real, root, rl) == 0 &&
+	       (real[rl] == '/' || real[rl] == '\0');
+}
+
 // The bare id from any ref spelling the CLI accepts; 0 with the id,
 // -1 when the ref does not parse.
 int ostree_ref_id(const char* ref, char* out, size_t len) {
@@ -1080,6 +1124,10 @@ int deploy_checkout(const tool_ctx_t* tc, const char* type,
 		fpkg_errorf("mkdir %s: %s", parent, strerror(errno));
 		return -1;
 	}
+	if (!store_path_contained(parent)) {
+		fpkg_errorf("refusing to deploy outside the store: %s", parent);
+		return -1;
+	}
 	rm_rf(host_deploy);
 
 	char repo_arg[PATH_MAX + 32];
@@ -1876,6 +1924,12 @@ static void uninstall_deploy(const char* deploy_type, const char* ref_kind,
 
 	char path[PATH_MAX];
 	snprintf(path, sizeof(path), "%s/%s/%s", store_root(), deploy_type, id);
+	// The grammar above should make this impossible; prove it before a
+	// recursive delete, so a looser parser cannot reach outside the store.
+	if (!store_path_contained(path)) {
+		fpkg_errorf("refusing to remove %s: not under the store", path);
+		return;
+	}
 	// Mark the deploy as being removed BEFORE deleting it
 	{
 		char marker[PATH_MAX];
@@ -2277,14 +2331,10 @@ int find_deploy_dir(const char* type, const fpkg_ref_t* r, char* out,
 	return -1;
 }
 bool remote_name_valid(const char* name) {
-	if (name == NULL || *name == '\0' || name[0] == '.') return false;
-	for (const char* c = name; *c; c++) {
-		bool alnum = (*c >= '0' && *c <= '9') ||
-			     (*c >= 'a' && *c <= 'z') ||
-			     (*c >= 'A' && *c <= 'Z');
-		if (!alnum && *c != '-' && *c != '_' && *c != '.') return false;
-	}
-	return true;
+	// A remote name is an argv word for root's ostree (and a store path
+	// component): no leading dash, or it is parsed as an ostree flag.
+	if (name == NULL || *name == '\0' || name[0] == '-') return false;
+	return ref_component_ok(name);
 }
 // Is this name a commit directory? Commit hashes are 64-char SHA-256 hex.
 bool is_commit_dir_name(const char* name) {

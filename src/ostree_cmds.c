@@ -356,7 +356,9 @@ int cmd_remote_modify(const char* name, const char* changes,
 		      const char* gpg_data) {
 	assert(name != NULL);
 	if (!remote_name_valid(name)) {
-		fpkg_errorf("invalid remote name '%s'", name);
+		fpkg_errorf("invalid remote name '%s' (letters, digits, '.', "
+			    "'-' and '_'; no leading dot or dash, no '..')",
+			    name);
 		return 1;
 	}
 	if (!ostree_remote_exists(name)) {
@@ -670,8 +672,8 @@ int cmd_remote_add(const char* name, const char* url, const char* from) {
 		return 1;
 	}
 	if (!remote_name_valid(name)) {
-		fpkg_errorf("invalid remote name '%s' (letters, digits, "
-			    "'.', '-' and '_' only)",
+		fpkg_errorf("invalid remote name '%s' (letters, digits, '.', "
+			    "'-' and '_'; no leading dot or dash, no '..')",
 			    name);
 		return 1;
 	}
@@ -894,8 +896,8 @@ int cmd_remote_delete(const char* name) {
 		return 1;
 	}
 	if (!remote_name_valid(name)) {
-		fpkg_errorf("invalid remote name '%s' (letters, digits, "
-			    "'.', '-' and '_' only)",
+		fpkg_errorf("invalid remote name '%s' (letters, digits, '.', "
+			    "'-' and '_'; no leading dot or dash, no '..')",
 			    name);
 		return 1;
 	}

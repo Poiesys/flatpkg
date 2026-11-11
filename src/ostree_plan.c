@@ -364,8 +364,9 @@ char* ostree_resolve_install_request(const char* request, bool runtime_only) {
 	bool named_remote;
 
 	if (ref_parse(request, &r) != 0) {
-		fpkg_errorf("invalid ref '%s' "
-			    "(want [remote:]id[/arch][//branch])",
+		fpkg_errorf("invalid ref '%s' (want [remote:]id[/arch][//branch]; "
+			    "each part is letters, digits, '.', '-' or '_', with no "
+			    "leading dot or dash and no '..')",
 			    request);
 		return NULL;
 	}
@@ -1337,8 +1338,9 @@ static int install_req_prepare(const char* request, flatpkg_dep_kind_t kind,
 		out->is_ext ? "extension" : out->is_runtime ? "runtime" : "app";
 
 	if (ref_parse(request, &out->ref) != 0) {
-		fpkg_errorf("invalid ref '%s' "
-			    "(want [remote:]id[/arch][//branch])",
+		fpkg_errorf("invalid ref '%s' (want [remote:]id[/arch][//branch]; "
+			    "each part is letters, digits, '.', '-' or '_', with no "
+			    "leading dot or dash and no '..')",
 			    request);
 		return 1;
 	}

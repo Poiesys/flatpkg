@@ -848,6 +848,8 @@ extern idset_t g_closure;
 void idset_add(idset_t* s, const char* id);
 bool idset_has(const idset_t* s, const char* id);
 int ref_parse(const char* s, fpkg_ref_t* out);
+// True when `path` is the store root or under it once canonicalized.
+bool store_path_contained(const char* path);
 // Resolve a partial name for the CLI; returns "[remote:]id[/arch]//branch" or NULL.
 char* ostree_resolve_install_request(const char* request, bool runtime_only);
 // Fetch one ref's commit and metadata text for a client-side plan.
