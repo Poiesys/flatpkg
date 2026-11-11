@@ -292,6 +292,7 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 		return 0;
 	}
 	sb->instance_lock_fd = -1;
+	sb->instance_mirror_fd = -1;
 	if (sb->instance_id || sb->instance_dir) {
 		fpkg_warnf("instance already registered (%s), skipping",
 			   sb->instance_id ? sb->instance_id : "?");
@@ -499,6 +500,11 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 			snprintf(p, sizeof(p), "%s/.ref", mir);
 			if (write_file(p, ref_content, 0644) != 0)
 				fpkg_warnf("write %s: %s", p, strerror(errno));
+			// Kept for the pid file: that write is the one root write
+			// left after the tree becomes the app's.
+			sb->instance_mirror_fd =
+				open(mir, O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+						 O_CLOEXEC);
 		} else {
 			fpkg_warnf("mkdir %s: %s", mir, strerror(errno));
 		}
@@ -666,6 +672,10 @@ void instance_unregister(sandbox_t* sb) {
 	if (sb->instance_lock_fd >= 0) {
 		close(sb->instance_lock_fd);
 		sb->instance_lock_fd = -1;
+	}
+	if (sb->instance_mirror_fd >= 0) {
+		close(sb->instance_mirror_fd);
+		sb->instance_mirror_fd = -1;
 	}
 	if (sb->instance_dir) {
 		char p[PATH_MAX];

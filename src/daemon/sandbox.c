@@ -288,6 +288,17 @@ static void own_tree_dir(sandbox_t* sb, uid_t uid, gid_t gid, const char* dir) {
 	if (fd >= 0) own_tree_dir_at(sb, uid, gid, fd, dir);
 }
 
+// The one handover point, not part of jail creation: the proxies' mount
+// points and the instance files are root writes that come after that, and
+// every one of them has to precede this.  Nothing root writes by path may
+// follow it; the pid file holds the instance directory open for that reason.
+void sandbox_own_tree(sandbox_t* sb, const sandbox_plan_t* plan) {
+	assert(sb != NULL);
+	assert(plan != NULL);
+	if (sb->jailroot == NULL) return;
+	own_tree_dir(sb, plan->uid, plan->gid, sb->jailroot);
+}
+
 int drm_devt_map(char* out, size_t outlen) {
 	assert(out != NULL);
 	assert(outlen > 0);
@@ -426,10 +437,6 @@ int sandbox_create_jail(sandbox_t* sb, const fp_metadata_t* meta,
 
 	stage_dev_shm(sb, plan);
 
-	// Last, now that every mount of the launch is in place: hand the
-	// per-launch tree to the app.
-	own_tree_dir(sb, plan->uid, plan->gid, sb->jailroot);
-
 	return 0;
 
 fail:
@@ -448,9 +455,31 @@ extern int fpkg_test_unmount(const char* dir, int flags);
 #endif
 
 typedef struct {
-	char (*path)[PATH_MAX];
+	char path[PATH_MAX];
+	// unmount(2) takes an fsid in decimal: "FSID:<val0>:<val1>".  The id
+	// names the mounted filesystem itself, so a path the app can swap cannot
+	// redirect the unmount, and a mount point that has been unlinked still has
+	// a handle.
+	char fsid[64];
+} mount_ent_t;
+
+typedef struct {
+	mount_ent_t* ent;
 	size_t n;
 } mount_list_t;
+
+static void mount_list_free(mount_list_t* l) {
+	free(l->ent);
+	l->ent = NULL;
+	l->n = 0;
+}
+
+static void fsid_of(const struct statfs* m, char* out, size_t len) {
+	assert(m != NULL);
+	assert(out != NULL);
+	snprintf(out, len, "FSID:%d:%d", (int)m->f_fsid.val[0],
+		 (int)m->f_fsid.val[1]);
+}
 
 // Mount points at or under `root`.  The list is sized from the mount table,
 // not a fixed cap: a heavy app can stage more mounts than any guess.
@@ -460,35 +489,62 @@ static int mounts_under(const char* root, mount_list_t* l) {
 	size_t rl = strlen(root);
 
 	// A previous scan's list is dead here; overwriting it would leak it.
-	free(l->path);
-	l->n = 0;
-	l->path = NULL;
+	mount_list_free(l);
 	if (total < 0) return -1;
 	if (total == 0) return 0;
-	l->path = calloc((size_t)total, sizeof(l->path[0]));
-	if (l->path == NULL) return -1;
+	l->ent = calloc((size_t)total, sizeof(l->ent[0]));
+	if (l->ent == NULL) return -1;
 	for (int i = 0; i < total; i++) {
 		const char* at = mnts[i].f_mntonname;
 
 		if (strncmp(at, root, rl) != 0) continue;
 		if (at[rl] != '\0' && at[rl] != '/') continue;
-		snprintf(l->path[l->n++], PATH_MAX, "%s", at);
+		snprintf(l->ent[l->n].path, PATH_MAX, "%s", at);
+		fsid_of(&mnts[i], l->ent[l->n].fsid, sizeof(l->ent[l->n].fsid));
+		l->n++;
 	}
 	return 0;
 }
 
+// Deepest first, so a filesystem mounted on top of another is gone before the
+// one below it is asked to go.
 static void sort_deepest_first(mount_list_t* l) {
 	for (size_t i = 1; i < l->n; i++) {
-		char key[PATH_MAX];
+		mount_ent_t key = l->ent[i];
 		size_t j = i;
 
-		snprintf(key, sizeof(key), "%s", l->path[i]);
-		while (j > 0 && strlen(l->path[j - 1]) < strlen(key)) {
-			snprintf(l->path[j], PATH_MAX, "%s", l->path[j - 1]);
+		while (j > 0 && strlen(l->ent[j - 1].path) < strlen(key.path)) {
+			l->ent[j] = l->ent[j - 1];
 			j--;
 		}
-		snprintf(l->path[j], PATH_MAX, "%s", key);
+		l->ent[j] = key;
 	}
+}
+
+static bool unmount_entry(const mount_ent_t* e) {
+	assert(e != NULL);
+	if (unmount(e->fsid, MNT_BYFSID) == 0) return true;
+	if (unmount(e->fsid, MNT_BYFSID | MNT_FORCE) == 0) return true;
+	return false;
+}
+
+// Unmount whatever is at `path`, looked up by name and taken down by id.  A
+// path with nothing mounted at it is not a failure: the launch may have taken
+// it down itself.
+static bool unmount_at(const char* path) {
+	struct statfs* mnts = NULL;
+	int total = getmntinfo(&mnts, MNT_NOWAIT);
+
+	if (total <= 0) return false;
+	for (int i = 0; i < total; i++) {
+		mount_ent_t e;
+
+		if (strcmp(mnts[i].f_mntonname, path) != 0) continue;
+		snprintf(e.path, sizeof(e.path), "%s", path);
+		fsid_of(&mnts[i], e.fsid, sizeof(e.fsid));
+		return unmount_entry(&e);
+	}
+	return true;
 }
 
 // Remove a jail root, and only when it really is one: canonicalized under the
@@ -523,27 +579,26 @@ static int sandbox_remove_jail_root(const char* root) {
 	}
 	for (int pass = 0; pass < 3; pass++) {
 		if (mounts_under(rroot, &l) != 0) {
-			free(l.path);
+			mount_list_free(&l);
 			fpkg_errorf("cannot read the mount table");
 			return -1;
 		}
 		if (l.n == 0) break;
 		sort_deepest_first(&l);
-		for (size_t i = 0; i < l.n; i++)
-			if (unmount(l.path[i], 0) != 0)
-				(void)unmount(l.path[i], MNT_FORCE);
-		free(l.path);
-		l.path = NULL;
-		l.n = 0;
+		for (size_t i = 0; i < l.n; i++) {
+			if (unmount_entry(&l.ent[i])) continue;
+			fpkg_warnf("not unmounting %s", l.ent[i].path);
+		}
+		mount_list_free(&l);
 	}
 	if (mounts_under(rroot, &l) != 0 || l.n > 0) {
 		fpkg_warnf("not removing %s: %zu filesystem(s) still mounted "
 			   "under it",
 			   rroot, l.n);
-		free(l.path);
+		mount_list_free(&l);
 		return -1;
 	}
-	free(l.path);
+	mount_list_free(&l);
 	if (rm_rf(rroot) != 0) {
 		fpkg_warnf("cannot remove %s: %s", rroot, strerror(errno));
 		return -1;
@@ -685,8 +740,7 @@ void sandbox_teardown(sandbox_t* sb) {
 			if (strncmp(m->to, sb->jailroot, rl) == 0 &&
 			    (m->to[rl] == '\0' || m->to[rl] == '/'))
 				continue;
-			if (unmount(m->to, 0) != 0 &&
-			    unmount(m->to, MNT_FORCE) != 0)
+			if (!unmount_at(m->to))
 				fpkg_warnf("still mounted after teardown: %s",
 					   m->to);
 		}

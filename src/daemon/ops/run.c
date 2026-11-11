@@ -158,6 +158,10 @@ int cmd_run(const char* app_id, char* const extra_argv[],
 
 	instance_register(&sb, &meta, &plan);
 
+	// Every root write into the tree is done (the proxies' mount points and
+	// the instance files above); the app can have it now.
+	sandbox_own_tree(&sb, &plan);
+
 	log = fp_logger_init("exec", "");
 	{
 		fp_logger_infof(&log, "executing %s in jail", app_id);

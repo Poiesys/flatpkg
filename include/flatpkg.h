@@ -360,6 +360,10 @@ typedef struct {
 	char* instance_id;
 	char* instance_dir;
 	int instance_lock_fd;
+	// The instance's directory in the jail root, held open from registration
+	// to teardown: the pid file is written after the app owns the tree, and a
+	// descriptor cannot be renamed out from under the open.
+	int instance_mirror_fd;
 
 	// Held from mkdtemp() to teardown(): a root with no jail but a held lock
 	// is a launch in progress, not a leak.
@@ -376,6 +380,8 @@ int sandbox_ensure_runtime_dir(const sandbox_plan_t* plan);
 
 int sandbox_build_root(sandbox_t* sb, const sandbox_plan_t* plan,
 		       const fp_metadata_t* meta);
+// Hand the per-launch tree to the app, after every root write into it.
+void sandbox_own_tree(sandbox_t* sb, const sandbox_plan_t* plan);
 int sandbox_create_jail(sandbox_t* sb, const fp_metadata_t* meta,
 			const sandbox_plan_t* plan);
 // Relay between the caller's terminal and a pty master until `pid` exits.

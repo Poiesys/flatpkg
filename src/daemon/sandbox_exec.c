@@ -56,7 +56,10 @@ static void write_instance_pid(sandbox_t* sb, pid_t pid) {
 
 	char p[PATH_MAX];
 	snprintf(p, sizeof(p), "%s/pid", sb->instance_dir);
-	int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	// The tree is the app's by now: a name the app could have swapped for a
+	// symlink must not be followed by root.
+	int fd = open(p, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+		      0644);
 	if (fd >= 0) {
 		if (write(fd, buf, (size_t)n) != (ssize_t)n)
 			fpkg_warnf("write %s: %s", p, strerror(errno));
@@ -65,13 +68,17 @@ static void write_instance_pid(sandbox_t* sb, pid_t pid) {
 		fpkg_warnf("cannot create pid file %s: %s", p, strerror(errno));
 	}
 
-	if (sb->jailroot && sb->instance_id) {
-		snprintf(p, sizeof(p), "%s/run/flatpak/.flatpak/%s/pid",
-			 sb->jailroot, sb->instance_id);
-		fd = open(p, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	// The jail-root copy is written through the directory registration held
+	// open: by path, the app could have moved the directory or replaced it.
+	if (sb->instance_mirror_fd >= 0) {
+		fd = openat(sb->instance_mirror_fd, "pid",
+			    O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC,
+			    0644);
 		if (fd >= 0) {
 			if (write(fd, buf, (size_t)n) != (ssize_t)n)
-				fpkg_warnf("write %s: %s", p, strerror(errno));
+				fpkg_warnf("write pid in %s: %s",
+					   sb->jailroot ? sb->jailroot : "?",
+					   strerror(errno));
 			close(fd);
 		}
 	}
