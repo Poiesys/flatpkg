@@ -635,7 +635,17 @@ int ostree_run_cb(char* const argv[], tool_res_t* res, tool_line_cb cb,
 		argv = vargv;
 	}
 
-	return run_direct_cb(argv, res, cb, arg, tick, tick_arg);
+	int rc = run_direct_cb(argv, res, cb, arg, tick, tick_arg);
+
+	// The summary cache is root's to keep: ostree wrote it as whoever pulled
+	// and the planner trusts what it reads.
+	if (rc == 0)
+		for (size_t i = 0; argv[i] != NULL; i++)
+			if (strcmp(argv[i], "pull") == 0) {
+				ostree_summary_cache_own();
+				break;
+			}
+	return rc;
 }
 int ostree_run(char* const argv[], tool_res_t* res) {
 	assert(argv != NULL);
@@ -1481,6 +1491,55 @@ static char* zlib_decompress_str(const guint8* src, gsize srclen) {
 	}
 	return NULL;
 }
+// The planner trusts this cache, and it is written by whoever pulled, so a
+// group member could rewrite it.  Root takes it over after a pull and a reader
+// accepts only a regular root-owned file in a root-owned directory: ostree
+// verifies the signature of what it writes, not of what it later reads.
+static bool summary_cache_trusted(const char* path) {
+	char dir[PATH_MAX];
+	char* slash;
+	struct stat st;
+
+	assert(path != NULL);
+	if (lstat(path, &st) != 0) return false;
+	if (!S_ISREG(st.st_mode) || st.st_uid != 0) return false;
+	if ((st.st_mode & (S_IWGRP | S_IWOTH)) != 0) return false;
+	snprintf(dir, sizeof(dir), "%s", path);
+	slash = strrchr(dir, '/');
+	if (slash == NULL) return false;
+	*slash = '\0';
+	if (lstat(dir, &st) != 0) return false;
+	return S_ISDIR(st.st_mode) && st.st_uid == 0 &&
+	       (st.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+void ostree_summary_cache_own(void) {
+	char dir[PATH_MAX];
+	struct stat st;
+	DIR* d;
+
+	if (geteuid() != 0) return;
+	store_path(dir, sizeof(dir), "repo/tmp/cache");
+	(void)chmod(dir, 0755);
+	(void)chown(dir, 0, 0);
+	store_path(dir, sizeof(dir), "repo/tmp/cache/summaries");
+	if (stat(dir, &st) != 0) return;
+	(void)chmod(dir, 0755);
+	(void)chown(dir, 0, 0);
+	d = opendir(dir);
+	if (d == NULL) return;
+	for (struct dirent* de; (de = readdir(d)) != NULL;) {
+		char p[PATH_MAX];
+
+		if (de->d_name[0] == '.') continue;
+		snprintf(p, sizeof(p), "%s/%s", dir, de->d_name);
+		if (lstat(p, &st) != 0 || !S_ISREG(st.st_mode)) continue;
+		(void)chmod(p, 0644);
+		(void)chown(p, 0, 0);
+	}
+	closedir(d);
+}
+
 // The summary's xa.cache maps each ref to its metadata keyfile, so a plan
 // needs no commit fetch, and libostree checks it against the remote's
 // signature: v1 a{s(tts)}, v2 a{s(ttay)} (deflated), told apart by type.
@@ -1488,11 +1547,14 @@ static char* summary_xa_metadata(const char* remote, const char* refstr) {
 	if (!remote_name_valid(remote)) return NULL;
 	char path[PATH_MAX];
 	store_path(path, sizeof(path), "repo/tmp/cache/summaries/%s", remote);
+	if (!summary_cache_trusted(path)) {
+		fpkg_debugf("summary cache %s is not root's; ignoring it", path);
+		return NULL;
+	}
 	GMappedFile* mf = g_mapped_file_new(path, FALSE, NULL);
 	if (!mf) return NULL;
 	GBytes* bytes = g_mapped_file_get_bytes(mf);
 	g_mapped_file_unref(mf);
-	// Untrusted: the cache directory is group-writable.
 	GVariant* sum = g_variant_new_from_bytes(
 		G_VARIANT_TYPE("(a(s(taya{sv}))a{sv})"), bytes, FALSE);
 	g_bytes_unref(bytes);
@@ -1563,11 +1625,14 @@ char* summary_ref_commit(const char* remote, const char* refstr) {
 	}
 	char path[PATH_MAX];
 	store_path(path, sizeof(path), "repo/tmp/cache/summaries/%s", remote);
+	if (!summary_cache_trusted(path)) {
+		fpkg_debugf("summary cache %s is not root's; ignoring it", path);
+		return NULL;
+	}
 	GMappedFile* mf = g_mapped_file_new(path, FALSE, NULL);
 	if (!mf) return NULL;
 	GBytes* bytes = g_mapped_file_get_bytes(mf);
 	g_mapped_file_unref(mf);
-	// Untrusted: the cache directory is group-writable.
 	GVariant* sum = g_variant_new_from_bytes(
 		G_VARIANT_TYPE("(a(s(taya{sv}))a{sv})"), bytes, FALSE);
 	g_bytes_unref(bytes);

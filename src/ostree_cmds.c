@@ -32,7 +32,13 @@ static int libfetch_init(void) {
 	}
 	return 0;
 }
-static char* fetch_url(const char* url, size_t* out_len, fp_spin_t* sp) {
+// The repo file carries the key the remote is then trusted against, so it is
+// fetched over https only and it is small: over plain http the answer chooses
+// the key, and an endless body is an allocation the daemon pays for.
+#define REPO_FILE_MAX (1u << 20)
+
+static char* fetch_url(const char* url, size_t max, size_t* out_len,
+		       fp_spin_t* sp) {
 	if (libfetch_init() != 0) return NULL;
 	FILE* f = fn_fetch_get_url(url, "");
 	if (!f) {
@@ -53,6 +59,14 @@ static char* fetch_url(const char* url, size_t* out_len, fp_spin_t* sp) {
 	for (;;) {
 		r = fread(chunk, 1, sizeof(chunk), f);
 		if (r == 0) break;
+		if (max > 0 && len + r > max) {
+			free(buf);
+			fclose(f);
+			fpkg_errorf("fetch %s: the answer is larger than %zu "
+				    "bytes",
+				    url, max);
+			return NULL;
+		}
 		if (len + r + 1 > cap) {
 			cap = cap ? cap * 2 : 16384;
 			while (len + r + 1 > cap) cap *= 2;
@@ -689,8 +703,13 @@ int cmd_remote_add(const char* name, const char* url, const char* from) {
 			buf = slurp_file(from + 7);
 		else if (from[0] == '/')
 			buf = slurp_file(from);
-		else
-			buf = fetch_url(from, NULL, NULL);
+		else if (strncmp(from, "https://", 8) != 0) {
+			fpkg_errorf("refusing to fetch %s: a repo file is the "
+				    "key's source and must come over https",
+				    from);
+			goto fail;
+		} else
+			buf = fetch_url(from, REPO_FILE_MAX, NULL, NULL);
 		if (!buf) {
 			// Say why: a bare rc=1 with no output reads as a hung pull.
 			fpkg_errorf("cannot read flatpak repo file %s", from);
@@ -718,8 +737,14 @@ int cmd_remote_add(const char* name, const char* url, const char* from) {
 				buf = slurp_file(url + 7);
 			else if (url[0] == '/')
 				buf = slurp_file(url);
-			else
-				buf = fetch_url(url, NULL, NULL);
+			else if (strncmp(url, "https://", 8) != 0) {
+				fpkg_errorf("refusing to fetch %s: a repo "
+					    "file is the key's source and must "
+					    "come over https",
+					    url);
+				goto fail;
+			} else
+				buf = fetch_url(url, REPO_FILE_MAX, NULL, NULL);
 			if (!buf) {
 				fpkg_errorf("cannot read flatpak repo file "
 					    "%s",

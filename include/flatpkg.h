@@ -810,6 +810,10 @@ int ostree_appstream_extract(const char* remote, const char* arch);
 
 int ostree_appstream_deploy(const char* remote, const char* arch);
 
+// Take ownership of repo/tmp/cache/summaries: ostree writes it as whoever
+// pulled, and a reader trusts only a root-owned cache file.
+void ostree_summary_cache_own(void);
+
 int session_helper_main(void);
 
 int system_helper_main(int argc, char* argv[]);

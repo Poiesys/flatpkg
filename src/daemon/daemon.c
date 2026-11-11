@@ -161,6 +161,7 @@ int daemon_main(void) {
 		return 1;
 	}
 	store_repair_ownership();
+	ostree_summary_cache_own();
 
 	for (;;) {
 		struct pollfd pfd[1 + BUS_MAX_PEERS];
