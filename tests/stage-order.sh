@@ -25,6 +25,8 @@ carve_function '^static int apply_grant\(' "$T/sb.c" > "$T/apply.inc" ||
 	{ echo "FAIL: apply_grant() not found"; exit 1; }
 carve_function '^static int stage_pulseaudio\(' "$T/sb.c" > "$T/pulse.inc" ||
 	{ echo "FAIL: stage_pulseaudio() not found"; exit 1; }
+carve_function '^static int stage_host_mounts\(' "$T/sb.c" > "$T/hosts.inc" ||
+	{ echo "FAIL: stage_host_mounts() not found"; exit 1; }
 carve_function '^static int m_tmpfs_sized\(' "$T/sb.c" > "$T/tmpfs.inc" ||
 	{ echo "FAIL: m_tmpfs_sized() not found"; exit 1; }
 carve_function '^static int m_tmpfs\(' "$T/sb.c" > "$T/tmpfs-default.inc" ||
@@ -43,6 +45,7 @@ bug() {
 
 check() {
 	root=$1 grants=$2 apply=$3 pulse=$4 tmpfs=$5 tmpfs_default=$6 shm=$7
+	hosts=$8
 
 	host=$(pos 'stage_host_mounts(' "$root")
 	home=$(pos 'stage_home(' "$root")
@@ -64,6 +67,16 @@ check() {
 		bug "the grants are applied in metadata order, not shallow first"
 	grep -q 'apply_grant(sb, plan, g, home_granted)' "$grants" ||
 		bug "stage_grants() no longer applies the sorted order"
+
+	# A wider grant a narrower one would have to narrow is left out before
+	# it is mounted: a later nullfs of the same lower vnode is refused, so
+	# the narrower grant would be dropped and the wider mode would rule.
+	grep -q 'grant_narrowed_below(plan, g)' "$apply" ||
+		bug "a wider grant is mounted although a narrower one needs the other mode"
+	grep -q 'grant_narrowed_below(plan, g)' "$apply" ||
+		bug "the grant pre-scan is missing"
+	grep -q 'if (host_mount_narrowed(plan, de->d_name, ro' "$hosts" ||
+		bug "a host view is mounted although a grant inside it needs the other mode"
 
 	grep -q 'cover_ro == want_ro' "$apply" ||
 		bug "a covering mount is skipped whatever its permissions"
@@ -93,7 +106,8 @@ check() {
 }
 
 ( check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
-	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" )
+	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
+	"$T/hosts.inc" )
 
 # --- the plants ----------------------------------------------------------
 prove() {
@@ -105,6 +119,25 @@ prove() {
 	fi
 }
 
+# 0. the grant pre-scan gone
+sed 's/if (grant_narrowed_below(plan, g)) {/if (0) {/' "$T/apply.inc" \
+	> "$T/plant-narrow.inc"
+prove "a wider grant mounted over a narrower one" \
+	check "$T/root.inc" "$T/grants.inc" "$T/plant-narrow.inc" \
+	"$T/pulse.inc" "$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
+	"$T/hosts.inc"
+
+sed 's/if (host_mount_narrowed(plan, de->d_name, ro/if (0 \&\& host_mount_narrowed(plan, de->d_name, ro/' \
+	"$T/hosts.inc" > "$T/plant-hostnarrow.inc"
+if cmp -s "$T/hosts.inc" "$T/plant-hostnarrow.inc"; then
+	echo "FAIL: the host-narrowing plant was not applied"
+	exit 1
+fi
+prove "a host view mounted over a narrower grant" \
+	check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
+	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
+	"$T/plant-hostnarrow.inc"
+
 # 1. the host mounts back after the grants
 awk '
 	/stage_host_mounts\(/ { host = $0; next }
@@ -112,15 +145,17 @@ awk '
 	/stage_grants\(/ && !done { print host; done = 1 }
 ' "$T/root.inc" > "$T/plant-order.inc"
 prove "the host mounts after the grants" \
-	check "$T/plant-order.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
-	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc"
+	check "$T/plant-order.inc" "$T/grants.inc" "$T/apply.inc" \
+	"$T/pulse.inc" "$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
+	"$T/hosts.inc"
 
 # 2. the grants back in metadata order
 sed 's/grant_depth(&plan->grants\[order\[j - 1\]\])/0/' "$T/grants.inc" \
 	> "$T/plant-depth.inc"
 prove "the grants unsorted" \
-	check "$T/root.inc" "$T/plant-depth.inc" "$T/apply.inc" "$T/pulse.inc" \
-	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc"
+	check "$T/root.inc" "$T/plant-depth.inc" "$T/apply.inc" \
+	"$T/pulse.inc" "$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
+	"$T/hosts.inc"
 
 # 3. the narrower grant skipped again: a return right after the covering test
 awk '/narrows/ { print "\t\t\treturn 0;" } { print }' "$T/apply.inc" \
@@ -130,8 +165,9 @@ if cmp -s "$T/apply.inc" "$T/plant-cover.inc"; then
 	exit 1
 fi
 prove "the narrower grant skipped" \
-	check "$T/root.inc" "$T/grants.inc" "$T/plant-cover.inc" "$T/pulse.inc" \
-	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc"
+	check "$T/root.inc" "$T/grants.inc" "$T/plant-cover.inc" \
+	"$T/pulse.inc" "$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
+	"$T/hosts.inc"
 
 # 4. pulse staging without the shared-directory check
 sed 's/if (socket_dir_too_broad(pdir)) {/if (0) {/' "$T/pulse.inc" \
@@ -139,14 +175,16 @@ sed 's/if (socket_dir_too_broad(pdir)) {/if (0) {/' "$T/pulse.inc" \
 prove "pulse staging unchecked" \
 	check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" \
 	"$T/plant-pulse.inc" "$T/tmpfs.inc" "$T/tmpfs-default.inc" \
-	"$T/shm.inc"
+	"$T/shm.inc" "$T/hosts.inc"
 
 # 5. the tmpfs back to an unbounded mount
 sed 's/size=%llu/nosize/' "$T/tmpfs.inc" > "$T/plant-tmpfs.inc"
 prove "an unbounded tmpfs" \
 	check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
-	"$T/plant-tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc"
+	"$T/plant-tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
+	"$T/hosts.inc"
 
 echo "PASS: the host view, the home overlay and the grants are layered in"
-echo "      that order, a narrower grant mounts on top, no socket staging"
-echo "      path mounts a shared directory, and every tmpfs is bounded"
+echo "      that order, a wider grant a narrower one must narrow is left"
+echo "      out, no socket staging path mounts a shared directory, and"
+echo "      every tmpfs is bounded"

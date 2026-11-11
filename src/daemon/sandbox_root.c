@@ -2978,6 +2978,51 @@ static int stage_home(sandbox_t* sb, const sandbox_plan_t* plan) {
 	return 0;
 }
 
+// FreeBSD cannot narrow a mount with a later one: nullfs refuses a target that
+// already resolves to the same lower vnode, so the narrower grant would be
+// dropped and the wider mode would rule the child.  The wider grant is left
+// out instead, and the narrower one mounts on the jail's own directory.
+static bool grant_narrowed_below(const sandbox_plan_t* plan,
+				 const fs_grant_t* g) {
+	size_t gl = strlen(g->jail_path);
+	bool want_ro = g->mode == FS_GRANT_RO;
+
+	for (size_t i = 0; i < plan->ngrants; i++) {
+		const fs_grant_t* o = &plan->grants[i];
+
+		// A persistent grant is the app's own data directory, mounted
+		// over the home it already sits in; it is not a request that
+		// narrows anything.
+		if (o == g || o->mode == FS_GRANT_HIDE || o->persistent) continue;
+		if (strncmp(o->jail_path, g->jail_path, gl) != 0) continue;
+		if (o->jail_path[gl] != '/') continue;
+		if ((o->mode == FS_GRANT_RO) != want_ro) return true;
+	}
+	return false;
+}
+
+// The same rule one level up: a host top-level view a grant would have to
+// narrow is not mounted, and the grant mounts on the jail's own directory.
+static bool host_mount_narrowed(const sandbox_plan_t* plan, const char* name,
+				bool ro, const char** why) {
+	char prefix[PATH_MAX];
+	size_t pl;
+
+	snprintf(prefix, sizeof(prefix), "/%s/", name);
+	pl = strlen(prefix);
+	for (size_t i = 0; i < plan->ngrants; i++) {
+		const fs_grant_t* g = &plan->grants[i];
+
+		if (g->mode == FS_GRANT_HIDE || g->persistent) continue;
+		if (strncmp(g->jail_path, prefix, pl) != 0) continue;
+		if ((g->mode == FS_GRANT_RO) != ro) {
+			*why = g->jail_path;
+			return true;
+		}
+	}
+	return false;
+}
+
 // Handle one grant; returns 1 when its host path was missing.
 static int apply_grant(sandbox_t* sb, const sandbox_plan_t* plan,
 		       fs_grant_t* g, bool home_granted) {
@@ -3000,6 +3045,14 @@ static int apply_grant(sandbox_t* sb, const sandbox_plan_t* plan,
 	}
 
 	if (g->persistent && home_granted) return 0;
+
+	if (grant_narrowed_below(plan, g)) {
+		fpkg_warnf("not mounting '%s': a narrower grant inside it asks "
+			   "for the other mode, which a later mount here cannot "
+			   "give it",
+			   g->jail_path);
+		return 0;
+	}
 
 	if (g->mode == FS_GRANT_CREATE) {
 		pid_t pid = fork();
@@ -3818,6 +3871,18 @@ static int stage_host_mounts(sandbox_t* sb, const sandbox_plan_t* plan) {
 			snprintf(to, sizeof(to), "%s/%s", sb->jailroot,
 				 de->d_name);
 			if (sb_is_mounted(sb, to)) continue;
+			{
+				const char* why = NULL;
+
+				if (host_mount_narrowed(plan, de->d_name, ro,
+							&why)) {
+					fpkg_infof("not mounting host '/%s': "
+						   "'%s' asks for the other "
+						   "mode",
+						   de->d_name, why);
+					continue;
+				}
+			}
 			if (S_ISDIR(st.st_mode)) {
 				if (mkdir_p(to, 0755) != 0) continue;
 				m_nullfs(sb, from, to, ro);
