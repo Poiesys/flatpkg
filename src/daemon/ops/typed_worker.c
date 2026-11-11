@@ -875,6 +875,42 @@ static void prefetch_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	op_finish(c, rc, "prefetch failed");
 }
 
+// A client name belongs to the uid that first declared it: the namespace is
+// the caller's own string, and another group member's state is not theirs to
+// read or to overwrite.  flatpkg's own name is the installation's, shared by
+// the group like the world it writes.
+#define FP_CLI_CLIENT "flatpkg"
+
+static bool client_owner_ok(const wctx_t* c) {
+	char dir[PATH_MAX], path[PATH_MAX], buf[32], want[32];
+	int fd;
+
+	if (strcmp(c->client, FP_CLI_CLIENT) == 0) return true;
+	snprintf(dir, sizeof(dir), "%s/clients/.owners", store_root());
+	if (mkdir(dir, 0755) != 0 && errno != EEXIST) return false;
+	snprintf(path, sizeof(path), "%s/%s", dir, c->client);
+	snprintf(want, sizeof(want), "%u\n", (unsigned)c->uid);
+	fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd >= 0) {
+		ssize_t n = read(fd, buf, sizeof(buf) - 1);
+
+		close(fd);
+		if (n <= 0) return false;
+		buf[n] = '\0';
+		return strcmp(buf, want) == 0;
+	}
+	if (errno != ENOENT) return false;
+	fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+	if (fd < 0) return false;
+	{
+		ssize_t n = write(fd, want, strlen(want));
+
+		close(fd);
+		if (n != (ssize_t)strlen(want)) return false;
+	}
+	return true;
+}
+
 // The client's state namespace is created on first use, never named by the
 // caller.
 static bool client_state_dir(const wctx_t* c) {
@@ -882,6 +918,7 @@ static bool client_state_dir(const wctx_t* c) {
 
 	snprintf(dir, sizeof(dir), "%s/clients", store_root());
 	if (mkdir(dir, 0755) != 0 && errno != EEXIST) return false;
+	if (!client_owner_ok(c)) return false;
 	snprintf(dir, sizeof(dir), "%s/clients/%s", store_root(), c->client);
 	return mkdir(dir, 0755) == 0 || errno == EEXIST;
 }
@@ -1281,6 +1318,19 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 		free(payload);
 		if (rc != FP_P_OK) {
 			ack_err(&c, hdr.id, FP_E_INVALID, "malformed request");
+			if (c.dead) break;
+			continue;
+		}
+		// The three requests that carry descriptors are handled here,
+		// before handle()'s gate: a bundle or a terminal without a
+		// HELLO is the same untrusted connection as any other.
+		if (!c.hello && (req.type == FP_REQ_STDIO ||
+				 req.type == FP_REQ_INSTALL_BUNDLE ||
+				 req.type == FP_REQ_RUN)) {
+			for (size_t i = 0; i < nfds; i++) close(fds[i]);
+			ack_err(&c, hdr.id, FP_E_INVALID,
+				"the first request must be HELLO");
+			fp_req_free(&req);
 			if (c.dead) break;
 			continue;
 		}

@@ -809,6 +809,19 @@ out:
 	g_variant_unref(path_v);
 }
 
+// A running pull is cancelled by the worker's SIGUSR1 through the CLI; the
+// system helper has nothing to stop, and a success reply would tell the caller
+// a transfer ended when it did not.  The caller is still authorized first, so
+// an unrelated bus client learns nothing about the session.
+static void handle_cancel_pull(GDBusConnection* connection, const gchar* sender,
+			       GDBusMethodInvocation* invocation) {
+	if (!authorize(connection, sender, invocation, "CancelPull")) return;
+	g_dbus_method_invocation_return_error(
+		invocation, G_DBUS_ERROR, G_DBUS_ERROR_NOT_SUPPORTED,
+		"flatpkg has no cancellable pull to stop through the system "
+		"helper; cancel the client that started it");
+}
+
 static void handle_unimplemented(GDBusConnection* connection,
 				 const gchar* sender, const gchar* object_path,
 				 const gchar* interface_name,
@@ -835,24 +848,6 @@ static void handle_unimplemented(GDBusConnection* connection,
 		g_dbus_method_invocation_return_value(invocation, NULL);
 		return;
 	}
-	if (g_str_equal(method_name, "CancelPull")) {
-		const gchar *installation = NULL, *src_dir = NULL;
-		guint flags = 0;
-		g_variant_get(parameters, "(u&s&s)", &flags, &installation,
-			      &src_dir);
-		if (!authorize(connection, sender, invocation, "CancelPull"))
-			return;
-		fpkg_helper_args_t hargs = {
-			.installation = installation,
-			.src_dir = src_dir,
-			.flags = flags,
-		};
-		if (!helper_run_mapped("cancel-pull", &hargs, invocation))
-			return;
-		g_dbus_method_invocation_return_value(invocation, NULL);
-		return;
-	}
-
 	const gchar* why;
 
 	if (g_str_equal(method_name, "GetRevokefsFd"))
@@ -1033,7 +1028,7 @@ syshelper_method_call(GDBusConnection* connection, const gchar* sender,
 				     interface_name, method_name, parameters,
 				     invocation, user_data);
 	else if (g_str_equal(method_name, "CancelPull"))
-		g_dbus_method_invocation_return_value(invocation, NULL);
+		handle_cancel_pull(connection, sender, invocation);
 	else
 		handle_unimplemented(connection, sender, object_path,
 				     interface_name, method_name, parameters,

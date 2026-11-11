@@ -26,6 +26,83 @@ static void tokens_free(char** argv, size_t n) {
 	for (size_t i = 0; i < n; i++) free(argv[i]);
 }
 
+// What a placeholder stands for, or NULL when the character is not one.
+static const char* placeholder(const char c, const fpkg_helper_args_t* args) {
+	assert(args != NULL);
+	switch (c) {
+	case 'r': return args->ref;
+	case 'i': return args->installation;
+	case 'b': return args->bundle;
+	case 'n': return args->remote;
+	case 'o': return args->origin;
+	case 'a': return args->arch;
+	case 'p': return args->repo;
+	case 's': return args->subpaths;
+	case 'P': return args->previous;
+	case 'c': return args->config;
+	case 'u': return args->url;
+	case 'k': return args->key;
+	case 'v': return args->value;
+	case 'S': return args->summary;
+	case 'G': return args->summary_sig;
+	case 'd': return args->src_dir;
+	default: return NULL;
+	}
+}
+
+// A placeholder is substituted wherever it appears in a word, not only when
+// the word is exactly one: the shipped map spells `--remote=%o`, which used
+// to be passed through verbatim and made that entry inert.
+static char* expand_word(const char* word, const fpkg_helper_args_t* args) {
+	size_t cap = strlen(word) + 64, n = 0;
+	char* out = malloc(cap);
+	char flag[16];
+
+	if (out == NULL) return NULL;
+	for (const char* p = word; *p != '\0';) {
+		const char* val = NULL;
+		size_t len;
+
+		if (*p == '%' && p[1] != '\0') {
+			if (p[1] == 'f') {
+				snprintf(flag, sizeof(flag), "%u", args->flags);
+				val = flag;
+			} else {
+				val = placeholder(p[1], args);
+			}
+			if (val != NULL) {
+				len = strlen(val);
+				if (n + len + 1 > cap) {
+					char* grown;
+					while (n + len + 1 > cap) cap *= 2;
+					grown = realloc(out, cap);
+					if (grown == NULL) {
+						free(out);
+						return NULL;
+					}
+					out = grown;
+				}
+				memcpy(out + n, val, len);
+				n += len;
+				p += 2;
+				continue;
+			}
+		}
+		if (n + 2 > cap) {
+			char* grown = realloc(out, cap * 2);
+			if (grown == NULL) {
+				free(out);
+				return NULL;
+			}
+			out = grown;
+			cap *= 2;
+		}
+		out[n++] = *p++;
+	}
+	out[n] = '\0';
+	return out;
+}
+
 int fpkg_helper_command(const char* request, const fpkg_helper_args_t* args,
 			char*** argv_out, size_t* argc_out) {
 	assert(request != NULL);
@@ -64,46 +141,7 @@ int fpkg_helper_command(const char* request, const fpkg_helper_args_t* args,
 			tokens_free(argv, n);
 			return -1;
 		}
-		const char* word = tok;
-		if (strcmp(tok, "%r") == 0)
-			word = args->ref != NULL ? args->ref : "";
-		else if (strcmp(tok, "%i") == 0)
-			word = args->installation != NULL ? args->installation
-							  : "";
-		else if (strcmp(tok, "%b") == 0)
-			word = args->bundle != NULL ? args->bundle : "";
-		else if (strcmp(tok, "%n") == 0)
-			word = args->remote != NULL ? args->remote : "";
-		else if (strcmp(tok, "%o") == 0)
-			word = args->origin != NULL ? args->origin : "";
-		else if (strcmp(tok, "%a") == 0)
-			word = args->arch != NULL ? args->arch : "";
-		else if (strcmp(tok, "%p") == 0)
-			word = args->repo != NULL ? args->repo : "";
-		else if (strcmp(tok, "%s") == 0)
-			word = args->subpaths != NULL ? args->subpaths : "";
-		else if (strcmp(tok, "%P") == 0)
-			word = args->previous != NULL ? args->previous : "";
-		else if (strcmp(tok, "%c") == 0)
-			word = args->config != NULL ? args->config : "";
-		else if (strcmp(tok, "%u") == 0)
-			word = args->url != NULL ? args->url : "";
-		else if (strcmp(tok, "%k") == 0)
-			word = args->key != NULL ? args->key : "";
-		else if (strcmp(tok, "%v") == 0)
-			word = args->value != NULL ? args->value : "";
-		else if (strcmp(tok, "%S") == 0)
-			word = args->summary != NULL ? args->summary : "";
-		else if (strcmp(tok, "%G") == 0)
-			word = args->summary_sig != NULL ? args->summary_sig : "";
-		else if (strcmp(tok, "%d") == 0)
-			word = args->src_dir != NULL ? args->src_dir : "";
-		else if (strcmp(tok, "%f") == 0) {
-			static char flagbuf[16];
-			snprintf(flagbuf, sizeof(flagbuf), "%u", args->flags);
-			word = flagbuf;
-		}
-		argv[n++] = strdup(word);
+		argv[n++] = expand_word(tok, args);
 		if (argv[n - 1] == NULL) {
 			tokens_free(argv, n);
 			return -1;

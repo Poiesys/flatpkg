@@ -55,6 +55,20 @@ printf '%s\n' "$out" | grep -q '^arg18=/tmp/src$' ||
 	note "%d was not substituted: $out" ||
 	note "%i was not substituted: $out"
 
+# A placeholder inside a word, which is how the shipped map spells
+# --remote=%o: substituting only a token that is exactly one left the entry
+# inert and passed the literal word to the tool. */
+cat > "$FPKG_TEST_STORE/helper.conf" <<'CONF'
+uninstall = /bin/echo --repo=%p --remote=%n %r
+CONF
+out=$("$T/helper-config")
+printf '%s\n' "$out" | grep -q '^arg1=--repo=/tmp/repo$' ||
+	note "a placeholder inside a word was not substituted: $out"
+printf '%s\n' "$out" | grep -q '^arg2=--remote=flathub$' ||
+	note "a placeholder at the end of a word was not substituted: $out"
+printf '%s\n' "$out" | grep -q '^arg3=app/org.example.App/x86_64/stable$' ||
+	note "a whole-token placeholder stopped being substituted: $out"
+
 cat > "$FPKG_TEST_STORE/helper.conf" <<'CONF'
 uninstall =
 CONF
@@ -78,6 +92,7 @@ printf '%s\n' "$out" | grep -q '^mapped=0' ||
 
 if [ "$fail" -eq 0 ]; then
 	echo "PASS: helper.conf maps a D-Bus request to an absolute argv,"
-	echo "      substitutes the ref/installation, and reports an empty entry"
+	echo "      substitutes a placeholder wherever it appears in a word, and"
+	echo "      reports an empty entry"
 fi
 exit $fail

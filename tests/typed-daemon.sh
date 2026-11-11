@@ -167,6 +167,19 @@ if command -v ostree >/dev/null 2>&1; then
 		note "a client wrote a state file it did not declare"
 	[ -e "$tmp/store/clients/busprobe/other" ] &&
 		note "an undeclared state file was created"
+	# The client namespace is bound to the uid that first declared it, and
+	# flatpkg's own name is the installation's: no stamp for the CLI.
+	[ -f "$tmp/store/clients/.owners/busprobe" ] ||
+		note "a client name was not stamped with its owner"
+	[ "$(cat "$tmp/store/clients/.owners/busprobe" 2>/dev/null)" = "$(id -u)" ] ||
+		note "the client owner stamp is not this uid"
+	[ -e "$tmp/store/clients/.owners/flatpkg" ] &&
+		note "flatpkg's own client name was stamped as one user's"
+	# A descriptor-carrying request before HELLO is refused, not served.
+	"$busprobe" run-nohello "$tmp/s/control.sock" org.test.Hello \
+		>"$tmp/nohello.out" 2>&1 || true
+	grep -q '^gate=denied' "$tmp/nohello.out" ||
+		note "a RUN before HELLO was not refused: $(cat "$tmp/nohello.out")"
 	[ -e "$tmp/store/world" ] &&
 		note "the daemon still writes a store-root world file"
 	run install -y org.test.Hello

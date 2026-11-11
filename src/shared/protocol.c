@@ -1084,7 +1084,7 @@ static ssize_t read_hdr_fds(int fd, uint8_t* buf, size_t n, int* fds,
 		m.msg_iovlen = 1;
 		m.msg_control = ctl.b;
 		m.msg_controllen = sizeof(ctl.b);
-		ssize_t k = recvmsg(fd, &m, 0);
+		ssize_t k = recvmsg(fd, &m, MSG_CMSG_CLOEXEC);
 		if (k == 0) break;
 		if (k < 0) {
 			if (errno == EINTR) continue;
@@ -1105,6 +1105,10 @@ static ssize_t read_hdr_fds(int fd, uint8_t* buf, size_t n, int* fds,
 					close(tmp[i]);
 			}
 		}
+		// More descriptors than the control buffer holds: the kernel
+		// dropped the rest and this is not a frame the protocol
+		// carries.  Refuse it; the caller closes what did fit.
+		if ((m.msg_flags & MSG_CTRUNC) != 0) return -1;
 		got += (size_t)k;
 	}
 	return (ssize_t)got;

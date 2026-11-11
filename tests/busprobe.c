@@ -166,6 +166,25 @@ int main(int argc, char** argv) {
 		perror("busprobe: connect");
 		return 1;
 	}
+	// Before HELLO, on purpose: the fd-carrying requests are dispatched
+	// ahead of the gate in handle(), and a RUN without a HELLO must still
+	// be refused.
+	if (strcmp(mode, "run-nohello") == 0) {
+		fp_req_t nr;
+
+		if (argc < 4) return 2;
+		memset(&nr, 0, sizeof(nr));
+		nr.type = FP_REQ_RUN;
+		nr.u.run.app_id = argv[3];
+		if (send_req(fd, 3, &nr) != 0) return 1;
+		if (read_ack(fd, NULL) == 0) {
+			printf("gate=accepted\n");
+			return 1;
+		}
+		printf("gate=denied\n");
+		return 0;
+	}
+
 	if (hello(fd) != 0) return 1;
 
 	fp_req_t r;
