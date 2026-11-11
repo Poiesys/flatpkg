@@ -302,6 +302,37 @@ main(void)
 	    bound == 1 && strstr(captured, "unknown") == NULL, why);
 	permissions_free_plan(&plan);
 
+	/* 3c. An unknown :suffix REFUSES the entry.  It used to leave the
+	 * grant read-write, so `:RO` or a typo handed out more than the reviewer
+	 * read - the suffix is a permission claim, not a hint. */
+	memset(&plan, 0, sizeof(plan));
+	(void)plan_from("unknown suffix",
+	    "[Application]\nname=Demo\ncommand=demo\n"
+	    "[Context]\nfilesystems=/opt/vault:RO\n", &plan);
+	snprintf(why, sizeof(why), "warnings: %s", captured);
+	size_t vault = 0;
+	for (size_t i = 0; i < plan.ngrants; i++)
+		if (strcmp(plan.grants[i].jail_path, "/opt/vault") == 0)
+			vault++;
+	ok("an unknown :suffix is refused, not made read-write",
+	    vault == 0 && strstr(captured, "is not one of") != NULL, why);
+	permissions_free_plan(&plan);
+
+	/* 3d. The control: the suffixes flatpak defines are still read. */
+	memset(&plan, 0, sizeof(plan));
+	(void)plan_from("ro suffix",
+	    "[Application]\nname=Demo\ncommand=demo\n"
+	    "[Context]\nfilesystems=/opt/vault:ro\n", &plan);
+	snprintf(why, sizeof(why), "warnings: %s", captured);
+	size_t ro_grant = 0;
+	for (size_t i = 0; i < plan.ngrants; i++)
+		if (strcmp(plan.grants[i].jail_path, "/opt/vault") == 0 &&
+		    plan.grants[i].mode == FS_GRANT_RO)
+			ro_grant++;
+	ok("':ro' still binds a read-only grant and warns about nothing",
+	    ro_grant == 1 && warning_lines() == 0, why);
+	permissions_free_plan(&plan);
+
 	/* 4. A conditional that holds is consumed, not warned about:
 	 * `if:NAME:COND` is rewritten to NAME before the loops see it. */
 	memset(&plan, 0, sizeof(plan));

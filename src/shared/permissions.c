@@ -83,9 +83,16 @@ static int parse_fs_token(const char* entry, fs_token_t* tok, char* buf,
 			tok->mode = FS_GRANT_RW;
 		else if (strcmp(suffix, "create") == 0)
 			tok->mode = FS_GRANT_CREATE;
-		else if (*suffix != '\0')
+		else if (*suffix != '\0') {
+			// A suffix that is not understood used to leave the
+			// grant read-write, so ':RO' or a typo handed out more
+			// than the reviewer read.
 			snprintf(buf, buflen,
-				 "ignoring filesystem suffix ':%s'", suffix);
+				 "filesystem suffix ':%s' is not one of ':ro', "
+				 "':rw' or ':create', skipping",
+				 suffix);
+			return -1;
+		}
 	}
 
 	if (strstr(tmp, "/../") != NULL ||

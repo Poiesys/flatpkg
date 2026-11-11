@@ -289,6 +289,19 @@ static int pulse_socket_path(const sandbox_plan_t* plan, char* out, size_t n,
 	return -1;
 }
 
+// A socket is served by mounting its parent directory, so a socket that sits
+// in a shared directory would show the jail everything else in it too.
+static bool socket_dir_too_broad(const char* dir) {
+	assert(dir != NULL);
+	static const char* const broad[] = {"/",	  "/tmp",  "/var/tmp",
+					    "/var/run", "/run", "/var",
+					    "/dev",	  NULL};
+
+	for (size_t i = 0; broad[i] != NULL; i++)
+		if (strcmp(dir, broad[i]) == 0) return true;
+	return false;
+}
+
 // Bind a host UNIX socket by mounting its parent directory read-only: FreeBSD
 // nullfs refuses a socket inode outright.
 static int bind_host_socket_dir(sandbox_t* sb, const char* hsock,
@@ -304,9 +317,7 @@ static int bind_host_socket_dir(sandbox_t* sb, const char* hsock,
 	slash = strrchr(dir, '/');
 	if (slash == NULL || slash == dir) return -1;
 	*slash = '\0';
-	if (strcmp(dir, "/tmp") == 0 || strcmp(dir, "/var/tmp") == 0 ||
-	    strcmp(dir, "/var/run") == 0 || strcmp(dir, "/run") == 0 ||
-	    strcmp(dir, "/var") == 0 || strcmp(dir, "/dev") == 0) {
+	if (socket_dir_too_broad(dir)) {
 		fpkg_warnf("refusing to bind broad socket directory %s "
 			   "(socket %s)",
 			   dir, hsock);
@@ -3036,17 +3047,23 @@ static int apply_grant(sandbox_t* sb, const sandbox_plan_t* plan,
 			bool cover_ro = statfs(cover->to, &cfs) == 0 &&
 					(cfs.f_flags & MNT_RDONLY) != 0;
 			bool want_ro = (g->mode == FS_GRANT_RO);
-			if (want_ro && !cover_ro)
-				fpkg_warnf("'%s' is inside '%s', which is "
-					   "mounted read-write: it stays "
-					   "read-write (wanted read-only)",
-					   g->jail_path,
-					   cover->to + strlen(sb->jailroot));
-			else
+			bool same_source = cover->from != NULL &&
+					   strcmp(cover->from, g->host_path) == 0;
+
+			// The same view twice, or the permissions wanted are
+			// already the answer: nothing to mount.
+			if (same_source || cover_ro == want_ro) {
 				fpkg_infof("'%s' is already visible through "
 					   "the grant of %s, skipping",
 					   g->jail_path, cover->from);
-			return 0;
+				return 0;
+			}
+			// A narrower grant over a wider one: mount it, or the
+			// wider mount's permissions stay the answer - which is
+			// how a read-only child ended up writable through the
+			// parent.
+			fpkg_debugf("'%s' narrows the grant of %s", g->jail_path,
+				    cover->from);
 		}
 	}
 	if ((jail_path_under_home(sb, plan, to) ? mkdir_as_caller(plan, to, 0755)
@@ -3086,15 +3103,45 @@ static int apply_grant(sandbox_t* sb, const sandbox_plan_t* plan,
 	return 0;
 }
 
+static size_t grant_depth(const fs_grant_t* g) {
+	size_t depth = 0;
+
+	assert(g != NULL);
+	for (const char* c = g->jail_path; *c; c++)
+		if (*c == '/') depth++;
+	return depth;
+}
+
 static int stage_grants(sandbox_t* sb, const sandbox_plan_t* plan) {
 	bool home_granted = home_is_granted(plan);
 	size_t missing_paths = 0;
+	size_t* order = NULL;
 
+	// Shallow first: a grant is a view of a host path, so a narrower one
+	// has to be mounted on top of the wider one it lives in.  The order is
+	// the claim; a metadata file's line order is not.
+	if (plan->ngrants > 0) {
+		order = calloc(plan->ngrants, sizeof(*order));
+		if (order == NULL) return -1;
+		for (size_t i = 0; i < plan->ngrants; i++) order[i] = i;
+		for (size_t i = 1; i < plan->ngrants; i++) {
+			size_t key = order[i];
+			size_t j = i;
+
+			while (j > 0 && grant_depth(&plan->grants[order[j - 1]]) >
+						grant_depth(&plan->grants[key])) {
+				order[j] = order[j - 1];
+				j--;
+			}
+			order[j] = key;
+		}
+	}
 	for (size_t i = 0; i < plan->ngrants; i++) {
-		fs_grant_t* g = &plan->grants[i];
+		fs_grant_t* g = &plan->grants[order[i]];
 
 		if (apply_grant(sb, plan, g, home_granted) > 0) missing_paths++;
 	}
+	free(order);
 	if (missing_paths > 0)
 		fpkg_infof("skipped %zu missing host-path grant(s)",
 			   missing_paths);
@@ -3249,6 +3296,14 @@ static int stage_pulseaudio(sandbox_t* sb, const sandbox_plan_t* plan) {
 		} else {
 			snprintf(pdir, sizeof(pdir), "/");
 			snprintf(base, sizeof(base), "%s", psock);
+		}
+		// The socket's directory is what gets mounted, so a socket in
+		// /tmp would hand the jail the whole of the host's /tmp.
+		if (socket_dir_too_broad(pdir)) {
+			fpkg_warnf("refusing to expose pulseaudio socket %s: "
+				   "%s is a shared directory",
+				   psock, pdir);
+			return 0;
 		}
 		char hostdir[PATH_MAX], to[PATH_MAX];
 		snprintf(hostdir, sizeof(hostdir), "%s/run/flatpak/pulse-host",
@@ -3736,68 +3791,75 @@ static int stage_fonts(sandbox_t* sb, const sandbox_plan_t* plan) {
 	return 0;
 }
 
-static int stage_host_grants(sandbox_t* sb, const sandbox_plan_t* plan) {
+// The host's own top-level directories, as a `host` grant gives them.  Laid
+// down before the explicit grants so a narrower grant mounts on top of this
+// view instead of being covered by it - a later mount is what the app sees.
+static int stage_host_mounts(sandbox_t* sb, const sandbox_plan_t* plan) {
+	static const char* protected_dirs[] = {
+		".",	  "..",	   "app",  "bin",  "boot",	"compat",
+		"dev",	  "efi",   "etc",  "lib",  "lib32", "lib64",
+		"proc",	  "root",  "run",  "sbin", "sys",   "tmp",
+		"usr",	  "var",   NULL};
+	DIR* d;
+	bool ro = true;
+
+	assert(sb != NULL);
+	assert(plan != NULL);
+	if (!plan_has_host_grant(plan)) return 0;
+	for (size_t i = 0; i < plan->ngrants; i++)
+		if (plan->grants[i].mode != FS_GRANT_HIDE &&
+		    strcmp(plan->grants[i].jail_path, "/run/host") == 0)
+			ro = plan->grants[i].mode == FS_GRANT_RO;
+	d = opendir("/");
+	if (d == NULL) return 0;
 	{
-		struct {
-			const char* name;
-		} overlays[] = {
-			{"container-manager"}, {"font-dirs.xml"}, {NULL}};
-		for (int i = 0; overlays[i].name; i++) {
+		struct dirent* de;
+
+		while ((de = readdir(d)) != NULL) {
+			bool skip = false;
 			char from[PATH_MAX], to[PATH_MAX];
-			snprintf(from, sizeof(from), "%s/run/%s", sb->jailroot,
-				 overlays[i].name);
-			snprintf(to, sizeof(to), "%s/run/host/%s", sb->jailroot,
-				 overlays[i].name);
-			if (access(from, R_OK) == 0 && ensure_file(to, NULL) == 0)
-				m_nullfs(sb, from, to, true);
-		}
-		if (plan_has_host_grant(plan)) {
-			static const char* protected_dirs[] = {
-				".",	  "..",	   "app",  "bin",  "boot",
-				"compat", "dev",   "efi",  "etc",  "lib",
-				"lib32",  "lib64", "proc", "root", "run",
-				"sbin",	  "sys",   "tmp",  "usr",  "var",
-				NULL};
-			bool ro = true;
-			for (size_t i = 0; i < plan->ngrants; i++)
-				if (plan->grants[i].mode != FS_GRANT_HIDE &&
-				    strcmp(plan->grants[i].jail_path,
-					   "/run/host") == 0)
-					ro = plan->grants[i].mode ==
-					     FS_GRANT_RO;
-			DIR* d = opendir("/");
-			if (d) {
-				struct dirent* de;
-				while ((de = readdir(d)) != NULL) {
-					bool skip = false;
-					for (int i = 0; protected_dirs[i]; i++)
-						if (strcmp(protected_dirs[i],
-							   de->d_name) == 0) {
-							skip = true;
-							break;
-						}
-					if (skip) continue;
-					char from[PATH_MAX], to[PATH_MAX];
-					snprintf(from, sizeof(from), "/%s",
-						 de->d_name);
-					struct stat st;
-					if (stat(from, &st) != 0) continue;
-					snprintf(to, sizeof(to), "%s/%s",
-						 sb->jailroot, de->d_name);
-					if (sb_is_mounted(sb, to)) continue;
-					if (S_ISDIR(st.st_mode)) {
-						if (mkdir_p(to, 0755) != 0)
-							continue;
-						m_nullfs(sb, from, to, ro);
-					} else if (S_ISREG(st.st_mode)) {
-						if (ensure_file(to, NULL) == 0)
-							m_nullfs(sb, from, to,
-								 ro);
-					}
+			struct stat st;
+
+			for (int i = 0; protected_dirs[i]; i++)
+				if (strcmp(protected_dirs[i], de->d_name) == 0) {
+					skip = true;
+					break;
 				}
-				closedir(d);
+			if (skip) continue;
+			snprintf(from, sizeof(from), "/%s", de->d_name);
+			if (stat(from, &st) != 0) continue;
+			snprintf(to, sizeof(to), "%s/%s", sb->jailroot,
+				 de->d_name);
+			if (sb_is_mounted(sb, to)) continue;
+			if (S_ISDIR(st.st_mode)) {
+				if (mkdir_p(to, 0755) != 0) continue;
+				m_nullfs(sb, from, to, ro);
+			} else if (S_ISREG(st.st_mode)) {
+				if (ensure_file(to, NULL) == 0)
+					m_nullfs(sb, from, to, ro);
 			}
 		}
+	}
+	closedir(d);
+	return 0;
+}
+
+// /run/host/<name> views of files the builder staged; last, because their
+// sources are the builder's own.
+static int stage_host_overlays(sandbox_t* sb) {
+	static const char* const overlays[] = {"container-manager",
+					       "font-dirs.xml", NULL};
+
+	assert(sb != NULL);
+	for (int i = 0; overlays[i] != NULL; i++) {
+		char from[PATH_MAX], to[PATH_MAX];
+
+		snprintf(from, sizeof(from), "%s/run/%s", sb->jailroot,
+			 overlays[i]);
+		snprintf(to, sizeof(to), "%s/run/host/%s", sb->jailroot,
+			 overlays[i]);
+		if (access(from, R_OK) == 0 && ensure_file(to, NULL) == 0)
+			m_nullfs(sb, from, to, true);
 	}
 	return 0;
 }
@@ -3874,6 +3936,7 @@ int sandbox_build_root(sandbox_t* sb, const sandbox_plan_t* plan,
 	if (stage_time(sb) != 0) return -1;
 	if (stage_var(sb, plan) != 0) return -1;
 	if (stage_p11kit(sb, plan) != 0) return -1;
+	if (stage_host_mounts(sb, plan) != 0) return -1;
 	if (stage_home(sb, plan) != 0) return -1;
 	if (stage_grants(sb, plan) != 0) return -1;
 	if (stage_sockets(sb, plan) != 0) return -1;
@@ -3886,7 +3949,7 @@ int sandbox_build_root(sandbox_t* sb, const sandbox_plan_t* plan,
 	if (stage_font_cache(sb, plan) != 0) return -1;
 	if (stage_icons(sb, plan) != 0) return -1;
 	if (stage_fonts(sb, plan) != 0) return -1;
-	if (stage_host_grants(sb, plan) != 0) return -1;
+	if (stage_host_overlays(sb) != 0) return -1;
 	if (stage_store_links(sb) != 0) return -1;
 
 	return 0;

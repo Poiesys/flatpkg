@@ -11,7 +11,7 @@ trap 'rm -rf "$tmp"' EXIT
 # A floor on the case count: a harness whose cases were all deleted prints
 # "0 case(s), 0 failed" and exits 0.  capture() in tests/permissions.c is what
 # lets the override path assert a warning, at a terminal width the child sets.
-floor=36
+floor=38
 
 srcs="tests/permissions.c src/shared/permissions.c src/shared/metadata.c \
       src/shared/util.c src/cli/tb_core.c src/cli/tb_progress.c src/cli/tb_tui.c"
