@@ -781,7 +781,9 @@ static void child_exec(const fp_metadata_t* meta, const sandbox_plan_t* plan,
 	for (size_t i = 0; i < nextra; i++) argv[i + 1] = extra[i];
 	argv[nextra + 1] = NULL;
 
-	umask(0);
+	// The app creates files on the host mounts it was granted: umask(0)
+	// left them 0666/0777 whatever the caller's own umask was.
+	umask(022);
 	execvp(cmd, argv);
 	dprintf(2, "flatpkg: execvp %s: %s (PATH=%s home=%s)\n", cmd,
 		strerror(errno), cli_getenv("PATH"), cli_getenv("HOME"));

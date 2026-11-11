@@ -685,15 +685,26 @@ static int m_unionfs(sandbox_t* sb, const char* from, const char* to,
 	return mount_tool(sb, "/sbin/mount_unionfs", args, "unionfs", from, to);
 }
 
-static int m_tmpfs(sandbox_t* sb, const char* to) {
+// A per-launch tmpfs is memory the app can fill, so each one carries a cap:
+// without a size the app drives the host into swap from inside the jail.
+#define TMPFS_SIZE_DEFAULT (256ull << 20)
+#define TMPFS_SIZE_SHM (1ull << 30)
+
+static int m_tmpfs_sized(sandbox_t* sb, const char* to,
+			 unsigned long long size) {
 	assert(sb != NULL);
 	assert(to != NULL);
+	char opts[64];
+	char sizeopt[40];
+	char* args[] = {"-t", "tmpfs", "-o", sizeopt, "tmpfs", (char*)to, NULL};
 	int rc;
-	if (do_nmount("tmpfs", "tmpfs", to, NULL, false) == 0) {
+
+	snprintf(sizeopt, sizeof(sizeopt), "size=%llu", size);
+	snprintf(opts, sizeof(opts), "size=%llu", size);
+	if (do_nmount("tmpfs", "tmpfs", to, opts, false) == 0) {
 		sb_track(sb, "tmpfs", NULL, to);
 		rc = 0;
 	} else {
-		char* args[] = {"-t", "tmpfs", "tmpfs", (char*)to, NULL};
 		rc = mount_tool(sb, "/sbin/mount", args, "tmpfs", NULL, to);
 	}
 	if (rc == 0) {
@@ -702,6 +713,10 @@ static int m_tmpfs(sandbox_t* sb, const char* to) {
 			fpkg_warnf("chmod %s: %s", to, strerror(errno));
 	}
 	return rc;
+}
+
+static int m_tmpfs(sandbox_t* sb, const char* to) {
+	return m_tmpfs_sized(sb, to, TMPFS_SIZE_DEFAULT);
 }
 
 int m_special(sandbox_t* sb, const char* fstype, const char* to) {
@@ -1403,16 +1418,6 @@ static void stage_dconf_migration(sandbox_t* sb, const sandbox_plan_t* plan) {
 	}
 }
 
-static bool machine_id_valid(const char* s) {
-	if (s == NULL || strlen(s) != 32) return false;
-	for (size_t i = 0; i < 32; i++) {
-		char c = s[i];
-		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
-		      (c >= 'A' && c <= 'F')))
-			return false;
-	}
-	return true;
-}
 
 static int build_etc(sandbox_t* sb, const sandbox_plan_t* plan) {
 	assert(sb != NULL);
@@ -1446,35 +1451,17 @@ static int build_etc(sandbox_t* sb, const sandbox_plan_t* plan) {
 		return -1;
 	}
 
-	// GDBus refuses to autolaunch a bus unless this file holds 32 hex digits,
-	// and a host file can also hold "" or "uninitialized": copying that
-	// verbatim is what leaves every GDBus client in the sandbox complaining
-	// about an invalid machine-id.  FreeBSD ships no /etc/machine-id at all.
-	char mid[64] = "";
-	FILE* mf = fopen("/etc/machine-id", "r");
-	if (mf == NULL) mf = fopen("/var/lib/dbus/machine-id", "r");
-	if (mf != NULL) {
-		if (fgets(mid, sizeof(mid), mf) != NULL)
-			mid[strcspn(mid, " \t\r\n")] = '\0';
-		fclose(mf);
-	}
-	if (machine_id_valid(mid)) {
-		for (size_t i = 0; i < 32; i++)
-			if (mid[i] >= 'A' && mid[i] <= 'F')
-				mid[i] = (char)(mid[i] - 'A' + 'a');
-	} else {
+	// GDBus refuses to autolaunch a bus unless this file holds 32 hex
+	// digits, and the host's own id identifies the machine to the app and
+	// the app to the host at once: each sandbox gets one of its own, as
+	// flatpak's does.  arc4random is the kernel's, with nothing to seed.
+	char mid[33];
+	{
 		unsigned char r[16];
-		int fd = open("/dev/urandom", O_RDONLY);
-		ssize_t got = fd >= 0 ? read(fd, r, sizeof(r)) : -1;
-		if (fd >= 0) close(fd);
-		mid[0] = '\0';
-		if (got == (ssize_t)sizeof(r)) {
-			for (size_t i = 0; i < sizeof(r); i++)
-				snprintf(mid + i * 2, 3, "%02x", r[i]);
-		} else {
-			fpkg_warnf("no machine-id: the host has none and "
-				   "/dev/urandom could not be read");
-		}
+
+		arc4random_buf(r, sizeof(r));
+		for (size_t i = 0; i < sizeof(r); i++)
+			snprintf(mid + i * 2, 3, "%02x", r[i]);
 	}
 	if (mid[0] != '\0') {
 		// The canonical file is the id and a newline.
@@ -3971,7 +3958,7 @@ void stage_dev_shm(sandbox_t* sb, const sandbox_plan_t* plan) {
 			if (m_nullfs(sb, shm_host, shmdir, false) != 0) {
 				fpkg_warnf("could not bind per-app /dev/shm, "
 					   "falling back to tmpfs");
-				if (m_tmpfs(sb, shmdir) != 0)
+				if (m_tmpfs_sized(sb, shmdir, TMPFS_SIZE_SHM) != 0)
 					fpkg_warnf("could not mount /dev/shm");
 			}
 		} else {
@@ -3980,7 +3967,7 @@ void stage_dev_shm(sandbox_t* sb, const sandbox_plan_t* plan) {
 			if (m_tmpfs(sb, shmdir) != 0)
 				fpkg_warnf("could not mount /dev/shm");
 		}
-	} else if (m_tmpfs(sb, shmdir) != 0) {
+	} else if (m_tmpfs_sized(sb, shmdir, TMPFS_SIZE_SHM) != 0) {
 		fpkg_warnf("could not mount /dev/shm; Wayland shm and MIT-SHM "
 			   "may fail");
 	}

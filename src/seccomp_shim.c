@@ -16,6 +16,22 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+// The knobs decide which filters are installed, so they are read once, before
+// the app's first call into the shim: a process that can setenv() them later
+// would be rewriting the gate it is subject to.
+static bool g_allow_can, g_allow_bt, g_devel;
+
+__attribute__((constructor)) static void read_knobs(void) {
+	const char* v;
+
+	v = getenv("FLATPKG_SECCOMP_ALLOW_CAN");
+	g_allow_can = v != NULL && (*v == '1' || *v == 't');
+	v = getenv("FLATPKG_SECCOMP_ALLOW_BT");
+	g_allow_bt = v != NULL && (*v == '1' || *v == 't');
+	v = getenv("FLATPKG_SECCOMP_DEVEL");
+	g_devel = v != NULL && (*v == '1' || *v == 't');
+}
+
 #ifndef SYS_mount
 #define SYS_mount 165
 #endif
@@ -199,12 +215,8 @@ static int socket_allowed(int domain, int type) {
 			domain == AF_INET || domain == AF_INET6 ||
 			domain == AF_NETLINK);
 	if (!allowed) {
-		const char* can = getenv("FLATPKG_SECCOMP_ALLOW_CAN");
-		const char* bt = getenv("FLATPKG_SECCOMP_ALLOW_BT");
-		if (can && (*can == '1' || *can == 't') && domain == AF_CAN)
-			allowed = true;
-		if (bt && (*bt == '1' || *bt == 't') && domain == AF_BLUETOOTH)
-			allowed = true;
+		if (g_allow_can && domain == AF_CAN) allowed = true;
+		if (g_allow_bt && domain == AF_BLUETOOTH) allowed = true;
 	}
 	if (!allowed) {
 		errno = EAFNOSUPPORT;
@@ -304,8 +316,7 @@ long syscall(long nr, ...) {
 		va_start(ap, nr);
 		unsigned long persona = va_arg(ap, unsigned long);
 		va_end(ap);
-		const char* devel = getenv("FLATPKG_SECCOMP_DEVEL");
-		if (devel && (*devel == '1' || *devel == 't')) {
+		if (g_devel) {
 			return real_syscall(nr, persona);
 		}
 		if (persona != PER_LINUX) {
@@ -316,8 +327,7 @@ long syscall(long nr, ...) {
 	}
 
 	if (nr == SYS_ptrace) {
-		const char* devel = getenv("FLATPKG_SECCOMP_DEVEL");
-		if (!(devel && (*devel == '1' || *devel == 't'))) {
+		if (!g_devel) {
 			errno = EPERM;
 			return -1;
 		}
@@ -419,8 +429,7 @@ int request_key(const char* type, const char* desc, const char* callout,
 }
 
 int ptrace(int req, ...) {
-	const char* devel = getenv("FLATPKG_SECCOMP_DEVEL");
-	if (devel && (*devel == '1' || *devel == 't')) {
+	if (g_devel) {
 		init_real_syscall();
 		if (real_syscall) {
 			va_list ap;

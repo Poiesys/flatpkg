@@ -25,6 +25,12 @@ carve_function '^static int apply_grant\(' "$T/sb.c" > "$T/apply.inc" ||
 	{ echo "FAIL: apply_grant() not found"; exit 1; }
 carve_function '^static int stage_pulseaudio\(' "$T/sb.c" > "$T/pulse.inc" ||
 	{ echo "FAIL: stage_pulseaudio() not found"; exit 1; }
+carve_function '^static int m_tmpfs_sized\(' "$T/sb.c" > "$T/tmpfs.inc" ||
+	{ echo "FAIL: m_tmpfs_sized() not found"; exit 1; }
+carve_function '^static int m_tmpfs\(' "$T/sb.c" > "$T/tmpfs-default.inc" ||
+	{ echo "FAIL: m_tmpfs() not found"; exit 1; }
+carve_function '^void stage_dev_shm\(' "$T/sb.c" > "$T/shm.inc" ||
+	{ echo "FAIL: stage_dev_shm() not found"; exit 1; }
 
 pos() {
 	grep -n "$1" "$2" | head -1 | cut -d: -f1
@@ -36,7 +42,7 @@ bug() {
 }
 
 check() {
-	root=$1 grants=$2 apply=$3 pulse=$4
+	root=$1 grants=$2 apply=$3 pulse=$4 tmpfs=$5 tmpfs_default=$6 shm=$7
 
 	host=$(pos 'stage_host_mounts(' "$root")
 	home=$(pos 'stage_home(' "$root")
@@ -74,9 +80,20 @@ check() {
 
 	grep -q 'socket_dir_too_broad(pdir)' "$pulse" ||
 		bug "pulse staging mounts a shared directory unchecked"
+
+	# A tmpfs the app can fill carries a size, in both mount spellings.
+	grep -q 'size=%llu' "$tmpfs" ||
+		bug "a per-launch tmpfs has no size limit"
+	grep -q '"-o"' "$tmpfs" ||
+		bug "the mount(8) fallback drops the size option"
+	grep -q 'TMPFS_SIZE_DEFAULT' "$tmpfs_default" ||
+		bug "m_tmpfs() does not go through the sized mount"
+	grep -q 'TMPFS_SIZE_SHM' "$shm" ||
+		bug "/dev/shm is capped like every other tmpfs"
 }
 
-( check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" )
+( check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
+	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" )
 
 # --- the plants ----------------------------------------------------------
 prove() {
@@ -95,13 +112,15 @@ awk '
 	/stage_grants\(/ && !done { print host; done = 1 }
 ' "$T/root.inc" > "$T/plant-order.inc"
 prove "the host mounts after the grants" \
-	check "$T/plant-order.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc"
+	check "$T/plant-order.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
+	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc"
 
 # 2. the grants back in metadata order
 sed 's/grant_depth(&plan->grants\[order\[j - 1\]\])/0/' "$T/grants.inc" \
 	> "$T/plant-depth.inc"
 prove "the grants unsorted" \
-	check "$T/root.inc" "$T/plant-depth.inc" "$T/apply.inc" "$T/pulse.inc"
+	check "$T/root.inc" "$T/plant-depth.inc" "$T/apply.inc" "$T/pulse.inc" \
+	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc"
 
 # 3. the narrower grant skipped again: a return right after the covering test
 awk '/narrows/ { print "\t\t\treturn 0;" } { print }' "$T/apply.inc" \
@@ -111,15 +130,23 @@ if cmp -s "$T/apply.inc" "$T/plant-cover.inc"; then
 	exit 1
 fi
 prove "the narrower grant skipped" \
-	check "$T/root.inc" "$T/grants.inc" "$T/plant-cover.inc" "$T/pulse.inc"
+	check "$T/root.inc" "$T/grants.inc" "$T/plant-cover.inc" "$T/pulse.inc" \
+	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc"
 
 # 4. pulse staging without the shared-directory check
 sed 's/if (socket_dir_too_broad(pdir)) {/if (0) {/' "$T/pulse.inc" \
 	> "$T/plant-pulse.inc"
 prove "pulse staging unchecked" \
 	check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" \
-	"$T/plant-pulse.inc"
+	"$T/plant-pulse.inc" "$T/tmpfs.inc" "$T/tmpfs-default.inc" \
+	"$T/shm.inc"
+
+# 5. the tmpfs back to an unbounded mount
+sed 's/size=%llu/nosize/' "$T/tmpfs.inc" > "$T/plant-tmpfs.inc"
+prove "an unbounded tmpfs" \
+	check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
+	"$T/plant-tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc"
 
 echo "PASS: the host view, the home overlay and the grants are layered in"
-echo "      that order, a narrower grant mounts on top, and no socket"
-echo "      staging path mounts a shared directory"
+echo "      that order, a narrower grant mounts on top, no socket staging"
+echo "      path mounts a shared directory, and every tmpfs is bounded"

@@ -66,6 +66,23 @@ if [ "$(printf '%s\n' "$out" | grep -c . || true)" -ne 2 ]; then
 	note "the two machine-id files did not print as two lines: '$out'"
 fi
 
+# One id per sandbox, and not the host's: the host's identifies this machine
+# to the app and the app to the host at once.
+out2=$("$FLATPKG" run --command=/usr/bin/cat "$app" /etc/machine-id \
+	2>/dev/null || true)
+etc2=$(printf '%s\n' "$out2" | sed -n 1p)
+case "$etc2" in
+"") note "a second launch had no /etc/machine-id" ;;
+*) [ "$etc2" != "$etc" ] ||
+	note "two launches share one machine-id, so it is not per-sandbox" ;;
+esac
+hostmid=$(cat /etc/machine-id 2>/dev/null || true)
+[ -n "$hostmid" ] || hostmid=$(cat /var/lib/dbus/machine-id 2>/dev/null ||
+	true)
+if [ -n "$hostmid" ] && [ "$etc" = "$hostmid" ]; then
+	note "the sandbox carries the host's machine-id"
+fi
+
 if [ "$fail" -eq 0 ]; then
 	echo "PASS: the sandbox exposes one valid machine-id at /etc/machine-id"
 	echo "      and /var/lib/dbus/machine-id"

@@ -313,10 +313,14 @@ int drm_devt_map(char* out, size_t outlen) {
 
 		snprintf(path, sizeof(path), "/dev/dri/%s", names[i]);
 		if (stat(path, &st) != 0) continue;
-		off += (size_t)snprintf(out + off, outlen - off, "%s%s:%llu",
-					off > 0 ? ";" : "", path,
-					(unsigned long long)st.st_rdev);
-		if (off >= outlen) break;
+		// snprintf's return is what it would have written, so adding it to
+		// an offset underflows on a short buffer; refuse the entry whole.
+		if (!fpkg_buf_append(out, outlen, &off, "%s%s:%llu",
+				     off > 0 ? ";" : "", path,
+				     (unsigned long long)st.st_rdev)) {
+			out[off] = '\0';
+			break;
+		}
 	}
 	return 0;
 }

@@ -169,13 +169,18 @@ static void extract_arch_branch(const char* app_files_dir, char* arch,
 }
 
 static int write_run_environ(const char* path, const char* snapshot,
-			     size_t len) {
+			     size_t len, uid_t uid, gid_t gid) {
 	assert(path != NULL);
 	assert(snapshot != NULL || len == 0);
 	(void)unlink(path);
-	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL, 0400);
+	int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+		      0400);
 	if (fd < 0) return -1;
 	ssize_t w = write(fd, snapshot, len);
+	// The owner is set through the descriptor this process opened: a chown
+	// by name afterwards is a window for a swap.
+	if (w == (ssize_t)len && uid != 0 && fchown(fd, uid, gid) != 0)
+		fpkg_warnf("chown %s: %s", path, strerror(errno));
 	close(fd);
 	return (w == (ssize_t)len) ? 0 : -1;
 }
@@ -656,14 +661,14 @@ void instance_save_run_environ(const sandbox_t* sb, const fp_metadata_t* meta,
 	snprintf(path, sizeof(path), "%s-private/run-environ",
 		 sb->instance_dir);
 	if (snapshot_env(&snapshot, &snaplen, meta, plan) != 0) return;
-	if (write_run_environ(path, snapshot, snaplen) != 0) {
+	if (write_run_environ(path, snapshot, snaplen,
+			      plan != NULL ? plan->uid : 0,
+			      plan != NULL ? plan->gid : 0) != 0) {
 		fpkg_warnf("cannot record the app's environment at %s: %s",
 			   path, strerror(errno));
 		free(snapshot);
 		return;
 	}
-	if (plan != NULL && plan->uid != 0)
-		(void)chown(path, (uid_t)plan->uid, (gid_t)plan->gid);
 	free(snapshot);
 }
 
@@ -807,12 +812,26 @@ static long jail_owner_uid(int jid) {
 
 static uid_t caller_uid(void) {
 	const char* s = cli_getenv("FLATPKG_APP_UID");
-	if (s == NULL || *s == '\0') return 0;
 	char* end = NULL;
+	unsigned long v;
+
+	if (s == NULL || *s == '\0') return getuid();
 	errno = 0;
-	unsigned long v = strtoul(s, &end, 10);
+	v = strtoul(s, &end, 10);
 	if (errno != 0 || end == s || *end != '\0') return (uid_t)-1;
 	return (uid_t)v;
+}
+
+static gid_t caller_gid(void) {
+	const char* s = cli_getenv("FLATPKG_APP_GID");
+	char* end = NULL;
+	unsigned long v;
+
+	if (s == NULL || *s == '\0') return getgid();
+	errno = 0;
+	v = strtoul(s, &end, 10);
+	if (errno != 0 || end == s || *end != '\0') return (gid_t)-1;
+	return (gid_t)v;
 }
 
 // enter and kill act as root, so only for the user the jail was made for (or root).
@@ -875,21 +894,23 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 	if (require_flatpkg_jail(jid) != 0) return 1;
 	if (require_jail_owner(jid) != 0) return 1;
 
-	uid_t uid = 0;
-	gid_t gid = 0;
+	// The caller's identity is the peer's, never the instance's info file:
+	// that file lives in the caller's own directory, so a uid=0 written
+	// there used to enter the jail as root.  The file is a cross-check.
+	uid_t uid = caller_uid();
+	gid_t gid = caller_gid();
+	if (uid == (uid_t)-1 || gid == (gid_t)-1) {
+		fpkg_errorf("enter: cannot determine the caller's identity");
+		return 1;
+	}
 	if (info_path[0]) {
 		char buf[64];
-		if (kf_get(info_path, "Instance", "uid", buf, sizeof(buf)) == 0)
-			uid = (uid_t)strtoul(buf, NULL, 10);
-		if (kf_get(info_path, "Instance", "gid", buf, sizeof(buf)) == 0)
-			gid = (gid_t)strtoul(buf, NULL, 10);
-	} else {
-		const char* cu = cli_getenv("FLATPKG_APP_UID");
-		const char* cg = cli_getenv("FLATPKG_APP_GID");
-		if (cu != NULL && *cu != '\0')
-			uid = (uid_t)strtoul(cu, NULL, 10);
-		if (cg != NULL && *cg != '\0')
-			gid = (gid_t)strtoul(cg, NULL, 10);
+		if (kf_get(info_path, "Instance", "uid", buf, sizeof(buf)) == 0 &&
+		    (uid_t)strtoul(buf, NULL, 10) != uid) {
+			fpkg_errorf("instance %s was started by another user",
+				    arg);
+			return 1;
+		}
 	}
 
 	// As in sandbox_exec(): the command must not start while this process still holds
