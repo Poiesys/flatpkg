@@ -17,6 +17,7 @@ NOENV=          -include include/fpkg_noenv.h
 CFLAGS+=        -I/usr/local/include/dbus-1.0 -I/usr/local/lib/dbus-1.0/include
 CFLAGS+=        -Ibuild
 LDLIBS+=        -ljail
+LDLIBS+=        -lnv
 LDLIBS+=        -L/usr/local/lib -ldbus-1 -lutil -lz
 GLIB_CFLAGS?=   -I/usr/local/include/glib-2.0 -I/usr/local/lib/glib-2.0/include
 GLIB_LIBS?=     -L/usr/local/lib -lgio-2.0 -lgobject-2.0 -lglib-2.0 -lintl

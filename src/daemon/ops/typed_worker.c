@@ -42,7 +42,14 @@ typedef struct {
 	bool have_stdio;
 	uint32_t pending_sub;	  // request waiting for the broker's ack
 	uint32_t pending_cancel;
+	size_t bad_frames; // malformed requests seen on this connection
 } wctx_t;
+
+// libnv's unpack leaks what it had built when a blob is malformed inside a
+// pair or a nested list (base-system bug on this branch).  The worker is
+// per-connection, so closing after a few bad frames bounds what one client
+// can leave behind in root's address space.
+#define FP_MAX_BAD_FRAMES 8
 
 // After HELLO a connection may idle, but not forever in the worker pool: a
 // connection following events is exempt, because waiting is its purpose.
@@ -1458,6 +1465,12 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 		if (rc != FP_P_OK) {
 			ack_err(&c, hdr.id, FP_E_INVALID, "malformed request");
 			if (c.dead) break;
+			if (++c.bad_frames >= FP_MAX_BAD_FRAMES) {
+				fpkg_warnf("closing a connection after %zu "
+					   "malformed requests",
+					   c.bad_frames);
+				break;
+			}
 			continue;
 		}
 		// The three requests that carry descriptors are handled here,

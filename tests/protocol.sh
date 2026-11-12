@@ -27,5 +27,5 @@ fi
 
 # $san is deliberately unquoted: it is zero or two words.
 cc -O1 -g -Wall -Wextra -Werror $san -I"$ROOT/include" \
-	-o "$tmp/protocol-test" "$HARNESS" "$SRC"
+	-o "$tmp/protocol-test" "$HARNESS" "$SRC" -lnv
 "$tmp/protocol-test"

@@ -9,7 +9,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 if ! cc -O2 -Wall -Wextra -Werror -I"$ROOT/include" -I"$ROOT/src/daemon" \
     -o "$tmp/bus-unit" "$ROOT/tests/bus-unit.c" "$ROOT/src/daemon/bus.c" \
-    "$ROOT/src/shared/protocol.c" \
+    "$ROOT/src/shared/protocol.c" -lnv \
     >"$tmp/cc.log" 2>&1; then
 	echo "FAIL: the bus unit test does not build:"
 	tail -10 "$tmp/cc.log" | sed 's/^/        /'

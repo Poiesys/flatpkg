@@ -75,6 +75,12 @@ check() {
 		bug "an event can carry a control byte"
 	grep -q 'event_ref_ok(row->ref)' "$worker" ||
 		bug "a changeset ref is announced without the grammar"
+
+	# libnv's unpack leaks the pair it built when a blob is malformed; a
+	# worker is per-connection, so a bounded number of bad frames bounds
+	# what one client can leave behind.
+	grep -q '++c.bad_frames >= FP_MAX_BAD_FRAMES' "$worker" ||
+		bug "a malformed frame is retried without a bound"
 }
 
 ( check "$T/send.inc" "$T/main.inc" "$T/hello.inc" "$T/worker.c" )
@@ -143,6 +149,15 @@ if cmp -s "$T/worker.c" "$T/plant-event.inc"; then
 fi
 prove "a ref announced without the grammar" \
 	check "$T/send.inc" "$T/main.inc" "$T/hello.inc" "$T/plant-event.inc"
+
+sed 's/if (++c.bad_frames >= FP_MAX_BAD_FRAMES) {/if (0) {/' "$T/worker.c" \
+	> "$T/plant-bad.inc"
+if cmp -s "$T/worker.c" "$T/plant-bad.inc"; then
+	echo "FAIL: the bad-frame plant was not applied"
+	exit 1
+fi
+prove "a connection that may send endless malformed frames" \
+	check "$T/send.inc" "$T/main.inc" "$T/hello.inc" "$T/plant-bad.inc"
 
 echo "PASS: the worker count is capped before the fork and shared per user,"
 echo "      the broker never blocks its loop, a silent connection is timed"

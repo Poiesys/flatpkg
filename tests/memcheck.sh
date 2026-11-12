@@ -50,7 +50,7 @@ note() {
 #    with one), through the same hostile-input harness protocol.sh uses.
 mkdir -p "$tmp/vg-codec"
 if ! cc -O1 -g -Iinclude -o "$tmp/protocol-test" tests/protocol-test.c \
-	src/shared/protocol.c 2>"$tmp/cc.log"; then
+	src/shared/protocol.c -lnv 2>"$tmp/cc.log"; then
 	cat "$tmp/cc.log"
 	note "the protocol harness did not build"
 else

@@ -1,11 +1,18 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/nv.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include "protocol.h"
+
+// The 16-byte frame header stays a fixed envelope; the payload is an nvlist
+// packed by libnv.  Every field is then a named, typed value, so a decoder
+// checks a name and a type instead of a position, and the host's endianness
+// and the length arithmetic are the library's.  Descriptors still travel in
+// SCM_RIGHTS beside the frame.
 
 void fp_w_init(fp_wbuf_t* w) { memset(w, 0, sizeof(*w)); }
 
@@ -45,125 +52,9 @@ static void w_put(fp_wbuf_t* w, const void* src, size_t n) {
 	w->len += n;
 }
 
-void fp_w_u32(fp_wbuf_t* w, uint32_t v) {
-	uint8_t b[4] = {(uint8_t)(v >> 24), (uint8_t)(v >> 16),
-			(uint8_t)(v >> 8), (uint8_t)v};
-	w_put(w, b, sizeof(b));
-}
-
-void fp_w_u64(fp_wbuf_t* w, uint64_t v) {
-	fp_w_u32(w, (uint32_t)(v >> 32));
-	fp_w_u32(w, (uint32_t)v);
-}
-
-void fp_w_str(fp_wbuf_t* w, const char* s) {
-	size_t n = s ? strlen(s) : 0;
-	if (n > FP_PROTO_MAX_STR) {
-		w->failed = true;
-		return;
-	}
-	fp_w_u32(w, (uint32_t)n);
-	w_put(w, s, n);
-}
-
-void fp_w_strlist(fp_wbuf_t* w, char* const* v, size_t n) {
-	if (n > FP_PROTO_MAX_LIST || (n > 0 && v == NULL)) {
-		w->failed = true;
-		return;
-	}
-	fp_w_u32(w, (uint32_t)n);
-	for (size_t i = 0; i < n; i++) fp_w_str(w, v[i]);
-}
-
-void fp_r_init(fp_rbuf_t* r, const uint8_t* p, size_t len) {
-	r->p = p;
-	r->len = len;
-	r->pos = 0;
-	r->err = FP_P_OK;
-}
-
-static bool r_need(fp_rbuf_t* r, size_t n) {
-	if (r->err != FP_P_OK) return false;
-	if (n > r->len - r->pos) {
-		r->err = FP_P_ERR_TRUNCATED;
-		return false;
-	}
-	return true;
-}
-
-uint32_t fp_r_u32(fp_rbuf_t* r) {
-	if (!r_need(r, 4)) return 0;
-	const uint8_t* b = r->p + r->pos;
-	r->pos += 4;
+static uint32_t be32(const uint8_t* b) {
 	return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
 	       ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
-
-uint64_t fp_r_u64(fp_rbuf_t* r) {
-	uint64_t hi = fp_r_u32(r);
-	uint64_t lo = fp_r_u32(r);
-	return (hi << 32) | lo;
-}
-
-char* fp_r_str(fp_rbuf_t* r) {
-	uint32_t n = fp_r_u32(r);
-	if (r->err != FP_P_OK) return NULL;
-	if (n > FP_PROTO_MAX_STR) {
-		r->err = FP_P_ERR_TOO_BIG;
-		return NULL;
-	}
-	if (!r_need(r, n)) return NULL;
-	if (n > 0 && memchr(r->p + r->pos, '\0', n) != NULL) {
-		// A NUL inside a string would end it early in every C consumer
-		// and let the bytes after it ride past a check on the front.
-		r->err = FP_P_ERR_MALFORMED;
-		return NULL;
-	}
-	char* s = malloc((size_t)n + 1);
-	if (s == NULL) {
-		r->err = FP_P_ERR_NOMEM;
-		return NULL;
-	}
-	if (n > 0) memcpy(s, r->p + r->pos, n);
-	s[n] = '\0';
-	r->pos += n;
-	return s;
-}
-
-void fp_strlist_free(char** v, size_t n) {
-	if (v == NULL) return;
-	for (size_t i = 0; i < n; i++) free(v[i]);
-	free(v);
-}
-
-char** fp_r_strlist(fp_rbuf_t* r, size_t* n_out) {
-	*n_out = 0;
-	uint32_t n = fp_r_u32(r);
-	if (r->err != FP_P_OK) return NULL;
-	if (n > FP_PROTO_MAX_LIST) {
-		r->err = FP_P_ERR_TOO_BIG;
-		return NULL;
-	}
-	// Every element costs at least its 4-byte length, so a count the rest
-	// of the buffer cannot hold is refused before anything is allocated.
-	if ((size_t)n > (r->len - r->pos) / 4) {
-		r->err = FP_P_ERR_TRUNCATED;
-		return NULL;
-	}
-	char** v = calloc((size_t)n + 1, sizeof(char*));
-	if (v == NULL) {
-		r->err = FP_P_ERR_NOMEM;
-		return NULL;
-	}
-	for (size_t i = 0; i < n; i++) {
-		v[i] = fp_r_str(r);
-		if (v[i] == NULL) {
-			fp_strlist_free(v, i);
-			return NULL;
-		}
-	}
-	*n_out = n;
-	return v;
 }
 
 bool fp_topic_valid(const char* s) {
@@ -228,12 +119,10 @@ int fp_frame_hdr_decode(const uint8_t in[FP_PROTO_HDR_LEN], fp_frame_hdr_t* h) {
 	if (in[2] != FP_PROTO_VERSION) return FP_P_ERR_VERSION;
 	if (in[3] < FP_FRAME_REQUEST || in[3] > FP_FRAME_EVENT)
 		return FP_P_ERR_KIND;
-	fp_rbuf_t r;
-	fp_r_init(&r, in + 4, FP_PROTO_HDR_LEN - 4);
 	h->kind = in[3];
-	h->type = fp_r_u32(&r);
-	h->id = fp_r_u32(&r);
-	h->len = fp_r_u32(&r);
+	h->type = be32(in + 4);
+	h->id = be32(in + 8);
+	h->len = be32(in + 12);
 	if (h->len > FP_PROTO_MAX_PAYLOAD) {
 		memset(h, 0, sizeof(*h));
 		return FP_P_ERR_TOO_BIG;
@@ -241,264 +130,438 @@ int fp_frame_hdr_decode(const uint8_t in[FP_PROTO_HDR_LEN], fp_frame_hdr_t* h) {
 	return FP_P_OK;
 }
 
-// A frame is built in place: a placeholder header, the payload, then the
-// length patched in.  On any failure the buffer goes back to what it was.
-typedef struct {
-	size_t start;
-	bool was_failed;
-} frame_t;
+// --- encoding -------------------------------------------------------------
+//
+// An nvlist that libnv set an error on is failed as a whole; a name can be
+// added twice only by a caller mistake here, never by a peer's bytes (the
+// decoder rejects the duplicates libnv's unpack would otherwise adopt).
 
-static int frame_begin(fp_wbuf_t* w, frame_t* f, uint8_t kind, uint32_t type,
-		       uint32_t id) {
-	f->start = w->len;
-	f->was_failed = w->failed;
-	if (w->failed) return FP_P_ERR_NOMEM;
-	fp_frame_hdr_t h = {.kind = kind, .type = type, .id = id, .len = 0};
+static bool nvl_ok(const nvlist_t* nvl) {
+	return nvl != NULL && nvlist_error(nvl) == 0;
+}
+
+static int add_str(nvlist_t* nvl, const char* name, const char* s) {
+	if (s == NULL) s = "";
+	if (strlen(s) > FP_PROTO_MAX_STR) return FP_P_ERR_TOO_BIG;
+	nvlist_add_string(nvl, name, s);
+	return nvl_ok(nvl) ? FP_P_OK : FP_P_ERR_NOMEM;
+}
+
+static int add_num(nvlist_t* nvl, const char* name, uint64_t v) {
+	nvlist_add_number(nvl, name, v);
+	return nvl_ok(nvl) ? FP_P_OK : FP_P_ERR_NOMEM;
+}
+
+static int add_strlist(nvlist_t* nvl, const char* name, char* const* v,
+		       size_t n) {
+	if (n == 0) return FP_P_OK;
+	if (n > FP_PROTO_MAX_LIST) return FP_P_ERR_TOO_BIG;
+	if (v == NULL) return FP_P_ERR_MALFORMED;
+	for (size_t i = 0; i < n; i++) {
+		if (v[i] == NULL) return FP_P_ERR_MALFORMED;
+		if (strlen(v[i]) > FP_PROTO_MAX_STR) return FP_P_ERR_TOO_BIG;
+	}
+	nvlist_add_string_array(nvl, name, (const char* const*)v, n);
+	return nvl_ok(nvl) ? FP_P_OK : FP_P_ERR_NOMEM;
+}
+
+static int add_rows(nvlist_t* nvl, const fp_change_row_t* rows, size_t n) {
+	const char** refs;
+	const char** olds;
+	const char** news;
+	uint64_t* types;
+	int e = FP_P_OK;
+
+	if (n == 0) return FP_P_OK;
+	if (n > FP_APPLY_MAX) return FP_P_ERR_MALFORMED;
+	if (rows == NULL) return FP_P_ERR_MALFORMED;
+	types = calloc(n, sizeof(*types));
+	refs = calloc(n, sizeof(*refs));
+	olds = calloc(n, sizeof(*olds));
+	news = calloc(n, sizeof(*news));
+	if (types == NULL || refs == NULL || olds == NULL || news == NULL) {
+		e = FP_P_ERR_NOMEM;
+		goto out;
+	}
+	for (size_t i = 0; i < n; i++) {
+		if (rows[i].type > FP_APPLY_NOOP || rows[i].ref == NULL ||
+		    strlen(rows[i].ref) > FP_PROTO_MAX_STR ||
+		    (rows[i].old_version != NULL &&
+		     strlen(rows[i].old_version) > FP_PROTO_MAX_STR) ||
+		    (rows[i].new_version != NULL &&
+		     strlen(rows[i].new_version) > FP_PROTO_MAX_STR)) {
+			e = FP_P_ERR_MALFORMED;
+			goto out;
+		}
+		types[i] = rows[i].type;
+		refs[i] = rows[i].ref;
+		olds[i] = rows[i].old_version != NULL ? rows[i].old_version : "";
+		news[i] = rows[i].new_version != NULL ? rows[i].new_version : "";
+	}
+	nvlist_add_number_array(nvl, "row_types", types, n);
+	nvlist_add_string_array(nvl, "row_refs", refs, n);
+	nvlist_add_string_array(nvl, "row_old", olds, n);
+	nvlist_add_string_array(nvl, "row_new", news, n);
+	if (!nvl_ok(nvl)) e = FP_P_ERR_NOMEM;
+out:
+	free(types);
+	free(refs);
+	free(olds);
+	free(news);
+	return e;
+}
+
+// Append one frame to `w`, or leave it exactly as it was.
+static int pack_frame(fp_wbuf_t* w, uint8_t kind, uint32_t type, uint32_t id,
+		      nvlist_t* nvl) {
 	uint8_t hdr[FP_PROTO_HDR_LEN];
+	fp_frame_hdr_t h = {.kind = kind, .type = type, .id = id, .len = 0};
+	size_t start = w->len;
+	bool was_failed = w->failed;
+	void* blob;
+	size_t len = 0;
+	int e = FP_P_OK;
+	int nverr;
+
+	if (nvl == NULL) return FP_P_ERR_NOMEM;
+	nverr = nvlist_error(nvl);
+	if (nverr != 0) {
+		nvlist_destroy(nvl);
+		return nverr == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
+	}
+	blob = nvlist_pack(nvl, &len);
+	nvlist_destroy(nvl);
+	if (blob == NULL)
+		return errno == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
+	if (len > FP_PROTO_MAX_PAYLOAD) {
+		free(blob);
+		return FP_P_ERR_TOO_BIG;
+	}
+	h.len = (uint32_t)len;
 	fp_frame_hdr_encode(hdr, &h);
 	w_put(w, hdr, sizeof(hdr));
-	return w->failed ? FP_P_ERR_NOMEM : FP_P_OK;
-}
-
-static int frame_abort(fp_wbuf_t* w, const frame_t* f, int err) {
-	w->len = f->start;
-	w->failed = f->was_failed;
-	return err;
-}
-
-static int frame_end(fp_wbuf_t* w, const frame_t* f) {
-	if (w->failed) return frame_abort(w, f, FP_P_ERR_NOMEM);
-	size_t payload = w->len - f->start - FP_PROTO_HDR_LEN;
-	if (payload > FP_PROTO_MAX_PAYLOAD)
-		return frame_abort(w, f, FP_P_ERR_TOO_BIG);
-	uint8_t* len = w->p + f->start + 12;
-	for (int i = 0; i < 4; i++)
-		len[i] = (uint8_t)((uint32_t)payload >> (24 - 8 * i));
-	return FP_P_OK;
+	w_put(w, blob, len);
+	free(blob);
+	if (w->failed) {
+		w->len = start;
+		w->failed = was_failed;
+		e = FP_P_ERR_NOMEM;
+	}
+	return e;
 }
 
 int fp_req_encode(fp_wbuf_t* w, uint32_t id, const fp_req_t* r) {
-	frame_t f;
-	int e = frame_begin(w, &f, FP_FRAME_REQUEST, r->type, id);
-	if (e != FP_P_OK) return e;
+	nvlist_t* nvl = nvlist_create(0);
+	int e = FP_P_OK;
+
+	if (nvl == NULL) return FP_P_ERR_NOMEM;
 	switch (r->type) {
 	case FP_REQ_HELLO:
-		fp_w_u32(w, r->u.hello.version);
-		fp_w_str(w, r->u.hello.client);
+		e = add_num(nvl, "version", r->u.hello.version);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "client", r->u.hello.client);
 		break;
 	case FP_REQ_SUBSCRIBE:
 	case FP_REQ_UNSUBSCRIBE:
-		if (!fp_topic_valid(r->u.sub.topic))
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_str(w, r->u.sub.topic);
+		if (!fp_topic_valid(r->u.sub.topic)) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		e = add_str(nvl, "topic", r->u.sub.topic);
 		break;
 	case FP_REQ_CANCEL:
-		fp_w_u64(w, r->u.cancel.op_id);
+		e = add_num(nvl, "op_id", r->u.cancel.op_id);
 		break;
 	case FP_REQ_ROLLBACK:
-		fp_w_str(w, r->u.rollback.ref);
-		fp_w_str(w, r->u.rollback.commit);
+		e = add_str(nvl, "ref", r->u.rollback.ref);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "commit", r->u.rollback.commit);
 		break;
 	case FP_REQ_RUN:
-		fp_w_str(w, r->u.run.app_id);
-		fp_w_strlist(w, r->u.run.args, r->u.run.nargs);
-		fp_w_str(w, r->u.run.command);
-		fp_w_str(w, r->u.run.branch);
-		fp_w_str(w, r->u.run.arch);
-		fp_w_u32(w, r->u.run.flags);
-		fp_w_strlist(w, r->u.run.sockets, r->u.run.nsockets);
-		fp_w_strlist(w, r->u.run.devices, r->u.run.ndevices);
-		fp_w_strlist(w, r->u.run.shares, r->u.run.nshares);
-		fp_w_strlist(w, r->u.run.fs_add, r->u.run.nfs_add);
-		fp_w_strlist(w, r->u.run.fs_remove, r->u.run.nfs_remove);
-		fp_w_strlist(w, r->u.run.envs, r->u.run.nenvs);
-		fp_w_str(w, r->u.run.forward);
+		e = add_str(nvl, "app_id", r->u.run.app_id);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "args", r->u.run.args,
+					r->u.run.nargs);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "command", r->u.run.command);
+		if (e == FP_P_OK) e = add_str(nvl, "branch", r->u.run.branch);
+		if (e == FP_P_OK) e = add_str(nvl, "arch", r->u.run.arch);
+		if (e == FP_P_OK) e = add_num(nvl, "flags", r->u.run.flags);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "sockets", r->u.run.sockets,
+					r->u.run.nsockets);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "devices", r->u.run.devices,
+					r->u.run.ndevices);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "shares", r->u.run.shares,
+					r->u.run.nshares);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "fs_add", r->u.run.fs_add,
+					r->u.run.nfs_add);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "fs_remove", r->u.run.fs_remove,
+					r->u.run.nfs_remove);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "envs", r->u.run.envs,
+					r->u.run.nenvs);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "forward", r->u.run.forward);
 		break;
 	case FP_REQ_ENV:
-		fp_w_strlist(w, r->u.env.vars, r->u.env.nvars);
+		e = add_strlist(nvl, "vars", r->u.env.vars, r->u.env.nvars);
 		break;
 	case FP_REQ_STDIO:
-		fp_w_u32(w, r->u.stdio.count);
+		e = add_num(nvl, "count", r->u.stdio.count);
 		break;
 	case FP_REQ_INSTALL_BUNDLE:
-		fp_w_u32(w, r->u.bundle.flags);
+		e = add_num(nvl, "flags", r->u.bundle.flags);
 		break;
 	case FP_REQ_EXPORTS:
 		break;
 	case FP_REQ_APPLY:
-		if (r->u.apply.nrows > FP_APPLY_MAX)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_u32(w, r->u.apply.flags);
-		fp_w_str(w, r->u.apply.remote);
-		fp_w_u32(w, (uint32_t)r->u.apply.nrows);
-		for (size_t i = 0; i < r->u.apply.nrows; i++) {
-			const fp_change_row_t* row = &r->u.apply.rows[i];
-			if (row->type > FP_APPLY_NOOP || row->ref == NULL)
-				return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-			fp_w_u32(w, row->type);
-			fp_w_str(w, row->ref);
-			fp_w_str(w, row->old_version);
-			fp_w_str(w, row->new_version);
+		if (r->u.apply.nrows > FP_APPLY_MAX) {
+			e = FP_P_ERR_MALFORMED;
+			break;
 		}
+		e = add_num(nvl, "flags", r->u.apply.flags);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "remote", r->u.apply.remote);
+		if (e == FP_P_OK)
+			e = add_rows(nvl, r->u.apply.rows, r->u.apply.nrows);
 		break;
 	case FP_REQ_CLIENT_DECLARE:
 		if (r->u.client_declare.nnames == 0 ||
-		    r->u.client_declare.nnames > 16)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_strlist(w, r->u.client_declare.names,
-			     r->u.client_declare.nnames);
+		    r->u.client_declare.nnames > 16) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		e = add_strlist(nvl, "names", r->u.client_declare.names,
+				r->u.client_declare.nnames);
 		break;
 	case FP_REQ_CLIENT_STATE:
-		if (r->u.client_state.name == NULL)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_u32(w, r->u.client_state.flags);
-		fp_w_str(w, r->u.client_state.name);
-		fp_w_str(w, r->u.client_state.data);
+		if (r->u.client_state.name == NULL) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		e = add_num(nvl, "flags", r->u.client_state.flags);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "name", r->u.client_state.name);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "data", r->u.client_state.data);
 		break;
 	case FP_REQ_PREFETCH:
 		if (r->u.prefetch.nrefs == 0 ||
-		    r->u.prefetch.nrefs > FP_APPLY_MAX)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_str(w, r->u.prefetch.remote);
-		fp_w_strlist(w, r->u.prefetch.refs, r->u.prefetch.nrefs);
+		    r->u.prefetch.nrefs > FP_APPLY_MAX) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		e = add_str(nvl, "remote", r->u.prefetch.remote);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "refs", r->u.prefetch.refs,
+					r->u.prefetch.nrefs);
 		break;
 	case FP_REQ_ENTER:
-		fp_w_str(w, r->u.enter.instance);
-		fp_w_strlist(w, r->u.enter.command, r->u.enter.ncommand);
+		e = add_str(nvl, "instance", r->u.enter.instance);
+		if (e == FP_P_OK)
+			e = add_strlist(nvl, "command", r->u.enter.command,
+					r->u.enter.ncommand);
 		break;
 	case FP_REQ_KILL:
-		fp_w_str(w, r->u.kill.instance);
+		e = add_str(nvl, "instance", r->u.kill.instance);
 		break;
 	case FP_REQ_IMPORT:
-		fp_w_str(w, r->u.import.path);
+		e = add_str(nvl, "path", r->u.import.path);
 		break;
 	case FP_REQ_REMOTE_ADD:
-		fp_w_str(w, r->u.remote_add.name);
-		fp_w_str(w, r->u.remote_add.url);
-		fp_w_str(w, r->u.remote_add.from);
-		fp_w_str(w, r->u.remote_add.data);
+		e = add_str(nvl, "name", r->u.remote_add.name);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "url", r->u.remote_add.url);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "from", r->u.remote_add.from);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "data", r->u.remote_add.data);
 		break;
 	case FP_REQ_REMOTE_DELETE:
-		fp_w_str(w, r->u.remote_delete.name);
+		e = add_str(nvl, "name", r->u.remote_delete.name);
 		break;
 	case FP_REQ_REMOTE_MODIFY:
-		fp_w_str(w, r->u.remote_modify.name);
-		fp_w_str(w, r->u.remote_modify.changes);
-		fp_w_str(w, r->u.remote_modify.gpg_data);
+		e = add_str(nvl, "name", r->u.remote_modify.name);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "changes", r->u.remote_modify.changes);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "gpg_data",
+				    r->u.remote_modify.gpg_data);
 		break;
 	case FP_REQ_APPSTREAM:
-		fp_w_str(w, r->u.appstream.remote);
-		fp_w_str(w, r->u.appstream.arch);
+		e = add_str(nvl, "remote", r->u.appstream.remote);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "arch", r->u.appstream.arch);
 		break;
 	case FP_REQ_OVERRIDE:
-		fp_w_str(w, r->u.override.app_id);
-		fp_w_u32(w, r->u.override.flags);
-		fp_w_str(w, r->u.override.changes);
+		e = add_str(nvl, "app_id", r->u.override.app_id);
+		if (e == FP_P_OK) e = add_num(nvl, "flags", r->u.override.flags);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "changes", r->u.override.changes);
 		break;
 	default:
-		return frame_abort(w, &f, FP_P_ERR_MALFORMED);
+		e = FP_P_ERR_MALFORMED;
+		break;
 	}
-	return frame_end(w, &f);
+	if (e != FP_P_OK) {
+		nvlist_destroy(nvl);
+		return e;
+	}
+	return pack_frame(w, FP_FRAME_REQUEST, r->type, id, nvl);
 }
 
 int fp_ack_encode(fp_wbuf_t* w, uint32_t id, const fp_ack_t* a) {
-	frame_t f;
-	int e = frame_begin(w, &f, FP_FRAME_ACK, a->type, id);
-	if (e != FP_P_OK) return e;
+	nvlist_t* nvl = nvlist_create(0);
+	int e = FP_P_OK;
+
+	if (nvl == NULL) return FP_P_ERR_NOMEM;
 	switch (a->type) {
 	case FP_ACK_OK:
-		fp_w_u64(w, a->op_id);
+		e = add_num(nvl, "op_id", a->op_id);
 		break;
 	case FP_ACK_ERR:
-		fp_w_u32(w, a->code);
-		fp_w_str(w, a->message);
+		e = add_num(nvl, "code", a->code);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "message", a->message);
 		break;
 	default:
-		return frame_abort(w, &f, FP_P_ERR_MALFORMED);
+		e = FP_P_ERR_MALFORMED;
+		break;
 	}
-	return frame_end(w, &f);
+	if (e != FP_P_OK) {
+		nvlist_destroy(nvl);
+		return e;
+	}
+	return pack_frame(w, FP_FRAME_ACK, a->type, id, nvl);
 }
 
 int fp_event_encode(fp_wbuf_t* w, uint32_t seq, const fp_event_t* ev) {
-	frame_t f;
-	int e = frame_begin(w, &f, FP_FRAME_EVENT, ev->type, seq);
-	if (e != FP_P_OK) return e;
-	if (!fp_topic_valid(ev->topic))
-		return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-	fp_w_str(w, ev->topic);
-	fp_w_u64(w, ev->op_id);
+	nvlist_t* nvl = nvlist_create(0);
+	int e = FP_P_OK;
+
+	if (nvl == NULL) return FP_P_ERR_NOMEM;
+	if (!fp_topic_valid(ev->topic)) {
+		nvlist_destroy(nvl);
+		return FP_P_ERR_MALFORMED;
+	}
+	e = add_str(nvl, "topic", ev->topic);
+	if (e == FP_P_OK) e = add_num(nvl, "op_id", ev->op_id);
 	switch (ev->type) {
 	case FP_EV_OP_STARTED:
-		fp_w_u32(w, ev->u.started.kind);
-		fp_w_str(w, ev->u.started.label);
+		if (e == FP_P_OK) e = add_num(nvl, "kind", ev->u.started.kind);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "label", ev->u.started.label);
 		break;
 	case FP_EV_OP_PROGRESS:
-		fp_w_str(w, ev->u.progress.stage);
-		fp_w_u64(w, ev->u.progress.current);
-		fp_w_u64(w, ev->u.progress.total);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "stage", ev->u.progress.stage);
+		if (e == FP_P_OK)
+			e = add_num(nvl, "current", ev->u.progress.current);
+		if (e == FP_P_OK)
+			e = add_num(nvl, "total", ev->u.progress.total);
 		break;
 	case FP_EV_OP_STATE:
-		fp_w_str(w, ev->u.state.state);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "state", ev->u.state.state);
 		break;
 	case FP_EV_OP_LOG:
-		fp_w_u32(w, ev->u.log.level);
-		fp_w_str(w, ev->u.log.scope);
-		fp_w_str(w, ev->u.log.text);
+		if (e == FP_P_OK) e = add_num(nvl, "level", ev->u.log.level);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "scope", ev->u.log.scope);
+		if (e == FP_P_OK) e = add_str(nvl, "text", ev->u.log.text);
 		break;
 	case FP_EV_OP_FINISHED:
-		fp_w_u32(w, ev->u.finished.status);
-		fp_w_str(w, ev->u.finished.error);
+		if (e == FP_P_OK)
+			e = add_num(nvl, "status", ev->u.finished.status);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "error", ev->u.finished.error);
 		break;
 	case FP_EV_OP_TABLE: {
 		const uint32_t nc = ev->u.table.ncols, nr = ev->u.table.nrows;
+
 		if (nc == 0 || nc > FP_PROTO_MAX_COLS ||
 		    nr > FP_PROTO_MAX_LIST ||
 		    (uint64_t)nc * nr > FP_PROTO_MAX_LIST ||
-		    (nr > 0 && ev->u.table.cells == NULL))
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_u32(w, nc);
-		fp_w_u32(w, nr);
-		fp_w_u32(w, ev->u.table.headers != NULL ? 1u : 0u);
-		if (ev->u.table.headers != NULL)
-			fp_w_strlist(w, ev->u.table.headers, nc);
-		fp_w_strlist(w, ev->u.table.cells, (size_t)nc * nr);
+		    (nr > 0 && ev->u.table.cells == NULL)) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		if (e == FP_P_OK) e = add_num(nvl, "ncols", nc);
+		if (e == FP_P_OK) e = add_num(nvl, "nrows", nr);
+		if (e == FP_P_OK && ev->u.table.headers != NULL)
+			e = add_strlist(nvl, "headers", ev->u.table.headers,
+					nc);
+		if (e == FP_P_OK && nc * nr > 0)
+			e = add_strlist(nvl, "cells", ev->u.table.cells,
+					(size_t)nc * nr);
 		break;
 	}
 	case FP_EV_META:
-		if (ev->u.meta.ref == NULL || ev->u.meta.metadata == NULL)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_str(w, ev->u.meta.ref);
-		fp_w_str(w, ev->u.meta.commit);
-		fp_w_str(w, ev->u.meta.metadata);
+		if (ev->u.meta.ref == NULL || ev->u.meta.metadata == NULL) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		if (e == FP_P_OK) e = add_str(nvl, "ref", ev->u.meta.ref);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "commit", ev->u.meta.commit);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "metadata", ev->u.meta.metadata);
 		break;
 	case FP_EV_STORE_CHANGED:
-		if (ev->u.store.action == NULL || ev->u.store.ref == NULL)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_str(w, ev->u.store.action);
-		fp_w_str(w, ev->u.store.ref);
+		if (ev->u.store.action == NULL || ev->u.store.ref == NULL) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		if (e == FP_P_OK)
+			e = add_str(nvl, "action", ev->u.store.action);
+		if (e == FP_P_OK) e = add_str(nvl, "ref", ev->u.store.ref);
 		break;
 	case FP_EV_REMOTE_CHANGED:
-		if (ev->u.remote.name == NULL)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_str(w, ev->u.remote.name);
+		if (ev->u.remote.name == NULL) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		e = add_str(nvl, "name", ev->u.remote.name);
 		break;
 	case FP_EV_INSTANCE_STARTED:
 	case FP_EV_INSTANCE_EXITED:
-		if (ev->u.instance.app_id == NULL)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_str(w, ev->u.instance.app_id);
+		if (ev->u.instance.app_id == NULL) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		e = add_str(nvl, "app_id", ev->u.instance.app_id);
 		break;
 	case FP_EV_CLIENT_STATE:
 		if (ev->u.client_state.name == NULL ||
-		    ev->u.client_state.data == NULL)
-			return frame_abort(w, &f, FP_P_ERR_MALFORMED);
-		fp_w_str(w, ev->u.client_state.name);
-		fp_w_str(w, ev->u.client_state.data);
+		    ev->u.client_state.data == NULL) {
+			e = FP_P_ERR_MALFORMED;
+			break;
+		}
+		if (e == FP_P_OK)
+			e = add_str(nvl, "name", ev->u.client_state.name);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "data", ev->u.client_state.data);
 		break;
 	default:
-		return frame_abort(w, &f, FP_P_ERR_MALFORMED);
+		e = FP_P_ERR_MALFORMED;
+		break;
 	}
-	return frame_end(w, &f);
+	if (e != FP_P_OK) {
+		nvlist_destroy(nvl);
+		return e;
+	}
+	return pack_frame(w, FP_FRAME_EVENT, ev->type, seq, nvl);
+}
+
+void fp_strlist_free(char** v, size_t n) {
+	if (v == NULL) return;
+	for (size_t i = 0; i < n; i++) free(v[i]);
+	free(v);
 }
 
 void fp_req_free(fp_req_t* r) {
@@ -620,7 +683,7 @@ void fp_event_free(fp_event_t* e) {
 		free(e->u.meta.metadata);
 		break;
 	case FP_EV_OP_TABLE:
-		// Only lists that decoded in full, with the counts the header
+		// Only lists that decoded in full, with the counts the frame
 		// promised, are ever stored, so these counts are the lists'.
 		fp_strlist_free(e->u.table.headers, e->u.table.ncols);
 		fp_strlist_free(e->u.table.cells,
@@ -647,340 +710,521 @@ void fp_event_free(fp_event_t* e) {
 	memset(e, 0, sizeof(*e));
 }
 
+// --- decoding -------------------------------------------------------------
+//
+// nvlist_get_*() aborts the process when a name is missing, and the names come
+// from a caller-chosen frame: every read below asks nvlist_exists_*() first and
+// a missing or mistyped field is FP_P_ERR_MALFORMED, never an exit in root's
+// worker.
+
+static nvlist_t* unpack_frame(const fp_frame_hdr_t* h, const uint8_t* payload,
+			      int* err) {
+	nvlist_t* nvl;
+
+	*err = FP_P_OK;
+	if (h->len == 0 || payload == NULL) {
+		*err = FP_P_ERR_MALFORMED;
+		return NULL;
+	}
+	errno = 0;
+	nvl = nvlist_unpack(payload, h->len, 0);
+	if (nvl == NULL) {
+		*err = errno == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
+		return NULL;
+	}
+	if (nvlist_error(nvl) != 0) {
+		int e = nvlist_error(nvl);
+
+		nvlist_destroy(nvl);
+		*err = e == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
+		return NULL;
+	}
+	return nvl;
+}
+
+static const char* need_str(const nvlist_t* nvl, const char* name, int* err) {
+	const char* s;
+
+	if (*err != FP_P_OK) return NULL;
+	if (!nvlist_exists_string(nvl, name)) {
+		*err = FP_P_ERR_MALFORMED;
+		return NULL;
+	}
+	s = nvlist_get_string(nvl, name);
+	if (strlen(s) > FP_PROTO_MAX_STR) {
+		*err = FP_P_ERR_TOO_BIG;
+		return NULL;
+	}
+	return s;
+}
+
+static uint64_t need_num(const nvlist_t* nvl, const char* name, int* err) {
+	if (*err != FP_P_OK) return 0;
+	if (!nvlist_exists_number(nvl, name)) {
+		*err = FP_P_ERR_MALFORMED;
+		return 0;
+	}
+	return nvlist_get_number(nvl, name);
+}
+
+static uint32_t need_u32(const nvlist_t* nvl, const char* name, int* err) {
+	uint64_t v = need_num(nvl, name, err);
+
+	if (*err != FP_P_OK) return 0;
+	if (v > UINT32_MAX) {
+		*err = FP_P_ERR_MALFORMED;
+		return 0;
+	}
+	return (uint32_t)v;
+}
+
+static char* dup_str(const nvlist_t* nvl, const char* name, int* err) {
+	const char* s = need_str(nvl, name, err);
+	char* out;
+	size_t n;
+
+	if (s == NULL) return NULL;
+	n = strlen(s);
+	out = malloc(n + 1);
+	if (out == NULL) {
+		*err = FP_P_ERR_NOMEM;
+		return NULL;
+	}
+	memcpy(out, s, n + 1);
+	return out;
+}
+
+// A string array: absent is an empty list, present with any other type is a
+// malformed frame (never silently read as empty).
+static char** dup_strlist(const nvlist_t* nvl, const char* name, size_t* n_out,
+			  int* err) {
+	const char* const* v;
+	size_t n, i;
+	char** out;
+
+	*n_out = 0;
+	if (*err != FP_P_OK) return NULL;
+	if (!nvlist_exists(nvl, name)) return NULL;
+	if (!nvlist_exists_string_array(nvl, name)) {
+		*err = FP_P_ERR_MALFORMED;
+		return NULL;
+	}
+	v = nvlist_get_string_array(nvl, name, &n);
+	if (n > FP_PROTO_MAX_LIST) {
+		*err = FP_P_ERR_TOO_BIG;
+		return NULL;
+	}
+	out = calloc(n + 1, sizeof(char*));
+	if (out == NULL) {
+		*err = FP_P_ERR_NOMEM;
+		return NULL;
+	}
+	for (i = 0; i < n; i++) {
+		size_t len;
+
+		if (v[i] == NULL) {
+			*err = FP_P_ERR_MALFORMED;
+			break;
+		}
+		len = strlen(v[i]);
+		if (len > FP_PROTO_MAX_STR) {
+			*err = FP_P_ERR_TOO_BIG;
+			break;
+		}
+		out[i] = malloc(len + 1);
+		if (out[i] == NULL) {
+			*err = FP_P_ERR_NOMEM;
+			break;
+		}
+		memcpy(out[i], v[i], len + 1);
+	}
+	if (*err != FP_P_OK) {
+		fp_strlist_free(out, i);
+		return NULL;
+	}
+	*n_out = n;
+	return out;
+}
+
+static fp_change_row_t* dup_rows(const nvlist_t* nvl, size_t* n_out,
+				 int* err) {
+	const uint64_t* types;
+	const char* const* refs;
+	const char* const* olds;
+	const char* const* news;
+	fp_change_row_t* rows;
+	size_t n = 0, nr = 0, no = 0, nn = 0, i;
+
+	*n_out = 0;
+	if (*err != FP_P_OK) return NULL;
+	// Parallel arrays, not a nested nvlist array: libnv's unpack of a
+	// nested array that is cut short leaks what it had built, and this
+	// decoder runs on hostile input in root's worker.
+	if (!nvlist_exists(nvl, "row_types") && !nvlist_exists(nvl, "row_refs") &&
+	    !nvlist_exists(nvl, "row_old") && !nvlist_exists(nvl, "row_new"))
+		return NULL;
+	if (!nvlist_exists_number_array(nvl, "row_types") ||
+	    !nvlist_exists_string_array(nvl, "row_refs") ||
+	    !nvlist_exists_string_array(nvl, "row_old") ||
+	    !nvlist_exists_string_array(nvl, "row_new")) {
+		*err = FP_P_ERR_MALFORMED;
+		return NULL;
+	}
+	types = nvlist_get_number_array(nvl, "row_types", &n);
+	refs = nvlist_get_string_array(nvl, "row_refs", &nr);
+	olds = nvlist_get_string_array(nvl, "row_old", &no);
+	news = nvlist_get_string_array(nvl, "row_new", &nn);
+	if (n > FP_APPLY_MAX) {
+		*err = FP_P_ERR_TOO_BIG;
+		return NULL;
+	}
+	if (nr != n || no != n || nn != n) {
+		*err = FP_P_ERR_MALFORMED;
+		return NULL;
+	}
+	rows = calloc(n ? n : 1, sizeof(*rows));
+	if (rows == NULL) {
+		*err = FP_P_ERR_NOMEM;
+		return NULL;
+	}
+	for (i = 0; i < n; i++) {
+		fp_change_row_t* row = &rows[i];
+
+		if (types[i] > FP_APPLY_NOOP || refs[i] == NULL ||
+		    *refs[i] == '\0' || olds[i] == NULL || news[i] == NULL) {
+			*err = FP_P_ERR_MALFORMED;
+			break;
+		}
+		if (strlen(refs[i]) > FP_PROTO_MAX_STR ||
+		    strlen(olds[i]) > FP_PROTO_MAX_STR ||
+		    strlen(news[i]) > FP_PROTO_MAX_STR) {
+			*err = FP_P_ERR_TOO_BIG;
+			break;
+		}
+		row->type = (uint32_t)types[i];
+		row->ref = strdup(refs[i]);
+		row->old_version = strdup(olds[i]);
+		row->new_version = strdup(news[i]);
+		if (row->ref == NULL || row->old_version == NULL ||
+		    row->new_version == NULL) {
+			*err = FP_P_ERR_NOMEM;
+			break;
+		}
+	}
+	if (*err != FP_P_OK) {
+		for (size_t k = 0; k <= i && k < n; k++) {
+			free(rows[k].ref);
+			free(rows[k].old_version);
+			free(rows[k].new_version);
+		}
+		free(rows);
+		return NULL;
+	}
+	*n_out = n;
+	return rows;
+}
+
 static int hdr_is(const fp_frame_hdr_t* h, uint8_t kind) {
 	if (h->kind != kind) return FP_P_ERR_KIND;
 	if (h->len > FP_PROTO_MAX_PAYLOAD) return FP_P_ERR_TOO_BIG;
 	return FP_P_OK;
 }
 
-static int finish(const fp_rbuf_t* r) {
-	if (r->err != FP_P_OK) return r->err;
-	if (r->pos != r->len) return FP_P_ERR_MALFORMED;
-	return FP_P_OK;
-}
-
 int fp_req_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 		  fp_req_t* out) {
-	memset(out, 0, sizeof(*out));
+	int err = FP_P_OK;
+	nvlist_t* nvl;
 	int e = hdr_is(h, FP_FRAME_REQUEST);
+
+	memset(out, 0, sizeof(*out));
 	if (e != FP_P_OK) return e;
-	fp_rbuf_t r;
-	fp_r_init(&r, payload, h->len);
+	nvl = unpack_frame(h, payload, &err);
+	if (nvl == NULL) return err;
 	out->type = h->type;
 	switch (h->type) {
 	case FP_REQ_HELLO:
-		out->u.hello.version = fp_r_u32(&r);
-		out->u.hello.client = fp_r_str(&r);
+		out->u.hello.version = need_u32(nvl, "version", &err);
+		out->u.hello.client = dup_str(nvl, "client", &err);
 		break;
 	case FP_REQ_SUBSCRIBE:
 	case FP_REQ_UNSUBSCRIBE:
-		out->u.sub.topic = fp_r_str(&r);
-		if (r.err == FP_P_OK && !fp_topic_valid(out->u.sub.topic))
-			r.err = FP_P_ERR_MALFORMED;
+		out->u.sub.topic = dup_str(nvl, "topic", &err);
+		if (err == FP_P_OK && !fp_topic_valid(out->u.sub.topic))
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_REQ_CANCEL:
-		out->u.cancel.op_id = fp_r_u64(&r);
+		out->u.cancel.op_id = need_num(nvl, "op_id", &err);
 		break;
 	case FP_REQ_ROLLBACK:
-		out->u.rollback.ref = fp_r_str(&r);
-		out->u.rollback.commit = fp_r_str(&r);
+		out->u.rollback.ref = dup_str(nvl, "ref", &err);
+		out->u.rollback.commit = dup_str(nvl, "commit", &err);
 		break;
 	case FP_REQ_RUN:
-		out->u.run.app_id = fp_r_str(&r);
-		out->u.run.args = fp_r_strlist(&r, &out->u.run.nargs);
-		out->u.run.command = fp_r_str(&r);
-		out->u.run.branch = fp_r_str(&r);
-		out->u.run.arch = fp_r_str(&r);
-		out->u.run.flags = fp_r_u32(&r);
-		out->u.run.sockets = fp_r_strlist(&r, &out->u.run.nsockets);
-		out->u.run.devices = fp_r_strlist(&r, &out->u.run.ndevices);
-		out->u.run.shares = fp_r_strlist(&r, &out->u.run.nshares);
-		out->u.run.fs_add = fp_r_strlist(&r, &out->u.run.nfs_add);
-		out->u.run.fs_remove = fp_r_strlist(&r, &out->u.run.nfs_remove);
-		out->u.run.envs = fp_r_strlist(&r, &out->u.run.nenvs);
-		out->u.run.forward = fp_r_str(&r);
+		out->u.run.app_id = dup_str(nvl, "app_id", &err);
+		out->u.run.args =
+			dup_strlist(nvl, "args", &out->u.run.nargs, &err);
+		out->u.run.command = dup_str(nvl, "command", &err);
+		out->u.run.branch = dup_str(nvl, "branch", &err);
+		out->u.run.arch = dup_str(nvl, "arch", &err);
+		out->u.run.flags = need_u32(nvl, "flags", &err);
+		out->u.run.sockets = dup_strlist(nvl, "sockets",
+						 &out->u.run.nsockets, &err);
+		out->u.run.devices = dup_strlist(nvl, "devices",
+						 &out->u.run.ndevices, &err);
+		out->u.run.shares = dup_strlist(nvl, "shares",
+						&out->u.run.nshares, &err);
+		out->u.run.fs_add = dup_strlist(nvl, "fs_add",
+						&out->u.run.nfs_add, &err);
+		out->u.run.fs_remove = dup_strlist(nvl, "fs_remove",
+						   &out->u.run.nfs_remove, &err);
+		out->u.run.envs = dup_strlist(nvl, "envs", &out->u.run.nenvs,
+					      &err);
+		out->u.run.forward = dup_str(nvl, "forward", &err);
 		break;
 	case FP_REQ_ENV:
-		out->u.env.vars = fp_r_strlist(&r, &out->u.env.nvars);
+		out->u.env.vars =
+			dup_strlist(nvl, "vars", &out->u.env.nvars, &err);
+		break;
+	case FP_REQ_STDIO:
+		out->u.stdio.count = need_u32(nvl, "count", &err);
+		if (err == FP_P_OK && out->u.stdio.count != FP_STDIO_FDS)
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_REQ_INSTALL_BUNDLE:
-		out->u.bundle.flags = fp_r_u32(&r);
-		if (out->u.bundle.flags != 0) r.err = FP_P_ERR_MALFORMED;
+		out->u.bundle.flags = need_u32(nvl, "flags", &err);
+		if (err == FP_P_OK && out->u.bundle.flags != 0)
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_REQ_EXPORTS:
 		break;
-	case FP_REQ_APPLY: {
-		out->u.apply.flags = fp_r_u32(&r);
-		out->u.apply.remote = fp_r_str(&r);
-		uint32_t nrows = fp_r_u32(&r);
-		if (nrows > FP_APPLY_MAX) {
-			r.err = FP_P_ERR_MALFORMED;
-			break;
-		}
-		out->u.apply.rows = calloc(nrows ? nrows : 1,
-					   sizeof(fp_change_row_t));
-		if (out->u.apply.rows == NULL) {
-			r.err = FP_P_ERR_NOMEM;
-			break;
-		}
-		for (uint32_t i = 0; i < nrows; i++) {
-			fp_change_row_t* row = &out->u.apply.rows[i];
-			row->type = fp_r_u32(&r);
-			row->ref = fp_r_str(&r);
-			row->old_version = fp_r_str(&r);
-			row->new_version = fp_r_str(&r);
-			if (row->type > FP_APPLY_NOOP || row->ref == NULL ||
-			    *row->ref == '\0')
-				r.err = FP_P_ERR_MALFORMED;
-			out->u.apply.nrows = i + 1;
-			if (r.err != FP_P_OK) break;
-		}
+	case FP_REQ_APPLY:
+		out->u.apply.flags = need_u32(nvl, "flags", &err);
+		out->u.apply.remote = dup_str(nvl, "remote", &err);
+		out->u.apply.rows = dup_rows(nvl, &out->u.apply.nrows, &err);
+		if (err == FP_P_OK && out->u.apply.nrows > FP_APPLY_MAX)
+			err = FP_P_ERR_TOO_BIG;
 		break;
-	}
-	case FP_REQ_CLIENT_DECLARE: {
+	case FP_REQ_CLIENT_DECLARE:
 		out->u.client_declare.names =
-			fp_r_strlist(&r, &out->u.client_declare.nnames);
-		if (out->u.client_declare.names == NULL ||
-		    out->u.client_declare.nnames == 0 ||
-		    out->u.client_declare.nnames > 16)
-			r.err = FP_P_ERR_MALFORMED;
+			dup_strlist(nvl, "names",
+				    &out->u.client_declare.nnames, &err);
+		if (err == FP_P_OK &&
+		    (out->u.client_declare.nnames == 0 ||
+		     out->u.client_declare.nnames > 16))
+			err = FP_P_ERR_MALFORMED;
 		break;
-	}
 	case FP_REQ_CLIENT_STATE:
-		out->u.client_state.flags = fp_r_u32(&r);
-		out->u.client_state.name = fp_r_str(&r);
-		out->u.client_state.data = fp_r_str(&r);
-		if (out->u.client_state.name == NULL ||
-		    out->u.client_state.data == NULL)
-			r.err = FP_P_ERR_MALFORMED;
+		out->u.client_state.flags = need_u32(nvl, "flags", &err);
+		out->u.client_state.name = dup_str(nvl, "name", &err);
+		out->u.client_state.data = dup_str(nvl, "data", &err);
 		break;
 	case FP_REQ_PREFETCH:
-		out->u.prefetch.remote = fp_r_str(&r);
+		out->u.prefetch.remote = dup_str(nvl, "remote", &err);
 		out->u.prefetch.refs =
-			fp_r_strlist(&r, &out->u.prefetch.nrefs);
-		if (r.err == FP_P_OK &&
+			dup_strlist(nvl, "refs", &out->u.prefetch.nrefs, &err);
+		if (err == FP_P_OK &&
 		    (out->u.prefetch.nrefs == 0 ||
 		     out->u.prefetch.nrefs > FP_APPLY_MAX))
-			r.err = FP_P_ERR_MALFORMED;
-		break;
-	case FP_REQ_STDIO:
-		out->u.stdio.count = fp_r_u32(&r);
-		if (out->u.stdio.count != FP_STDIO_FDS)
-			r.err = FP_P_ERR_MALFORMED;
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_REQ_ENTER:
-		out->u.enter.instance = fp_r_str(&r);
-		out->u.enter.command = fp_r_strlist(&r, &out->u.enter.ncommand);
+		out->u.enter.instance = dup_str(nvl, "instance", &err);
+		out->u.enter.command =
+			dup_strlist(nvl, "command", &out->u.enter.ncommand,
+				    &err);
 		break;
 	case FP_REQ_KILL:
-		out->u.kill.instance = fp_r_str(&r);
+		out->u.kill.instance = dup_str(nvl, "instance", &err);
 		break;
 	case FP_REQ_IMPORT:
-		out->u.import.path = fp_r_str(&r);
+		out->u.import.path = dup_str(nvl, "path", &err);
 		break;
 	case FP_REQ_REMOTE_ADD:
-		out->u.remote_add.name = fp_r_str(&r);
-		out->u.remote_add.url = fp_r_str(&r);
-		out->u.remote_add.from = fp_r_str(&r);
-		out->u.remote_add.data = fp_r_str(&r);
+		out->u.remote_add.name = dup_str(nvl, "name", &err);
+		out->u.remote_add.url = dup_str(nvl, "url", &err);
+		out->u.remote_add.from = dup_str(nvl, "from", &err);
+		out->u.remote_add.data = dup_str(nvl, "data", &err);
 		break;
 	case FP_REQ_REMOTE_DELETE:
-		out->u.remote_delete.name = fp_r_str(&r);
+		out->u.remote_delete.name = dup_str(nvl, "name", &err);
 		break;
 	case FP_REQ_REMOTE_MODIFY:
-		out->u.remote_modify.name = fp_r_str(&r);
-		out->u.remote_modify.changes = fp_r_str(&r);
-		out->u.remote_modify.gpg_data = fp_r_str(&r);
+		out->u.remote_modify.name = dup_str(nvl, "name", &err);
+		out->u.remote_modify.changes = dup_str(nvl, "changes", &err);
+		out->u.remote_modify.gpg_data = dup_str(nvl, "gpg_data", &err);
 		break;
 	case FP_REQ_APPSTREAM:
-		out->u.appstream.remote = fp_r_str(&r);
-		out->u.appstream.arch = fp_r_str(&r);
+		out->u.appstream.remote = dup_str(nvl, "remote", &err);
+		out->u.appstream.arch = dup_str(nvl, "arch", &err);
 		break;
 	case FP_REQ_OVERRIDE:
-		out->u.override.app_id = fp_r_str(&r);
-		out->u.override.flags = fp_r_u32(&r);
-		out->u.override.changes = fp_r_str(&r);
+		out->u.override.app_id = dup_str(nvl, "app_id", &err);
+		out->u.override.flags = need_u32(nvl, "flags", &err);
+		out->u.override.changes = dup_str(nvl, "changes", &err);
 		break;
 	default:
-		r.err = FP_P_ERR_MALFORMED;
+		err = FP_P_ERR_MALFORMED;
 		break;
 	}
-	e = finish(&r);
-	if (e != FP_P_OK) {
+	nvlist_destroy(nvl);
+	if (err != FP_P_OK) {
 		fp_req_free(out);
-		return e;
+		return err;
 	}
 	return FP_P_OK;
 }
 
 int fp_ack_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 		  fp_ack_t* out) {
-	memset(out, 0, sizeof(*out));
+	int err = FP_P_OK;
+	nvlist_t* nvl;
 	int e = hdr_is(h, FP_FRAME_ACK);
+
+	memset(out, 0, sizeof(*out));
 	if (e != FP_P_OK) return e;
-	fp_rbuf_t r;
-	fp_r_init(&r, payload, h->len);
+	nvl = unpack_frame(h, payload, &err);
+	if (nvl == NULL) return err;
 	out->type = h->type;
 	switch (h->type) {
 	case FP_ACK_OK:
-		out->op_id = fp_r_u64(&r);
+		out->op_id = need_num(nvl, "op_id", &err);
 		break;
 	case FP_ACK_ERR:
-		out->code = fp_r_u32(&r);
-		out->message = fp_r_str(&r);
+		out->code = need_u32(nvl, "code", &err);
+		out->message = dup_str(nvl, "message", &err);
 		break;
 	default:
-		r.err = FP_P_ERR_MALFORMED;
+		err = FP_P_ERR_MALFORMED;
 		break;
 	}
-	e = finish(&r);
-	if (e != FP_P_OK) {
+	nvlist_destroy(nvl);
+	if (err != FP_P_OK) {
 		fp_ack_free(out);
-		return e;
+		return err;
 	}
 	return FP_P_OK;
 }
 
 int fp_event_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 		    fp_event_t* out) {
-	memset(out, 0, sizeof(*out));
-	int e = hdr_is(h, FP_FRAME_EVENT);
-	if (e != FP_P_OK) return e;
-	// Kept in function scope so the cleanup below can free them: the
-	// analyzer cannot follow ownership through the event union.
+	int err = FP_P_OK;
+	nvlist_t* nvl;
 	char** table_headers = NULL;
 	char** table_cells = NULL;
-	size_t table_nc = 0, table_nr = 0;
-	fp_rbuf_t r;
-	fp_r_init(&r, payload, h->len);
+	size_t table_hn = 0, table_cn = 0;
+	int e = hdr_is(h, FP_FRAME_EVENT);
+
+	memset(out, 0, sizeof(*out));
+	if (e != FP_P_OK) return e;
+	nvl = unpack_frame(h, payload, &err);
+	if (nvl == NULL) return err;
 	out->type = h->type;
-	out->topic = fp_r_str(&r);
-	if (r.err == FP_P_OK && !fp_topic_valid(out->topic))
-		r.err = FP_P_ERR_MALFORMED;
-	out->op_id = fp_r_u64(&r);
+	out->topic = dup_str(nvl, "topic", &err);
+	if (err == FP_P_OK && !fp_topic_valid(out->topic))
+		err = FP_P_ERR_MALFORMED;
+	out->op_id = need_num(nvl, "op_id", &err);
 	switch (h->type) {
 	case FP_EV_OP_STARTED:
-		out->u.started.kind = fp_r_u32(&r);
-		out->u.started.label = fp_r_str(&r);
+		out->u.started.kind = need_u32(nvl, "kind", &err);
+		out->u.started.label = dup_str(nvl, "label", &err);
 		break;
 	case FP_EV_OP_PROGRESS:
-		out->u.progress.stage = fp_r_str(&r);
-		out->u.progress.current = fp_r_u64(&r);
-		out->u.progress.total = fp_r_u64(&r);
+		out->u.progress.stage = dup_str(nvl, "stage", &err);
+		out->u.progress.current =
+			need_num(nvl, "current", &err);
+		out->u.progress.total = need_num(nvl, "total", &err);
 		break;
 	case FP_EV_OP_STATE:
-		out->u.state.state = fp_r_str(&r);
+		out->u.state.state = dup_str(nvl, "state", &err);
 		break;
 	case FP_EV_OP_LOG:
-		out->u.log.level = fp_r_u32(&r);
-		out->u.log.scope = fp_r_str(&r);
-		out->u.log.text = fp_r_str(&r);
+		out->u.log.level = need_u32(nvl, "level", &err);
+		out->u.log.scope = dup_str(nvl, "scope", &err);
+		out->u.log.text = dup_str(nvl, "text", &err);
 		break;
 	case FP_EV_OP_FINISHED:
-		out->u.finished.status = fp_r_u32(&r);
-		out->u.finished.error = fp_r_str(&r);
+		out->u.finished.status = need_u32(nvl, "status", &err);
+		out->u.finished.error = dup_str(nvl, "error", &err);
 		break;
 	case FP_EV_OP_TABLE: {
-		const uint32_t nc = fp_r_u32(&r);
-		const uint32_t nr = fp_r_u32(&r);
-		const uint32_t has_headers = fp_r_u32(&r);
-		if (r.err != FP_P_OK) break;
-		if (nc == 0 || nc > FP_PROTO_MAX_COLS ||
-		    nr > FP_PROTO_MAX_LIST ||
-		    (uint64_t)nc * nr > FP_PROTO_MAX_LIST || has_headers > 1) {
-			r.err = FP_P_ERR_MALFORMED;
+		uint32_t nc = need_u32(nvl, "ncols", &err);
+		uint32_t nr = need_u32(nvl, "nrows", &err);
+		size_t hn = 0, cn = 0;
+
+		if (err != FP_P_OK) break;
+		if (nc == 0 || nc > FP_PROTO_MAX_COLS) {
+			err = FP_P_ERR_MALFORMED;
 			break;
 		}
-		size_t n = 0;
-		char** headers = NULL;
-		if (has_headers) {
-			headers = fp_r_strlist(&r, &n);
-			if (r.err == FP_P_OK && n != nc) {
-				// Not the column count: free by what it
-				// holds, never by what the header promised.
-				fp_strlist_free(headers, n);
-				headers = NULL;
-				r.err = FP_P_ERR_MALFORMED;
-			}
-			if (r.err != FP_P_OK) {
-				fp_strlist_free(headers, n);
-				headers = NULL;
-				break;
-			}
-		}
-		char** cells = fp_r_strlist(&r, &n);
-		if (r.err == FP_P_OK && n != (size_t)nc * nr) {
-			fp_strlist_free(cells, n);
-			cells = NULL;
-			r.err = FP_P_ERR_MALFORMED;
-		}
-		if (r.err != FP_P_OK) {
-			fp_strlist_free(headers, nc);
-			fp_strlist_free(cells, n);
+		if (nr > FP_PROTO_MAX_LIST ||
+		    (uint64_t)nc * nr > FP_PROTO_MAX_LIST) {
+			err = FP_P_ERR_TOO_BIG;
 			break;
 		}
+		if (nvlist_exists(nvl, "headers")) {
+			table_headers = dup_strlist(nvl, "headers", &hn, &err);
+			table_hn = hn;
+			if (err == FP_P_OK && hn != nc)
+				err = FP_P_ERR_MALFORMED;
+		}
+		table_cells = dup_strlist(nvl, "cells", &cn, &err);
+		table_cn = cn;
+		if (err == FP_P_OK && cn != (size_t)nc * nr)
+			err = FP_P_ERR_MALFORMED;
+		if (err != FP_P_OK) break;
 		out->u.table.ncols = nc;
 		out->u.table.nrows = nr;
-		out->u.table.headers = headers;
-		out->u.table.cells = cells;
-		table_headers = headers;
-		table_cells = cells;
-		table_nc = nc;
-		table_nr = nr;
-		// The event owns both lists now; the locals must not look
-		// owned here, or a failed finish() reads as a leak.
-		headers = NULL;
-		cells = NULL;
+		out->u.table.headers = table_headers;
+		out->u.table.cells = table_cells;
+		// The event owns both lists now.
+		table_headers = NULL;
+		table_cells = NULL;
 		break;
 	}
 	case FP_EV_META:
-		out->u.meta.ref = fp_r_str(&r);
-		out->u.meta.commit = fp_r_str(&r);
-		out->u.meta.metadata = fp_r_str(&r);
-		if (out->u.meta.ref == NULL || out->u.meta.metadata == NULL)
-			r.err = FP_P_ERR_MALFORMED;
+		out->u.meta.ref = dup_str(nvl, "ref", &err);
+		out->u.meta.commit = dup_str(nvl, "commit", &err);
+		out->u.meta.metadata = dup_str(nvl, "metadata", &err);
+		if (err == FP_P_OK && *out->u.meta.ref == '\0')
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_EV_STORE_CHANGED:
-		out->u.store.action = fp_r_str(&r);
-		out->u.store.ref = fp_r_str(&r);
-		if (out->u.store.action == NULL || out->u.store.ref == NULL)
-			r.err = FP_P_ERR_MALFORMED;
+		out->u.store.action = dup_str(nvl, "action", &err);
+		out->u.store.ref = dup_str(nvl, "ref", &err);
+		if (err == FP_P_OK &&
+		    (*out->u.store.action == '\0' || *out->u.store.ref == '\0'))
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_EV_REMOTE_CHANGED:
-		out->u.remote.name = fp_r_str(&r);
-		if (out->u.remote.name == NULL)
-			r.err = FP_P_ERR_MALFORMED;
+		out->u.remote.name = dup_str(nvl, "name", &err);
+		if (err == FP_P_OK && *out->u.remote.name == '\0')
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_EV_INSTANCE_STARTED:
 	case FP_EV_INSTANCE_EXITED:
-		out->u.instance.app_id = fp_r_str(&r);
-		if (out->u.instance.app_id == NULL)
-			r.err = FP_P_ERR_MALFORMED;
+		out->u.instance.app_id = dup_str(nvl, "app_id", &err);
+		if (err == FP_P_OK && *out->u.instance.app_id == '\0')
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_EV_CLIENT_STATE:
-		out->u.client_state.name = fp_r_str(&r);
-		out->u.client_state.data = fp_r_str(&r);
-		if (out->u.client_state.name == NULL ||
-		    out->u.client_state.data == NULL)
-			r.err = FP_P_ERR_MALFORMED;
+		out->u.client_state.name = dup_str(nvl, "name", &err);
+		out->u.client_state.data = dup_str(nvl, "data", &err);
 		break;
 	default:
-		r.err = FP_P_ERR_MALFORMED;
+		err = FP_P_ERR_MALFORMED;
 		break;
 	}
-	e = finish(&r);
-	if (e != FP_P_OK) {
-		fp_strlist_free(table_headers, table_nc);
-		fp_strlist_free(table_cells, table_nc * table_nr);
-		if (out->type == FP_EV_OP_TABLE) {
-			out->u.table.headers = NULL;
-			out->u.table.cells = NULL;
-		}
+	nvlist_destroy(nvl);
+	if (err != FP_P_OK) {
+		fp_strlist_free(table_headers, table_hn);
+		fp_strlist_free(table_cells, table_cn);
 		fp_event_free(out);
-		return e;
+		return err;
 	}
 	return FP_P_OK;
 }
+
+// --- stream transport -----------------------------------------------------
 
 // Read exactly n bytes.  Returns the number read, which is short only at
 // end of stream; -1 on error.
@@ -1034,7 +1278,6 @@ int fp_frame_write(int fd, const uint8_t* buf, size_t len) {
 	return FP_P_OK;
 }
 
-#include <sys/socket.h>
 #include <sys/uio.h>
 
 #define FP_MAX_CTL_FDS FP_MAX_FDS

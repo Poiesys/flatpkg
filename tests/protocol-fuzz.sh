@@ -28,7 +28,7 @@ fi
 
 # Seeds: valid frames the mutator can start from.
 "$CC_BIN" -O1 -g -DFPKG_FUZZ_SEEDS -Iinclude -o "$tmp/seeds" \
-	tests/protocol-fuzz.c src/shared/protocol.c ||
+	tests/protocol-fuzz.c src/shared/protocol.c -lnv ||
 	{ echo "FAIL: the seed generator did not build"; exit 1; }
 mkdir -p "$tmp/corpus"
 "$tmp/seeds" "$tmp/corpus" || { echo "FAIL: the seed generator failed"; exit 1; }
@@ -36,7 +36,7 @@ nseeds=$(find "$tmp/corpus" -type f | wc -l | tr -d ' ')
 [ "$nseeds" -ge 3 ] || { echo "FAIL: only $nseeds seed frame(s)"; exit 1; }
 
 if ! "$CC_BIN" -O1 -g -fsanitize=fuzzer,address -Iinclude \
-	-o "$tmp/fuzz" tests/protocol-fuzz.c src/shared/protocol.c \
+	-o "$tmp/fuzz" tests/protocol-fuzz.c src/shared/protocol.c -lnv \
 	>"$tmp/build.log" 2>&1; then
 	echo "FAIL: the fuzzer did not build:"
 	tail -n 10 "$tmp/build.log" | sed 's/^/       /'

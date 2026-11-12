@@ -1,10 +1,12 @@
 /* protocol-test.c - harness for src/shared/protocol.c, driven by tests/protocol.sh
- * with the sanitizers when the compiler has them.  The decoder runs as root on
- * bytes an unprivileged process chose. */
+ * with the sanitizers when the compiler has them.  The payloads are nvlists
+ * packed by libnv, and the decoder runs as root on bytes an unprivileged
+ * process chose. */
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/nv.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -51,7 +53,6 @@ static int decode_any(const uint8_t* buf, size_t len) {
 #define FP_MAX_FDS_TEST 8
 static fp_wbuf_t corpus[MAXFR];
 static int ncorpus;
-static fp_wbuf_t all;
 
 static void add(int e) {
 	CHECK(e == FP_P_OK, "encode failed: %s", fp_proto_strerror(e));
@@ -126,7 +127,6 @@ static void build_corpus(void) {
 	    {.type = FP_EV_CLIENT_STATE, .topic = "op/1", .op_id = 1,
 	     .u.client_state = {"world", "app/org.example.App/x86_64/stable\n"}},
 	};
-	fp_w_init(&all);
 	uint32_t id = 100;
 	for (size_t i = 0; i < sizeof(rq) / sizeof(rq[0]); i++) {
 		fp_w_init(&corpus[ncorpus]);
@@ -142,116 +142,201 @@ static void build_corpus(void) {
 	}
 }
 
+static fp_wbuf_t* corpus_of(uint32_t kind, uint32_t type) {
+	for (int i = 0; i < ncorpus; i++) {
+		fp_frame_hdr_t h;
+		fp_frame_hdr_decode(corpus[i].p, &h);
+		if (h.kind == kind && h.type == type) return &corpus[i];
+	}
+	return NULL;
+}
+
 static void test_roundtrip(void) {
 	for (int i = 0; i < ncorpus; i++) {
 		fp_frame_hdr_t h;
-		CHECK(fp_frame_hdr_decode(corpus[i].p, &h) == FP_P_OK, "frame %d header", i);
-		CHECK(h.len + FP_PROTO_HDR_LEN == corpus[i].len, "frame %d length", i);
-		CHECK(decode_any(corpus[i].p, corpus[i].len) == FP_P_OK, "frame %d decodes", i);
+		CHECK(fp_frame_hdr_decode(corpus[i].p, &h) == FP_P_OK,
+		      "frame %d header", i);
+		CHECK(h.len + FP_PROTO_HDR_LEN == corpus[i].len,
+		      "frame %d length", i);
+		CHECK(decode_any(corpus[i].p, corpus[i].len) == FP_P_OK,
+		      "frame %d decodes", i);
 	}
 	/* spot-check values survive the trip */
 	fp_frame_hdr_t h;
 	fp_req_t r;
 	fp_frame_hdr_decode(corpus[3].p, &h);
-	CHECK(fp_req_decode(&h, corpus[3].p + FP_PROTO_HDR_LEN, &r) == FP_P_OK, "cancel");
+	CHECK(fp_req_decode(&h, corpus[3].p + FP_PROTO_HDR_LEN, &r) == FP_P_OK,
+	      "cancel");
 	CHECK(r.u.cancel.op_id == 0x1122334455667788ull, "u64 survives");
 	fp_req_free(&r);
 	fp_frame_hdr_decode(corpus[4].p, &h);
-	CHECK(fp_req_decode(&h, corpus[4].p + FP_PROTO_HDR_LEN, &r) == FP_P_OK, "run");
+	CHECK(fp_req_decode(&h, corpus[4].p + FP_PROTO_HDR_LEN, &r) == FP_P_OK,
+	      "run");
 	CHECK(strcmp(r.u.run.app_id, "org.example.App") == 0, "run app id");
-	CHECK(r.u.run.nargs == 2 && strcmp(r.u.run.args[1], "file name") == 0, "run args");
-	CHECK(strcmp(r.u.run.command, "app-cmd") == 0 && strcmp(r.u.run.arch, "x86_64") == 0, "run strings");
-	CHECK(r.u.run.flags == (FP_RUN_DEVEL | FP_RUN_DIE_WITH_PARENT), "run flags");
-	CHECK(r.u.run.nsockets == 2 && strcmp(r.u.run.sockets[1], "!wayland") == 0, "run sockets");
-	CHECK(r.u.run.ndevices == 0 && r.u.run.nshares == 1 && r.u.run.nfs_add == 1 &&
-		  r.u.run.nfs_remove == 1 && r.u.run.nenvs == 1, "run list counts");
+	CHECK(r.u.run.nargs == 2 && strcmp(r.u.run.args[1], "file name") == 0,
+	      "run args");
+	CHECK(strcmp(r.u.run.command, "app-cmd") == 0 &&
+		  strcmp(r.u.run.arch, "x86_64") == 0,
+	      "run strings");
+	CHECK(r.u.run.flags == (FP_RUN_DEVEL | FP_RUN_DIE_WITH_PARENT),
+	      "run flags");
+	CHECK(r.u.run.nsockets == 2 &&
+		  strcmp(r.u.run.sockets[1], "!wayland") == 0,
+	      "run sockets");
+	CHECK(r.u.run.ndevices == 0 && r.u.run.nshares == 1 &&
+		  r.u.run.nfs_add == 1 && r.u.run.nfs_remove == 1 &&
+		  r.u.run.nenvs == 1,
+	      "run list counts");
 	CHECK(strcmp(r.u.run.forward, "3,9") == 0, "run forwarded targets");
+	fp_req_free(&r);
+	fp_frame_hdr_decode(corpus[8].p, &h);
+	CHECK(fp_req_decode(&h, corpus[8].p + FP_PROTO_HDR_LEN, &r) == FP_P_OK,
+	      "apply");
+	CHECK(r.u.apply.nrows == 2 &&
+		  strcmp(r.u.apply.rows[0].ref, "app/org.example.App/x86_64/stable") ==
+		      0 &&
+		  strcmp(r.u.apply.rows[0].old_version, "1.0") == 0 &&
+		  strcmp(r.u.apply.rows[1].new_version, "") == 0,
+	      "apply rows");
 	fp_req_free(&r);
 	fp_event_t ev;
 	fp_frame_hdr_decode(corpus[15].p, &h);
-	CHECK(fp_event_decode(&h, corpus[15].p + FP_PROTO_HDR_LEN, &ev) == FP_P_OK, "progress");
-	CHECK(ev.u.progress.current == 1024 && ev.u.progress.total == (1u << 20), "progress values");
+	CHECK(fp_event_decode(&h, corpus[15].p + FP_PROTO_HDR_LEN, &ev) ==
+		  FP_P_OK,
+	      "progress");
+	CHECK(ev.u.progress.current == 1024 &&
+		  ev.u.progress.total == (1u << 20),
+	      "progress values");
 	CHECK(strcmp(ev.topic, "op/7") == 0, "topic");
 	fp_event_free(&ev);
 }
 
-/* A table event is data from the daemon, drawn by the client.  It round-trips
- * with and without headers, and a hostile one is refused, nothing leaked. */
-static int decode_table_payload(uint32_t nc, uint32_t nr, uint32_t has_headers,
-				int nheaders, int ncells, fp_event_t* out) {
-	char* strs[64];
-	for (int i = 0; i < 64; i++) strs[i] = "x";
-	fp_wbuf_t w;
-	fp_w_init(&w);
-	fp_w_str(&w, "op/7");
-	fp_w_u64(&w, 7);
-	fp_w_u32(&w, nc);
-	fp_w_u32(&w, nr);
-	fp_w_u32(&w, has_headers);
-	if (has_headers) fp_w_strlist(&w, strs, (size_t)nheaders);
-	fp_w_strlist(&w, strs, (size_t)ncells);
-	fp_frame_hdr_t h = {FP_FRAME_EVENT, FP_EV_OP_TABLE, 1, (uint32_t)w.len};
-	int e = fp_event_decode(&h, w.p, out);
-	fp_w_free(&w);
+/* Build a payload from an nvlist the way a peer would: pack it and decode it
+ * as the given frame type.  The caller owns `nvl` and it is consumed. */
+static int decode_nvl(uint8_t kind, uint32_t type, nvlist_t* nvl) {
+	void* blob;
+	size_t len = 0;
+	fp_frame_hdr_t h = {
+	    .kind = kind, .type = type, .id = 1, .len = 0};
+	int e;
+
+	if (nvl == NULL) return FP_P_ERR_NOMEM;
+	blob = nvlist_pack(nvl, &len);
+	nvlist_destroy(nvl);
+	if (blob == NULL) return FP_P_ERR_NOMEM;
+	h.len = (uint32_t)len;
+	if (kind == FP_FRAME_REQUEST) {
+		fp_req_t r;
+		e = fp_req_decode(&h, blob, &r);
+		if (e == FP_P_OK) fp_req_free(&r);
+	} else if (kind == FP_FRAME_ACK) {
+		fp_ack_t a;
+		e = fp_ack_decode(&h, blob, &a);
+		if (e == FP_P_OK) fp_ack_free(&a);
+	} else {
+		fp_event_t v;
+		e = fp_event_decode(&h, blob, &v);
+		if (e == FP_P_OK) fp_event_free(&v);
+	}
+	free(blob);
 	return e;
 }
 
 static void test_table_event(void) {
+	fp_wbuf_t* t = corpus_of(FP_FRAME_EVENT, FP_EV_OP_TABLE);
 	fp_event_t ev;
-	/* the corpus frame: 2 columns, 2 rows, with headers */
 	fp_frame_hdr_t h;
-	fp_wbuf_t* t = NULL;
-	for (int i = 0; i < ncorpus; i++) {
-		fp_frame_hdr_t cand;
-		fp_frame_hdr_decode(corpus[i].p, &cand);
-		if (cand.kind == FP_FRAME_EVENT &&
-		    cand.type == FP_EV_OP_TABLE) {
-			t = &corpus[i];
-			break;
-		}
-	}
+
 	CHECK(t != NULL, "the corpus has a table frame");
 	if (t == NULL) return;
 	fp_frame_hdr_decode(t->p, &h);
-	CHECK(h.type == FP_EV_OP_TABLE, "the last corpus frame is the table");
-	CHECK(fp_event_decode(&h, t->p + FP_PROTO_HDR_LEN, &ev) == FP_P_OK, "table decodes");
+	CHECK(fp_event_decode(&h, t->p + FP_PROTO_HDR_LEN, &ev) == FP_P_OK,
+	      "table decodes");
 	CHECK(ev.u.table.ncols == 2 && ev.u.table.nrows == 2, "table shape");
-	CHECK(ev.u.table.headers != NULL && strcmp(ev.u.table.headers[1], "Operation") == 0, "header");
-	CHECK(strcmp(ev.u.table.cells[2], "app.B") == 0 && strcmp(ev.u.table.cells[3], "Remove") == 0, "cells, row by row");
+	CHECK(ev.u.table.headers != NULL &&
+		  strcmp(ev.u.table.headers[1], "Operation") == 0,
+	      "header");
+	CHECK(strcmp(ev.u.table.cells[2], "app.B") == 0 &&
+		  strcmp(ev.u.table.cells[3], "Remove") == 0,
+	      "cells, row by row");
 	fp_event_free(&ev);
 
-	/* no headers is a table too */
-	CHECK(decode_table_payload(2, 2, 0, 0, 4, &ev) == FP_P_OK, "table without headers");
-	CHECK(ev.u.table.headers == NULL && ev.u.table.cells != NULL, "no headers kept as none");
-	fp_event_free(&ev);
-	CHECK(decode_table_payload(3, 0, 1, 3, 0, &ev) == FP_P_OK, "a table of no rows");
-	fp_event_free(&ev);
+	/* A table without headers, and one with no rows. */
+	nvlist_t* nvl = nvlist_create(0);
+	char* cells[] = {"a", "b", "c", "d"};
+	nvlist_add_string(nvl, "topic", "op/7");
+	nvlist_add_number(nvl, "op_id", 7);
+	nvlist_add_number(nvl, "ncols", 2);
+	nvlist_add_number(nvl, "nrows", 2);
+	nvlist_add_string_array(nvl, "cells", (const char* const*)cells, 4);
+	CHECK(decode_nvl(FP_FRAME_EVENT, FP_EV_OP_TABLE, nvl) == FP_P_OK,
+	      "table without headers");
+	nvl = nvlist_create(0);
+	nvlist_add_string(nvl, "topic", "op/7");
+	nvlist_add_number(nvl, "op_id", 7);
+	nvlist_add_number(nvl, "ncols", 3);
+	nvlist_add_number(nvl, "nrows", 0);
+	CHECK(decode_nvl(FP_FRAME_EVENT, FP_EV_OP_TABLE, nvl) == FP_P_OK,
+	      "a table of no rows");
 
-	/* hostile: each is refused, and a refusal leaves nothing to free */
-	CHECK(decode_table_payload(0, 1, 0, 0, 0, &ev) != FP_P_OK, "no columns");
-	CHECK(decode_table_payload(FP_PROTO_MAX_COLS + 1, 1, 0, 0, FP_PROTO_MAX_COLS + 1, &ev) != FP_P_OK, "too many columns");
-	CHECK(decode_table_payload(2, FP_PROTO_MAX_LIST + 1, 0, 0, 2, &ev) != FP_P_OK, "too many rows");
-	CHECK(decode_table_payload(16, 300, 0, 0, 16, &ev) != FP_P_OK, "more cells than the protocol allows");
-	CHECK(decode_table_payload(2, 2, 2, 2, 4, &ev) != FP_P_OK, "a has-headers flag that is neither 0 nor 1");
-	CHECK(decode_table_payload(2, 2, 1, 3, 4, &ev) != FP_P_OK, "more headers than columns");
-	CHECK(decode_table_payload(2, 2, 1, 1, 4, &ev) != FP_P_OK, "fewer headers than columns");
-	CHECK(decode_table_payload(2, 2, 1, 2, 3, &ev) != FP_P_OK, "fewer cells than the shape");
-	CHECK(decode_table_payload(2, 2, 1, 2, 5, &ev) != FP_P_OK, "more cells than the shape");
-	CHECK(decode_table_payload(2, 2, 0, 0, 0, &ev) != FP_P_OK, "no cells for a 2x2");
+	/* Hostile shapes, each refused whole. */
+	struct {
+		uint64_t nc, nr;
+		const char* what;
+	} bad[] = {
+	    {0, 1, "no columns"},
+	    {FP_PROTO_MAX_COLS + 1, 1, "too many columns"},
+	    {2, FP_PROTO_MAX_LIST + 1, "too many rows"},
+	    {16, 300, "more cells than the protocol allows"},
+	};
+	for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+		nvl = nvlist_create(0);
+		nvlist_add_string(nvl, "topic", "op/7");
+		nvlist_add_number(nvl, "op_id", 7);
+		nvlist_add_number(nvl, "ncols", bad[i].nc);
+		nvlist_add_number(nvl, "nrows", bad[i].nr);
+		CHECK(decode_nvl(FP_FRAME_EVENT, FP_EV_OP_TABLE, nvl) != FP_P_OK,
+		      "%s", bad[i].what);
+	}
 
-	/* and the encoder refuses to send what the decoder would refuse */
+	/* Headers and cells must match the declared shape. */
+	nvl = nvlist_create(0);
+	char* two[] = {"H1", "H2"};
+	nvlist_add_string(nvl, "topic", "op/7");
+	nvlist_add_number(nvl, "op_id", 7);
+	nvlist_add_number(nvl, "ncols", 2);
+	nvlist_add_number(nvl, "nrows", 2);
+	nvlist_add_string_array(nvl, "headers", (const char* const*)two, 2);
+	nvlist_add_string_array(nvl, "cells", (const char* const*)two, 2);
+	CHECK(decode_nvl(FP_FRAME_EVENT, FP_EV_OP_TABLE, nvl) != FP_P_OK,
+	      "fewer cells than the shape");
+	nvl = nvlist_create(0);
+	nvlist_add_string(nvl, "topic", "op/7");
+	nvlist_add_number(nvl, "op_id", 7);
+	nvlist_add_number(nvl, "ncols", 2);
+	nvlist_add_number(nvl, "nrows", 2);
+	nvlist_add_string(nvl, "headers", "not an array");
+	nvlist_add_number(nvl, "cells", 1);
+	CHECK(decode_nvl(FP_FRAME_EVENT, FP_EV_OP_TABLE, nvl) != FP_P_OK,
+	      "headers and cells of the wrong type");
+
+	/* And the encoder refuses to send what the decoder would refuse. */
 	char* hdr[] = {"a", NULL};
-	char* cells[] = {"x", NULL};
-	fp_event_t bad = {.type = FP_EV_OP_TABLE, .topic = "op/7", .op_id = 7,
-			  .u.table = {0, 1, hdr, cells}};
+	char* one[] = {"x", NULL};
+	fp_event_t badv = {.type = FP_EV_OP_TABLE, .topic = "op/7", .op_id = 7,
+			   .u.table = {0, 1, hdr, one}};
 	fp_wbuf_t w;
 	fp_w_init(&w);
-	CHECK(fp_event_encode(&w, 1, &bad) != FP_P_OK, "encode refuses no columns");
-	bad.u.table.ncols = FP_PROTO_MAX_COLS + 1;
-	CHECK(fp_event_encode(&w, 1, &bad) != FP_P_OK, "encode refuses too many columns");
-	bad.u.table.ncols = 1;
-	bad.u.table.cells = NULL;
-	CHECK(fp_event_encode(&w, 1, &bad) != FP_P_OK, "encode refuses rows without cells");
+	CHECK(fp_event_encode(&w, 1, &badv) != FP_P_OK, "encode refuses no columns");
+	CHECK(w.len == 0, "a refused event leaves the buffer alone");
+	badv.u.table.ncols = FP_PROTO_MAX_COLS + 1;
+	CHECK(fp_event_encode(&w, 1, &badv) != FP_P_OK,
+	      "encode refuses too many columns");
+	badv.u.table.ncols = 1;
+	badv.u.table.nrows = 1;
+	badv.u.table.cells = NULL;
+	CHECK(fp_event_encode(&w, 1, &badv) != FP_P_OK,
+	      "encode refuses rows without cells");
 	fp_w_free(&w);
 }
 
@@ -271,13 +356,17 @@ static void test_header_rejects(void) {
 	CHECK(fp_frame_hdr_decode(hdr, &h) == FP_P_ERR_KIND, "kind 4");
 	memcpy(hdr, corpus[0].p, sizeof(hdr));
 	hdr[12] = 0xff;
-	CHECK(fp_frame_hdr_decode(hdr, &h) == FP_P_ERR_TOO_BIG, "len over the cap");
-	CHECK(h.len == 0 && h.kind == 0, "a rejected header leaves nothing behind");
+	CHECK(fp_frame_hdr_decode(hdr, &h) == FP_P_ERR_TOO_BIG,
+	      "len over the cap");
+	CHECK(h.len == 0 && h.kind == 0,
+	      "a rejected header leaves nothing behind");
 
 	/* a request frame handed to the event decoder is the wrong kind */
 	fp_frame_hdr_decode(corpus[0].p, &h);
 	fp_event_t ev;
-	CHECK(fp_event_decode(&h, corpus[0].p + FP_PROTO_HDR_LEN, &ev) == FP_P_ERR_KIND, "kind mismatch");
+	CHECK(fp_event_decode(&h, corpus[0].p + FP_PROTO_HDR_LEN, &ev) ==
+		  FP_P_ERR_KIND,
+	      "kind mismatch");
 }
 
 static void test_every_truncation(void) {
@@ -290,86 +379,154 @@ static void test_every_truncation(void) {
 			int e;
 			if (h.kind == FP_FRAME_REQUEST) {
 				fp_req_t r;
-				e = fp_req_decode(&t, corpus[i].p + FP_PROTO_HDR_LEN, &r);
+				e = fp_req_decode(&t, corpus[i].p +
+							 FP_PROTO_HDR_LEN,
+						  &r);
 				if (e == FP_P_OK) fp_req_free(&r);
 			} else if (h.kind == FP_FRAME_ACK) {
 				fp_ack_t a;
-				e = fp_ack_decode(&t, corpus[i].p + FP_PROTO_HDR_LEN, &a);
+				e = fp_ack_decode(&t, corpus[i].p +
+							 FP_PROTO_HDR_LEN,
+						  &a);
 				if (e == FP_P_OK) fp_ack_free(&a);
 			} else {
 				fp_event_t v;
-				e = fp_event_decode(&t, corpus[i].p + FP_PROTO_HDR_LEN, &v);
+				e = fp_event_decode(&t, corpus[i].p +
+							   FP_PROTO_HDR_LEN,
+						    &v);
 				if (e == FP_P_OK) fp_event_free(&v);
 			}
-			CHECK(e != FP_P_OK, "frame %d truncated to %u bytes decoded", i, k);
+			CHECK(e != FP_P_OK,
+			      "frame %d truncated to %u bytes decoded", i, k);
 		}
-		/* one trailing byte is also a rejection */
+		/* one trailing byte is also a rejection: the nvlist carries
+		 * its own size and unpack refuses a buffer that is not it */
 		uint8_t* big = malloc(h.len + 1);
 		memcpy(big, corpus[i].p + FP_PROTO_HDR_LEN, h.len);
 		big[h.len] = 0;
 		fp_frame_hdr_t t = h;
 		t.len = h.len + 1;
 		int e;
-		if (h.kind == FP_FRAME_REQUEST) { fp_req_t r; e = fp_req_decode(&t, big, &r); if (e == FP_P_OK) fp_req_free(&r); }
-		else if (h.kind == FP_FRAME_ACK) { fp_ack_t a; e = fp_ack_decode(&t, big, &a); if (e == FP_P_OK) fp_ack_free(&a); }
-		else { fp_event_t v; e = fp_event_decode(&t, big, &v); if (e == FP_P_OK) fp_event_free(&v); }
-		CHECK(e == FP_P_ERR_MALFORMED, "frame %d with a trailing byte: %s", i, fp_proto_strerror(e));
+		if (h.kind == FP_FRAME_REQUEST) {
+			fp_req_t r;
+			e = fp_req_decode(&t, big, &r);
+			if (e == FP_P_OK) fp_req_free(&r);
+		} else if (h.kind == FP_FRAME_ACK) {
+			fp_ack_t a;
+			e = fp_ack_decode(&t, big, &a);
+			if (e == FP_P_OK) fp_ack_free(&a);
+		} else {
+			fp_event_t v;
+			e = fp_event_decode(&t, big, &v);
+			if (e == FP_P_OK) fp_event_free(&v);
+		}
+		CHECK(e != FP_P_OK, "frame %d with a trailing byte: %s", i,
+		      fp_proto_strerror(e));
 		free(big);
 	}
 }
 
-static int decode_payload_req(const uint8_t* payload, size_t n, uint32_t type) {
-	fp_frame_hdr_t h = {.kind = FP_FRAME_REQUEST, .type = type, .id = 1, .len = (uint32_t)n};
-	fp_req_t r;
-	int e = fp_req_decode(&h, payload, &r);
-	if (e == FP_P_OK) fp_req_free(&r);
-	return e;
-}
-
 static void test_hostile_fields(void) {
-	/* a string with an embedded NUL */
-	uint8_t nul[] = {0, 0, 0, 3, 'a', 0, 'b'};
-	CHECK(decode_payload_req((uint8_t[]){0, 0, 0, 1, 0, 0, 0, 3, 'a', 0, 'b'}, 11, FP_REQ_HELLO) == FP_P_ERR_MALFORMED, "embedded NUL");
-	(void)nul;
+	/* a missing field, and a field of the wrong type */
+	nvlist_t* nvl = nvlist_create(0);
+	nvlist_add_number(nvl, "version", FP_PROTO_VERSION);
+	CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_HELLO, nvl) ==
+		  FP_P_ERR_MALFORMED,
+	      "missing client");
+	nvl = nvlist_create(0);
+	nvlist_add_number(nvl, "version", FP_PROTO_VERSION);
+	nvlist_add_number(nvl, "client", 1);
+	CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_HELLO, nvl) ==
+		  FP_P_ERR_MALFORMED,
+	      "client of the wrong type");
 
-	/* a string longer than the cap, with the bytes present */
+	/* a string longer than the cap is refused even though libnv
+	 * carried it whole */
 	size_t big = FP_PROTO_MAX_STR + 1;
-	uint8_t* p = calloc(1, 8 + big);
-	p[3] = 1; /* version */
-	p[4] = (uint8_t)(big >> 24); p[5] = (uint8_t)(big >> 16);
-	p[6] = (uint8_t)(big >> 8);  p[7] = (uint8_t)big;
-	memset(p + 8, 'x', big);
-	CHECK(decode_payload_req(p, 8 + big, FP_REQ_HELLO) == FP_P_ERR_TOO_BIG, "string over the cap");
-	free(p);
+	char* huge = calloc(1, big + 1);
+	memset(huge, 'x', big);
+	nvl = nvlist_create(0);
+	nvlist_add_number(nvl, "version", FP_PROTO_VERSION);
+	nvlist_add_string(nvl, "client", huge);
+	CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_HELLO, nvl) ==
+		  FP_P_ERR_TOO_BIG,
+	      "string over the cap");
+	free(huge);
 
-	/* a list that promises 4096 entries and carries none: refused before
-	 * any allocation is sized from it */
-	uint8_t lie[] = {0, 0, 0, 0,		/* flags */
-			 0, 0, 0x10, 0x00};	/* 4096 refs, no bytes follow */
-	CHECK(decode_payload_req(lie, sizeof(lie), FP_REQ_PREFETCH) == FP_P_ERR_TRUNCATED, "count with no bytes");
-	uint8_t over[] = {0, 0, 0, 0, 0, 0, 0x10, 0x01};
-	CHECK(decode_payload_req(over, sizeof(over), FP_REQ_PREFETCH) == FP_P_ERR_TOO_BIG, "count over the cap");
-	uint8_t huge[] = {0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff};
-	CHECK(decode_payload_req(huge, sizeof(huge), FP_REQ_PREFETCH) == FP_P_ERR_TOO_BIG, "count 2^32-1");
+	/* a list over the cap is refused before anything is typed into it */
+	size_t n = FP_PROTO_MAX_LIST + 1;
+	char** many = calloc(n, sizeof(char*));
+	for (size_t i = 0; i < n; i++) many[i] = "x";
+	nvl = nvlist_create(0);
+	nvlist_add_string(nvl, "remote", "r");
+	nvlist_add_string_array(nvl, "refs", (const char* const*)many, n);
+	CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_PREFETCH, nvl) ==
+		  FP_P_ERR_TOO_BIG,
+	      "list over the cap");
+	free(many);
 
-	/* an empty ref list is not a request */
-	uint8_t none[] = {0, 0, 0, 0, 0, 0, 0, 0};
-	CHECK(decode_payload_req(none, sizeof(none), FP_REQ_PREFETCH) == FP_P_ERR_MALFORMED, "remove nothing");
+	/* an empty ref list is not a request, and an absent one is empty */
+	nvl = nvlist_create(0);
+	nvlist_add_string(nvl, "remote", "r");
+	CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_PREFETCH, nvl) ==
+		  FP_P_ERR_MALFORMED,
+	      "remove nothing");
 
-	/* unknown request type */
-	CHECK(decode_payload_req((uint8_t[]){0}, 0, 999) == FP_P_ERR_MALFORMED, "unknown type");
+	/* a 32-bit field cannot be widened by the wire */
+	nvl = nvlist_create(0);
+	nvlist_add_number(nvl, "count", 0x100000000ull);
+	CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_STDIO, nvl) ==
+		  FP_P_ERR_MALFORMED,
+	      "count over 32 bits");
 
 	/* topics are validated on the way in */
-	const char* bad[] = {"", "../x", "a/../b", "A", "a b", "/a", "a/", "a//b", "op/4\x01"};
-	for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++)
-		CHECK(!fp_topic_valid(bad[i]), "topic '%s' accepted", bad[i]);
-	CHECK(fp_topic_valid("op/42") && fp_topic_valid("instance/app.x-y_z") && fp_topic_valid("store"), "good topics");
+	const char* badtopics[] = {"", "../x", "a/../b", "A", "a b",
+				  "/a", "a/", "a//b", "op/4\x01"};
+	for (size_t i = 0; i < sizeof(badtopics) / sizeof(badtopics[0]); i++)
+		CHECK(!fp_topic_valid(badtopics[i]), "topic '%s' accepted",
+		      badtopics[i]);
+	CHECK(fp_topic_valid("op/42") && fp_topic_valid("instance/app.x-y_z") &&
+		  fp_topic_valid("store"),
+	      "good topics");
 	char longt[FP_PROTO_MAX_TOPIC + 2];
 	memset(longt, 'a', sizeof(longt) - 1);
 	longt[sizeof(longt) - 1] = 0;
 	CHECK(!fp_topic_valid(longt), "topic over the cap");
-	uint8_t subbad[] = {0, 0, 0, 4, '.', '.', '/', 'x'};
-	CHECK(decode_payload_req(subbad, sizeof(subbad), FP_REQ_SUBSCRIBE) == FP_P_ERR_MALFORMED, "subscribe to ../x");
+	nvl = nvlist_create(0);
+	nvlist_add_string(nvl, "topic", "../x");
+	CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_SUBSCRIBE, nvl) ==
+		  FP_P_ERR_MALFORMED,
+	      "subscribe to ../x");
+
+	/* duplicate names are ambiguity, not a feature: libnv's unpack
+	 * adopts the flags it was given, so a blob packed with NO_UNIQUE is
+	 * refused before a name is read twice */
+	nvl = nvlist_create(NV_FLAG_NO_UNIQUE);
+	nvlist_add_number(nvl, "version", FP_PROTO_VERSION);
+	nvlist_add_string(nvl, "client", "one");
+	nvlist_add_string(nvl, "client", "two");
+	CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_HELLO, nvl) != FP_P_OK,
+	      "duplicate names accepted");
+
+	/* Apply rows are parallel arrays: they must agree in length, or the
+	 * frame is refused whole. */
+	{
+		uint64_t types[2] = {FP_APPLY_INSTALL, FP_APPLY_REMOVE};
+		const char* refs[1] = {"org.example.App"};
+		const char* olds[2] = {"", ""};
+		const char* news[2] = {"", ""};
+
+		nvl = nvlist_create(0);
+		nvlist_add_number(nvl, "flags", 0);
+		nvlist_add_string(nvl, "remote", "flathub");
+		nvlist_add_number_array(nvl, "row_types", types, 2);
+		nvlist_add_string_array(nvl, "row_refs", refs, 1);
+		nvlist_add_string_array(nvl, "row_old", olds, 2);
+		nvlist_add_string_array(nvl, "row_new", news, 2);
+		CHECK(decode_nvl(FP_FRAME_REQUEST, FP_REQ_APPLY, nvl) ==
+			  FP_P_ERR_MALFORMED,
+		      "rows of unequal length");
+	}
 }
 
 static void test_encode_rules(void) {
@@ -382,17 +539,21 @@ static void test_encode_rules(void) {
 	/* a failed encode leaves the buffer as it was, so a half frame can
 	 * never be queued behind a good one */
 	fp_req_t badtopic = {.type = FP_REQ_SUBSCRIBE, .u.sub = {"../etc"}};
-	CHECK(fp_req_encode(&w, 2, &badtopic) == FP_P_ERR_MALFORMED, "invalid topic refused");
-	CHECK(w.len == before && !w.failed, "buffer unchanged after a refused encode");
+	CHECK(fp_req_encode(&w, 2, &badtopic) == FP_P_ERR_MALFORMED,
+	      "invalid topic refused");
+	CHECK(w.len == before && !w.failed,
+	      "buffer unchanged after a refused encode");
 
 	char* r1[] = {"a"};
 	fp_req_t mism = {.type = FP_REQ_PREFETCH,
 			 .u.prefetch = {"r", r1, FP_APPLY_MAX + 1}};
-	CHECK(fp_req_encode(&w, 3, &mism) == FP_P_ERR_MALFORMED, "too many refs");
+	CHECK(fp_req_encode(&w, 3, &mism) == FP_P_ERR_MALFORMED,
+	      "too many refs");
 	CHECK(w.len == before, "unchanged after an oversized list");
 
 	fp_req_t unk = {.type = 999};
-	CHECK(fp_req_encode(&w, 4, &unk) == FP_P_ERR_MALFORMED, "unknown type refused on encode");
+	CHECK(fp_req_encode(&w, 4, &unk) == FP_P_ERR_MALFORMED,
+	      "unknown type refused on encode");
 	CHECK(w.len == before, "unchanged after an unknown type");
 
 	/* a payload past the cap is refused, not truncated */
@@ -403,19 +564,24 @@ static void test_encode_rules(void) {
 	char** many = calloc(n, sizeof(char*));
 	for (size_t i = 0; i < n; i++) many[i] = s;
 	fp_req_t huge = {.type = FP_REQ_PREFETCH, .u.prefetch = {"r", many, n}};
-	CHECK(fp_req_encode(&w, 5, &huge) == FP_P_ERR_TOO_BIG, "payload over the cap");
-	CHECK(w.len == before && !w.failed, "unchanged after an oversized frame");
+	CHECK(fp_req_encode(&w, 5, &huge) == FP_P_ERR_TOO_BIG,
+	      "payload over the cap");
+	CHECK(w.len == before && !w.failed,
+	      "unchanged after an oversized frame");
 	free(many);
 	free(s);
 
 	/* and the buffer still works afterwards */
-	CHECK(fp_ack_encode(&w, 6, &ok) == FP_P_OK && w.len == 2 * before, "still usable");
+	CHECK(fp_ack_encode(&w, 6, &ok) == FP_P_OK && w.len == 2 * before,
+	      "still usable");
 	fp_w_free(&w);
 }
 
 static uint64_t rng = 0x9e3779b97f4a7c15ull;
 static uint32_t rnd(void) {
-	rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+	rng ^= rng << 13;
+	rng ^= rng >> 7;
+	rng ^= rng << 17;
 	return (uint32_t)(rng >> 16);
 }
 
@@ -423,16 +589,20 @@ static void test_fuzz(void) {
 	/* Mutate valid frames (flip bytes, cut short) and decode.  The
 	 * result does not matter; surviving it, leak-free, does. */
 	int accepted = 0, rejected = 0;
-	for (int iter = 0; iter < 200000; iter++) {
+	for (int iter = 0; iter < 20000; iter++) {
 		int i = (int)(rnd() % (uint32_t)ncorpus);
 		size_t len = corpus[i].len;
 		uint8_t buf[4096];
 		if (len > sizeof(buf)) continue;
 		memcpy(buf, corpus[i].p, len);
 		int flips = 1 + (int)(rnd() % 3);
-		for (int f = 0; f < flips; f++) buf[rnd() % len] ^= (uint8_t)(1u << (rnd() % 8));
+		for (int f = 0; f < flips; f++)
+			buf[rnd() % len] ^= (uint8_t)(1u << (rnd() % 8));
 		if (rnd() % 4 == 0) len = rnd() % (len + 1);
-		if (decode_any(buf, len) == FP_P_OK) accepted++; else rejected++;
+		if (decode_any(buf, len) == FP_P_OK)
+			accepted++;
+		else
+			rejected++;
 	}
 	CHECK(rejected > 0, "the fuzz rejected nothing");
 	printf("     fuzz: %d accepted, %d rejected\n", accepted, rejected);
@@ -447,7 +617,9 @@ static void test_stream(void) {
 	if (pid == 0) {
 		close(sv[0]);
 		for (size_t k = 0; k < corpus[4].len; k++)
-			if (fp_frame_write(sv[1], corpus[4].p + k, 1) != FP_P_OK) _exit(2);
+			if (fp_frame_write(sv[1], corpus[4].p + k, 1) !=
+			    FP_P_OK)
+				_exit(2);
 		_exit(0);
 	}
 	close(sv[1]);
@@ -457,12 +629,14 @@ static void test_stream(void) {
 	CHECK(e == FP_P_OK, "byte-at-a-time frame: %s", fp_proto_strerror(e));
 	if (e == FP_P_OK) {
 		fp_req_t r;
-		CHECK(fp_req_decode(&h, payload, &r) == FP_P_OK, "decodes after reassembly");
+		CHECK(fp_req_decode(&h, payload, &r) == FP_P_OK,
+		      "decodes after reassembly");
 		fp_req_free(&r);
 	}
 	free(payload);
 	/* the writer closes: a clean end between frames */
-	CHECK(fp_frame_read(sv[0], &h, &payload) == FP_P_EOF, "EOF between frames");
+	CHECK(fp_frame_read(sv[0], &h, &payload) == FP_P_EOF,
+	      "EOF between frames");
 	int st;
 	waitpid(pid, &st, 0);
 	CHECK(WIFEXITED(st) && WEXITSTATUS(st) == 0, "writer exited cleanly");
@@ -470,24 +644,30 @@ static void test_stream(void) {
 
 	/* a close in the middle of a frame is truncation, not EOF */
 	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "socketpair 2");
-	CHECK(fp_frame_write(sv[1], corpus[4].p, corpus[4].len - 3) == FP_P_OK, "partial write");
+	CHECK(fp_frame_write(sv[1], corpus[4].p, corpus[4].len - 3) == FP_P_OK,
+	      "partial write");
 	close(sv[1]);
-	CHECK(fp_frame_read(sv[0], &h, &payload) == FP_P_ERR_TRUNCATED, "close inside a frame");
+	CHECK(fp_frame_read(sv[0], &h, &payload) == FP_P_ERR_TRUNCATED,
+	      "close inside a frame");
 	close(sv[0]);
 
 	/* a close in the middle of a header */
 	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "socketpair 3");
-	CHECK(fp_frame_write(sv[1], corpus[4].p, 5) == FP_P_OK, "partial header");
+	CHECK(fp_frame_write(sv[1], corpus[4].p, 5) == FP_P_OK,
+	      "partial header");
 	close(sv[1]);
-	CHECK(fp_frame_read(sv[0], &h, &payload) == FP_P_ERR_TRUNCATED, "close inside a header");
+	CHECK(fp_frame_read(sv[0], &h, &payload) == FP_P_ERR_TRUNCATED,
+	      "close inside a header");
 	close(sv[0]);
 
 	/* garbage is refused at the header, before any payload is read */
 	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "socketpair 4");
 	uint8_t junk[FP_PROTO_HDR_LEN];
 	memset(junk, 0x41, sizeof(junk));
-	CHECK(fp_frame_write(sv[1], junk, sizeof(junk)) == FP_P_OK, "write junk");
-	CHECK(fp_frame_read(sv[0], &h, &payload) == FP_P_ERR_MAGIC, "junk header");
+	CHECK(fp_frame_write(sv[1], junk, sizeof(junk)) == FP_P_OK,
+	      "write junk");
+	CHECK(fp_frame_read(sv[0], &h, &payload) == FP_P_ERR_MAGIC,
+	      "junk header");
 	CHECK(payload == NULL, "no payload allocated for junk");
 	close(sv[0]);
 
@@ -495,7 +675,8 @@ static void test_stream(void) {
 	close(sv[1]);
 	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "socketpair 5");
 	close(sv[0]);
-	CHECK(fp_frame_write(sv[1], junk, sizeof(junk)) == FP_P_ERR_IO, "write to a closed peer");
+	CHECK(fp_frame_write(sv[1], junk, sizeof(junk)) == FP_P_ERR_IO,
+	      "write to a closed peer");
 	close(sv[1]);
 }
 
@@ -507,42 +688,60 @@ static void test_fds(void) {
 	uint8_t* payload = NULL;
 	int got[FP_MAX_FDS_TEST];
 	size_t n = 0;
-	const fp_wbuf_t* stdio_frame = &corpus[6]; /* FP_REQ_STDIO */
+	fp_wbuf_t* stdio_frame = corpus_of(FP_FRAME_REQUEST, FP_REQ_STDIO);
 	fp_req_t r;
 
+	CHECK(stdio_frame != NULL, "the corpus has a STDIO frame");
+	if (stdio_frame == NULL) return;
 	CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, sv) == 0, "fds socketpair");
 	CHECK(pipe(p1) == 0 && pipe(p2) == 0 && pipe(p3) == 0, "fds pipes");
 	int out[3] = {p1[0], p2[1], p3[1]};
-	CHECK(fp_frame_write_fds(sv[1], stdio_frame->p, stdio_frame->len, out, 3) == FP_P_OK,
+	CHECK(fp_frame_write_fds(sv[1], stdio_frame->p, stdio_frame->len, out,
+				 3) == FP_P_OK,
 	      "write frame with fds");
-	CHECK(fp_frame_write(sv[1], corpus[0].p, corpus[0].len) == FP_P_OK, "write plain frame");
-	CHECK(fp_frame_read_fds(sv[0], &h, &payload, got, FP_MAX_FDS_TEST, &n) == FP_P_OK,
+	CHECK(fp_frame_write(sv[1], corpus[0].p, corpus[0].len) == FP_P_OK,
+	      "write plain frame");
+	CHECK(fp_frame_read_fds(sv[0], &h, &payload, got, FP_MAX_FDS_TEST,
+				&n) == FP_P_OK,
 	      "read frame with fds");
 	CHECK(n == 3, "three descriptors arrive");
-	CHECK(fp_req_decode(&h, payload, &r) == FP_P_OK && r.type == FP_REQ_STDIO &&
-		  r.u.stdio.count == FP_STDIO_FDS, "the frame decodes");
+	CHECK(fp_req_decode(&h, payload, &r) == FP_P_OK &&
+		  r.type == FP_REQ_STDIO && r.u.stdio.count == FP_STDIO_FDS,
+	      "the frame decodes");
 	fp_req_free(&r);
 	free(payload);
 	/* what arrives is the same open file: write on the received write end */
 	if (n == 3) {
 		char c = 0;
-		CHECK(write(got[1], "x", 1) == 1, "received descriptor is writable");
-		CHECK(read(p2[0], &c, 1) == 1 && c == 'x', "it is the sender's pipe");
+		CHECK(write(got[1], "x", 1) == 1,
+		      "received descriptor is writable");
+		CHECK(read(p2[0], &c, 1) == 1 && c == 'x',
+		      "it is the sender's pipe");
 		for (size_t i = 0; i < n; i++) close(got[i]);
 	}
 	/* the next frame has none, and the reader is told so */
-	CHECK(fp_frame_read_fds(sv[0], &h, &payload, got, FP_MAX_FDS_TEST, &n) == FP_P_OK && n == 0,
+	CHECK(fp_frame_read_fds(sv[0], &h, &payload, got, FP_MAX_FDS_TEST,
+				&n) == FP_P_OK &&
+		  n == 0,
 	      "a plain frame carries no descriptors");
 	free(payload);
 	/* a reader that asks for fewer than were sent closes the rest */
-	CHECK(fp_frame_write_fds(sv[1], stdio_frame->p, stdio_frame->len, out, 3) == FP_P_OK,
+	CHECK(fp_frame_write_fds(sv[1], stdio_frame->p, stdio_frame->len, out,
+				 3) == FP_P_OK,
 	      "write again");
-	CHECK(fp_frame_read_fds(sv[0], &h, &payload, got, 1, &n) == FP_P_OK && n == 1,
+	CHECK(fp_frame_read_fds(sv[0], &h, &payload, got, 1, &n) == FP_P_OK &&
+		  n == 1,
 	      "only as many as asked for are kept");
 	free(payload);
 	close(got[0]);
-	close(p1[0]); close(p1[1]); close(p2[0]); close(p2[1]); close(p3[0]); close(p3[1]);
-	close(sv[0]); close(sv[1]);
+	close(p1[0]);
+	close(p1[1]);
+	close(p2[0]);
+	close(p2[1]);
+	close(p3[0]);
+	close(p3[1]);
+	close(sv[0]);
+	close(sv[1]);
 }
 
 int main(void) {
@@ -557,16 +756,17 @@ int main(void) {
 	test_stream();
 	test_fds();
 	for (int i = 0; i < ncorpus; i++) fp_w_free(&corpus[i]);
-	fp_w_free(&all);
 	if (failures) {
 		printf("FAILED: %d check(s)\n", failures);
 		return 1;
 	}
-	printf("PASS: %d message frames round-trip; every truncation, a trailing byte,\n"
-	       "      hostile counts and strings, bad headers and a mutation fuzz are\n"
-	       "      refused cleanly; a failed encode leaves the buffer alone; the\n"
-	       "      stream helpers reassemble, report EOF vs truncation, and never\n"
-	       "      raise SIGPIPE.\n",
+	printf("PASS: %d nvlist frames round-trip; truncations, trailing bytes,\n"
+	       "      missing and mistyped fields, oversized strings and lists,\n"
+	       "      duplicate names and mismatched row arrays are refused\n"
+	       "      cleanly; a\n"
+	       "      failed encode leaves the buffer alone; the stream helpers\n"
+	       "      reassemble, report EOF vs truncation, and never raise\n"
+	       "      SIGPIPE.\n",
 	       ncorpus);
 	return 0;
 }

@@ -5,12 +5,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Wire format: a 16-byte big-endian header, then the type's fields (u8, u32,
-// u64, string, string list).  Decoding runs as root on caller-chosen bytes.
+// Wire format: a 16-byte big-endian envelope (magic, version, kind, type, id,
+// payload length), then an nvlist packed by libnv.  Every payload field is a
+// named, typed value, and decoding runs as root on caller-chosen bytes.
 #define FP_PROTO_MAGIC 0x4650u
 // An unknown event type cannot be skipped, only refused, so a new type is a
 // new version and the mismatch fails at the first frame, not mid-operation.
-#define FP_PROTO_VERSION 8u
+#define FP_PROTO_VERSION 9u
 #define FP_PROTO_HDR_LEN 16u
 #define FP_PROTO_MAX_PAYLOAD (1u << 20)
 #define FP_PROTO_MAX_STR (64u << 10)
@@ -345,31 +346,11 @@ typedef struct {
 	uint8_t* p;
 	size_t len;
 	size_t cap;
-	bool failed;	 // out of memory or over a limit; sticky
-	size_t frame_at; // offset of the open frame's header, if any
+	bool failed; // out of memory or over a limit; sticky
 } fp_wbuf_t;
-
-typedef struct {
-	const uint8_t* p;
-	size_t len;
-	size_t pos;
-	int err; // first fp_proto_err_t seen; sticky
-} fp_rbuf_t;
 
 void fp_w_init(fp_wbuf_t* w);
 void fp_w_free(fp_wbuf_t* w);
-void fp_w_u8(fp_wbuf_t* w, uint8_t v);
-void fp_w_u32(fp_wbuf_t* w, uint32_t v);
-void fp_w_u64(fp_wbuf_t* w, uint64_t v);
-void fp_w_str(fp_wbuf_t* w, const char* s); // NULL is written as ""
-void fp_w_strlist(fp_wbuf_t* w, char* const* v, size_t n);
-
-void fp_r_init(fp_rbuf_t* r, const uint8_t* p, size_t len);
-uint8_t fp_r_u8(fp_rbuf_t* r);
-uint32_t fp_r_u32(fp_rbuf_t* r);
-uint64_t fp_r_u64(fp_rbuf_t* r);
-char* fp_r_str(fp_rbuf_t* r);		      // malloc'd, NUL-terminated
-char** fp_r_strlist(fp_rbuf_t* r, size_t* n); // NULL-terminated array
 void fp_strlist_free(char** v, size_t n);
 
 // A topic is 1..FP_PROTO_MAX_TOPIC characters of [a-z0-9/._-] with no ".."
