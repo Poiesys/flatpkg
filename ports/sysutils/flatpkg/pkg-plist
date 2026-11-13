@@ -14,7 +14,6 @@ man/man8/flatpkg.8
 sbin/flatpkg
 sbin/flatpkgd
 share/dbus-1/services/org.freedesktop.Flatpak.service
-share/dbus-1/services/org.freedesktop.portal.Desktop.service
 share/dbus-1/services/org.freedesktop.portal.Flatpak.service
 share/dbus-1/system-services/org.freedesktop.Flatpak.SystemHelper.service
 etc/rc.d/flatpkgd

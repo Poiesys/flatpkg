@@ -34,7 +34,6 @@ build/syncobj_shim.so|$PREFIX/lib/flatpkg/syncobj_shim.so
 build/rlimit_shim.so|$PREFIX/lib/flatpkg/rlimit_shim.so
 build/madvise_shim.so|$PREFIX/lib/flatpkg/madvise_shim.so
 scripts/org.freedesktop.portal.Flatpak.service|$PREFIX/share/dbus-1/services/org.freedesktop.portal.Flatpak.service
-scripts/org.freedesktop.portal.Desktop.service|$PREFIX/share/dbus-1/services/org.freedesktop.portal.Desktop.service
 scripts/org.freedesktop.Flatpak.service|$PREFIX/share/dbus-1/services/org.freedesktop.Flatpak.service
 scripts/org.freedesktop.Flatpak.SystemHelper.service|$PREFIX/share/dbus-1/system-services/org.freedesktop.Flatpak.SystemHelper.service
 scripts/org.freedesktop.Flatpak.SystemHelper.conf|$PREFIX/etc/dbus-1/system.d/org.freedesktop.Flatpak.SystemHelper.conf

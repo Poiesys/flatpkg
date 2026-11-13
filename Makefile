@@ -463,8 +463,6 @@ install: $(BIN_CLI) $(BIN_DAEMON) $(SHLIB) $(SHIM) $(SECCOMP_SHIM) $(DEVT_SHIM) 
 	    ${DESTDIR}${PREFIX}/share/dbus-1/services/
 	install -m 0644 scripts/org.freedesktop.Flatpak.service \
 	    ${DESTDIR}${PREFIX}/share/dbus-1/services/
-	install -m 0644 scripts/org.freedesktop.portal.Desktop.service \
-	    ${DESTDIR}${PREFIX}/share/dbus-1/services/
 	install -d ${DESTDIR}${PREFIX}/share/dbus-1/system-services
 	install -m 0644 scripts/org.freedesktop.Flatpak.SystemHelper.service \
 	    ${DESTDIR}${PREFIX}/share/dbus-1/system-services/
