@@ -14,51 +14,92 @@
 
 Run **[Flatpak](https://github.com/flatpak/flatpak) Linux applications** on FreeBSD, end to end: install them
 from Flatpak remotes, and run them sandboxed inside a per-launch
-`jail(8)` built from the same primitives Flatpak's own launcher builds
-its bubblewrap sandbox from, but native to FreeBSD.
+`jail(8)`, which is about as close to Flatpak's bubblewrap sandbox as FreeBSD currently gets.
 
 [flatpkg does **not** run FreeBSD applications](https://news.ycombinator.com/item?id=30385924), and it does not
 reimplement OSTree. For distribution it drives the **real `ostree`** (see ports folder).
 
-> But why does it have a system daemon? Upstream flatpak doesn't have such a thing!
+## Setup
+
+- Install flatpkg.
+
+  <details>
+  <summary>Installing from the ports tree</summary>
+
+  <pre><code>make dist                       # package this checkout for the port
+  cd ports/sysutils/flatpkg
+  make install</code></pre>
+
+  </details>
+
+  <details>
+  <summary>Installing from the project's makefile</summary>
+
+  <pre><code>make install</code></pre>
+
+  </details>
+
+- Enable the flatpkg daemon via `service flatpkgd enable`, start it via `service flatpkgd start`.
+
+  <details>
+  <summary>Add yourself to the flatpkg group</summary>
+
+  <pre><code>pw group mod flatpkg -m $USER</code></pre>
+
+  </details>
+
+- Adding the Flathub repo:
+
+  <pre><code>flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo</code></pre>
+
+You can use either flatpak or flatpkg as a command name.
+
+## FAQ
+
+<details style="margin-left: 2em;">
+<summary><b>But why does it have a system daemon? Upstream flatpak doesn't have such a thing!</b></summary>
+
+<br>
 
 To the best of my knowledge, we need root for jails.
 
-> I can't hear audio!
+</details>
+
+<details style="margin-left: 2em;">
+<summary><b>I can't hear audio!</b></summary>
+
+<br>
 
 You'll probably need to set up pipewire/pulseaudio on your FreeBSD box, as that's what Linux apps use.
 
-> Does this have any behaviour changes from upstream flatpak i should be aware of?
+</details>
+
+<details style="margin-left: 2em;">
+<summary><b>Does this have any behaviour changes from upstream flatpak i should be aware of?</b></summary>
+
+<br>
 
 Due to personal preference, this implementation makes use of a worldfile, and the whole mechanisms of dependency resolution are very inspired by [Alpine Package Keeper](https://gitlab.alpinelinux.org/alpine/apk-tools). That is, every install/uninstall operation adds/removes the application from the "apps wanted by the user" list, then it checks what packages are needed for that list and installs/removes packages to match.
 Every package change - install, uninstall, update or upgrade - calculates the delta, shows a table of changes and asks for confirmation.
 That makes 'remove --unused' not needed and you won't accidentally end up with 30 runtimes you don't need anymore.
 The world file is client state, not store metadata: flatpkg keeps its own under `clients/flatpkg/world`, and another client can keep different state (or none) in its own directory.
 
-> How does this even work? Do i need to have the linuxulator set up in /compat/linux?
+</details>
+
+<details style="margin-left: 2em;">
+<summary><b>How does this even work? Do i need to have the linuxulator set up in /compat/linux?</b></summary>
+
+<br>
 
 *On the surface*, the way FreeBSD's linuxulator and Flatpak work are pretty similar in some regards, and that is where the whole idea came from.
 Both set up a custom linux userland apps expect, and run linux application on top of them. That is to say, you *don't* need /compat/linux set up, strictly speaking: because **we run the same userland Flatpak apps expect** in a linux jail, completely separate from whatever /compat/linux may or may not contain.
 
-## Installing from the ports tree
-
-```sh
-    make dist                       # package this checkout for the port
-    cd ports/sysutils/flatpkg
-    make install
-```
-
-## Setup
-
-- Install flatpkg, either via the port or via the makefile
-- Enable the flatpkg daemon via `service flatpkgd enable`, start it via `service flatpkgd start`
-> - If you want to use flathub, use this command to add the repo: ```flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo```
-
-You can use either flatpak or flatpkg as a command name.
+</details>
 
 ## AI disclaimer and usage policy
 
-I, like many others, *don't* like AI that much. However, we can't deny that it *can* be useful. At times.
+<!-- no, AI didn't write this part, the em dashes are here for comedic effect. -->
+I — like many others — *don't* like AI that much. However, we can't deny that it *can* be useful. At times.
 Now, writing such a massive project using only AI would be the dumbest thing i've heard all year, and that says something.
 What i use it for is to help with documentation, commit messages (i have a script that takes the git diff and gives it to a local gemma4 to give me some commit messages i could use), and writing the tests (which is stupid and i fully acknowledge).
 Also, as I'm not as experienced with C as I am with other languages, I often use a local model to translate some code from Haskell or Rust, which I then review.
