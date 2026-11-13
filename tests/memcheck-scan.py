@@ -53,15 +53,16 @@ KNOWN = [
      "reported is the stack buffer inside libjail's jail_getname()."),
     ("libnv-unpack-malformed",
      re.compile(r"lost"),
-     re.compile(r"(?s)\(in /lib/libnv\.so\.1\)(?:(?!\n\s+by ).)*?"
-                r"\n\s+by 0x[0-9A-F]+: unpack_frame \(protocol\.c:"),
-     "libnv's unpack of a blob that ends inside a pair or a nested list "
-     "leaks the pair (and any child list) it had built before the failure; "
-     "the allocations are all inside /lib/libnv.so.1 with no flatpkg frame "
-     "below them.  The protocol decoders never pass a buffer whose size "
-     "disagrees with its header, so this is only reachable from fuzzed or "
-     "hostile bytes; typed_worker closes a connection after "
-     "FP_MAX_BAD_FRAMES malformed frames, which bounds one worker's leak. "
+     re.compile(r"(?s)\(in /lib/libnv\.so\.1\).*?"
+                r"\n\s+by 0x[0-9A-F]+: (fp_frame_recv \(protocol\.c:|"
+                r"test_fuzz \(protocol-test\.c:)"),
+     "libnv's unpack/recv of a blob that ends inside a pair or a nested "
+     "list leaks the pair (and any child list) it had built before the "
+     "failure; the allocations are all inside /lib/libnv.so.1 with no "
+     "flatpkg object below them.  The codec harness feeds such blobs on "
+     "purpose, and a hostile client can too; typed_worker drops the "
+     "connection when fp_frame_recv fails, and closes it after "
+     "FP_MAX_BAD_FRAMES decoder failures, so one worker's leak is bounded. "
      "Reported upstream; the rule is removed when the base library is "
      "fixed."),
     ("child-before-exec",

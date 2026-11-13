@@ -1,80 +1,106 @@
-// protocol-fuzz.c - libFuzzer entry point for the framed protocol decoder.
-// Built by tests/protocol-fuzz.sh with -fsanitize=fuzzer,address; the decoder
-// runs as root on bytes an unprivileged client chose.
+// protocol-fuzz.c - libFuzzer entry point for the frame decoder.  A frame is a
+// packed nvlist; the decoder runs as root on bytes an unprivileged client
+// chose.  Built by tests/protocol-fuzz.sh with -fsanitize=fuzzer,address.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/nv.h>
 
 #include "../include/protocol.h"
 
 static int decode_any(const uint8_t* buf, size_t len) {
-	fp_frame_hdr_t h;
+	nvlist_t* nvl;
+	uint32_t kind = 0;
+	int e;
 
-	if (len < FP_PROTO_HDR_LEN) return FP_P_ERR_TRUNCATED;
-	int e = fp_frame_hdr_decode(buf, &h);
-	if (e != FP_P_OK) return e;
-	if (len - FP_PROTO_HDR_LEN < h.len) return FP_P_ERR_TRUNCATED;
-	const uint8_t* p = buf + FP_PROTO_HDR_LEN;
-
-	if (h.kind == FP_FRAME_REQUEST) {
-		fp_req_t r;
-		e = fp_req_decode(&h, p, &r);
-		if (e == FP_P_OK) fp_req_free(&r);
-	} else if (h.kind == FP_FRAME_ACK) {
-		fp_ack_t a;
-		e = fp_ack_decode(&h, p, &a);
-		if (e == FP_P_OK) fp_ack_free(&a);
-	} else {
-		fp_event_t v;
-		e = fp_event_decode(&h, p, &v);
-		if (e == FP_P_OK) fp_event_free(&v);
+	nvl = nvlist_unpack(buf, len, 0);
+	if (nvl == NULL) return FP_P_ERR_MALFORMED;
+	if (nvlist_error(nvl) != 0 || !nvlist_exists_number(nvl, "kind")) {
+		nvlist_destroy(nvl);
+		return FP_P_ERR_MALFORMED;
 	}
+	kind = (uint32_t)nvlist_get_number(nvl, "kind");
+	if (kind == FP_FRAME_REQUEST) {
+		fp_req_t r;
+		e = fp_req_decode(nvl, NULL, &r);
+		if (e == FP_P_OK) fp_req_free(&r);
+	} else if (kind == FP_FRAME_ACK) {
+		fp_ack_t a;
+		e = fp_ack_decode(nvl, NULL, &a);
+		if (e == FP_P_OK) fp_ack_free(&a);
+	} else if (kind == FP_FRAME_EVENT) {
+		fp_event_t v;
+		e = fp_event_decode(nvl, NULL, &v);
+		if (e == FP_P_OK) fp_event_free(&v);
+	} else {
+		e = FP_P_ERR_MALFORMED;
+	}
+	nvlist_destroy(nvl);
 	return e;
 }
 
 #ifdef FPKG_FUZZ_SEEDS
-static int write_frame(const char* dir, const char* name, fp_wbuf_t* w) {
+static int write_frame(const char* dir, const char* name, nvlist_t* nvl) {
 	char path[1024];
+	size_t len = 0;
+	void* blob;
+	FILE* f;
+
+	if (nvl == NULL) return 1;
+	blob = nvlist_pack(nvl, &len);
+	nvlist_destroy(nvl);
+	if (blob == NULL) return 1;
 	snprintf(path, sizeof(path), "%s/%s", dir, name);
-	FILE* f = fopen(path, "wb");
-	if (!f) return 1;
-	size_t n = fwrite(w->p, 1, w->len, f);
+	f = fopen(path, "wb");
+	if (f == NULL) {
+		free(blob);
+		return 1;
+	}
+	int rc = fwrite(blob, 1, len, f) == len ? 0 : 1;
+
 	fclose(f);
-	return n == w->len ? 0 : 1;
+	free(blob);
+	return rc;
 }
 
 // Emit a small valid corpus: one request of each shape, one ack, one event.
 int main(int argc, char** argv) {
+	fp_req_t r;
+	fp_ack_t a;
+	fp_event_t ev;
+	nvlist_t* nvl = NULL;
+
 	if (argc != 2) return 2;
 
-	fp_wbuf_t w;
-	fp_w_init(&w);
-	fp_req_t r;
 	memset(&r, 0, sizeof(r));
 	r.type = FP_REQ_HELLO;
 	r.u.hello.version = FP_PROTO_VERSION;
 	r.u.hello.client = (char*)"fuzz";
-	if (fp_req_encode(&w, 1, &r) != FP_P_OK) return 1;
-	if (write_frame(argv[1], "hello", &w)) return 1;
-	fp_w_free(&w);
+	if (fp_req_encode(&nvl, 1, &r) != FP_P_OK) return 1;
+	if (write_frame(argv[1], "hello", nvl)) return 1;
 
-	fp_w_init(&w);
 	memset(&r, 0, sizeof(r));
 	r.type = FP_REQ_CANCEL;
 	r.u.cancel.op_id = 1;
-	if (fp_req_encode(&w, 2, &r) != FP_P_OK) return 1;
-	if (write_frame(argv[1], "cancel", &w)) return 1;
-	fp_w_free(&w);
+	if (fp_req_encode(&nvl, 2, &r) != FP_P_OK) return 1;
+	if (write_frame(argv[1], "cancel", nvl)) return 1;
 
-	fp_w_init(&w);
-	fp_ack_t a;
 	memset(&a, 0, sizeof(a));
 	a.type = FP_ACK_OK;
 	a.op_id = 1;
-	if (fp_ack_encode(&w, 3, &a) != FP_P_OK) return 1;
-	if (write_frame(argv[1], "ack", &w)) return 1;
-	fp_w_free(&w);
+	if (fp_ack_encode(&nvl, 3, &a) != FP_P_OK) return 1;
+	if (write_frame(argv[1], "ack", nvl)) return 1;
+
+	memset(&ev, 0, sizeof(ev));
+	ev.type = FP_EV_OP_PROGRESS;
+	ev.topic = "op/1";
+	ev.op_id = 1;
+	ev.u.progress.stage = "fetch";
+	ev.u.progress.current = 1;
+	ev.u.progress.total = 2;
+	if (fp_event_encode(&nvl, 1, &ev) != FP_P_OK) return 1;
+	if (write_frame(argv[1], "progress", nvl)) return 1;
 
 	return 0;
 }

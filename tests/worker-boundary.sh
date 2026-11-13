@@ -1,9 +1,9 @@
 #!/bin/sh
 # worker-boundary.sh - the three requests that carry descriptors are gated on
-# HELLO like every other one, a control message with more descriptors than the
-# protocol carries is refused rather than served, a client's state namespace
-# belongs to the uid that first declared it, and CancelPull is an authorized
-# "not supported" instead of an unauthenticated success.
+# HELLO like every other one, a frame carrying more descriptors than the
+# protocol allows is refused from its header before libnv allocates, a client's
+# state namespace belongs to the uid that first declared it, and CancelPull is
+# an authorized "not supported" instead of an unauthenticated success.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -16,8 +16,8 @@ strip_comments "$ROOT/src/shared/protocol.c" > "$T/protocol.c"
 strip_comments "$ROOT/src/daemon/ops/typed_worker.c" > "$T/worker.c"
 strip_comments "$ROOT/src/daemon/systemhelper.c" > "$T/helper.c"
 
-carve_function '^static ssize_t read_hdr_fds\(' "$T/protocol.c" > "$T/hdr.inc" ||
-	{ echo "FAIL: read_hdr_fds() not found"; exit 1; }
+carve_function '^static int nv_header_check\(' "$T/protocol.c" > "$T/hdr.inc" ||
+	{ echo "FAIL: nv_header_check() not found"; exit 1; }
 carve_function '^static void handle\(' "$T/worker.c" > "$T/handle.inc" ||
 	{ echo "FAIL: handle() not found"; exit 1; }
 carve_function '^void typed_worker\(' "$T/worker.c" > "$T/worker.inc" ||
@@ -41,10 +41,10 @@ bug() {
 check() {
 	hdr=$1 handle=$2 worker=$3 owner=$4 state=$5 cancel=$6 unimpl=$7 sys=$8
 
-	grep -q 'MSG_CTRUNC' "$hdr" ||
-		bug "a truncated control message is served"
-	grep -q 'MSG_CMSG_CLOEXEC' "$hdr" ||
-		bug "a descriptor the worker receives can be inherited"
+	grep -q 'recv(fd, &h, sizeof(h), MSG_PEEK)' "$T/protocol.c" ||
+		bug "the frame header is not peeked before the body"
+	grep -q 'descs > FP_MAX_FDS' "$hdr" ||
+		bug "a frame may carry more descriptors than the protocol allows"
 
 	grep -q '!c->hello && r->type != FP_REQ_HELLO' "$handle" ||
 		bug "handle() no longer gates on HELLO"
@@ -86,10 +86,14 @@ prove() {
 	fi
 }
 
-sed 's/if ((m.msg_flags & MSG_CTRUNC) != 0) return -1;/if (0) return -1;/' \
-	"$T/hdr.inc" > "$T/plant-ctrunc.inc"
-prove "a truncated control message served" \
-	check "$T/plant-ctrunc.inc" "$T/handle.inc" "$T/worker.inc" \
+sed 's/if (descs > FP_MAX_FDS) return FP_P_ERR_TOO_BIG;/if (0) return FP_P_ERR_TOO_BIG;/' \
+	"$T/hdr.inc" > "$T/plant-descs.inc"
+if cmp -s "$T/hdr.inc" "$T/plant-descs.inc"; then
+	echo "FAIL: the descriptor plant was not applied"
+	exit 1
+fi
+prove "a frame with too many descriptors" \
+	check "$T/plant-descs.inc" "$T/handle.inc" "$T/worker.inc" \
 	"$T/owner.inc" "$T/state.inc" "$T/cancel.inc" "$T/unimpl.inc" \
 	"$T/sys.inc"
 
@@ -111,6 +115,6 @@ prove "CancelPull back on the catch-all path" \
 	check "$T/hdr.inc" "$T/handle.inc" "$T/worker.inc" "$T/owner.inc" \
 	"$T/state.inc" "$T/cancel.inc" "$T/unimpl.inc" "$T/plant-cancel.inc"
 
-echo "PASS: the descriptor-carrying requests are gated, a truncated control"
-echo "      message is refused, a client name belongs to its uid, and"
-echo "      CancelPull is an authorized refusal"
+echo "PASS: the descriptor-carrying requests are gated, a frame with too"
+echo "      many descriptors is refused from its header, a client name"
+echo "      belongs to its uid, and CancelPull is an authorized refusal"

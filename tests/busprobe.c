@@ -34,24 +34,23 @@ static int connect_socket(const char* path) {
 }
 
 static int send_req(int fd, uint32_t id, const fp_req_t* r) {
-	fp_wbuf_t w;
+	nvlist_t* nvl = NULL;
 	int e;
 
-	fp_w_init(&w);
-	e = fp_req_encode(&w, id, r);
-	if (e == FP_P_OK) e = fp_frame_write(fd, w.p, w.len);
-	fp_w_free(&w);
+	if (fp_req_encode(&nvl, id, r) != FP_P_OK) return -1;
+	e = fp_frame_send(fd, nvl);
+	nvlist_destroy(nvl);
 	return e == FP_P_OK ? 0 : -1;
 }
 
 static int read_ack(int fd, uint64_t* op_id) {
-	fp_frame_hdr_t h;
-	uint8_t* payload = NULL;
+	nvlist_t* nvl = NULL;
 	fp_ack_t ack;
+	int e;
 
-	if (fp_frame_read(fd, &h, &payload) != FP_P_OK) return -1;
-	int e = fp_ack_decode(&h, payload, &ack);
-	free(payload);
+	if (fp_frame_recv(fd, &nvl) != FP_P_OK) return -1;
+	e = fp_ack_decode(nvl, NULL, &ack);
+	nvlist_destroy(nvl);
 	if (e != FP_P_OK) return -1;
 	if (ack.type == FP_ACK_ERR) {
 		printf("ack=error: %s\n", ack.message ? ack.message : "?");
@@ -88,12 +87,13 @@ static int read_events(int fd, int timeout_ms, int require_finished) {
 		struct pollfd p = {fd, POLLIN, 0};
 		int pr = poll(&p, 1, timeout_ms);
 		if (pr <= 0) return (finished || seen) ? 0 : -1;
-		fp_frame_hdr_t h;
-		uint8_t* payload = NULL;
+		nvlist_t* nvl = NULL;
 		fp_event_t ev;
-		if (fp_frame_read(fd, &h, &payload) != FP_P_OK) return -1;
-		int e = fp_event_decode(&h, payload, &ev);
-		free(payload);
+		int e;
+
+		if (fp_frame_recv(fd, &nvl) != FP_P_OK) return -1;
+		e = fp_event_decode(nvl, NULL, &ev);
+		nvlist_destroy(nvl);
 		if (e != FP_P_OK) return -1;
 		switch (ev.type) {
 		case FP_EV_OP_STARTED:

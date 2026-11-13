@@ -152,20 +152,14 @@ static int write_all(int fd, const void* buf, size_t n) {
 	return 0;
 }
 
-static void send_buf(wctx_t* c, fp_wbuf_t* w) {
-	if (!c->dead && fp_frame_write(c->conn, w->p, w->len) != FP_P_OK)
-		c->dead = true;
-	fp_w_free(w);
-}
-
 static void send_ack(wctx_t* c, uint32_t id, const fp_ack_t* a) {
-	fp_wbuf_t w;
-	fp_w_init(&w);
-	if (fp_ack_encode(&w, id, a) != 0) {
-		fp_w_free(&w);
-		return;
-	}
-	send_buf(c, &w);
+	nvlist_t* nvl = NULL;
+	int e;
+
+	if (fp_ack_encode(&nvl, id, a) != FP_P_OK) return;
+	e = fp_frame_send(c->conn, nvl);
+	nvlist_destroy(nvl);
+	if (e != FP_P_OK) c->dead = true;
 }
 
 static void ack_ok(wctx_t* c, uint32_t id, uint64_t op_id) {
@@ -189,37 +183,42 @@ static void ack_err(wctx_t* c, uint32_t id, uint32_t code, const char* msg) {
 // error frame, not a raw string the client cannot parse.
 void typed_refuse(int conn, const char* msg) {
 	fp_ack_t a;
-	fp_wbuf_t w;
+	nvlist_t* nvl = NULL;
 
 	memset(&a, 0, sizeof(a));
 	a.type = FP_ACK_ERR;
 	a.code = FP_E_DENIED;
 	a.message = (char*)msg;
-	fp_w_init(&w);
-	if (fp_ack_encode(&w, 0, &a) == 0 &&
-	    fp_frame_write(conn, w.p, w.len) != FP_P_OK)
+	if (fp_ack_encode(&nvl, 0, &a) != FP_P_OK) return;
+	if (fp_frame_send(conn, nvl) != FP_P_OK)
 		fpkg_debugf("cannot send the refusal: %s", strerror(errno));
-	fp_w_free(&w);
+	nvlist_destroy(nvl);
 }
 
 static void send_event(wctx_t* c, fp_event_t* ev) {
 	char topic[FP_PROTO_MAX_TOPIC + 1];
+	nvlist_t* nvl = NULL;
+
 	snprintf(topic, sizeof(topic), "op/%llu", (unsigned long long)c->op_id);
 	ev->topic = topic;
 	ev->op_id = c->op_id;
-	fp_wbuf_t w;
-	fp_w_init(&w);
-	if (fp_event_encode(&w, c->seq++, ev) != 0) {
-		fp_w_free(&w);
-		return;
-	}
-	if (!c->dead && fp_frame_write(c->conn, w.p, w.len) != FP_P_OK)
+	if (fp_event_encode(&nvl, c->seq++, ev) != FP_P_OK) return;
+	if (!c->dead && fp_frame_send(c->conn, nvl) != FP_P_OK)
 		c->dead = true;
-	(void)bus_publish(topic, w.p, w.len);
-	// `op` is the firehose: a watcher that does not yet know an op id can
-	// follow every operation, which is what a status bar wants.
-	if (strcmp(topic, "op") != 0) (void)bus_publish("op", w.p, w.len);
-	fp_w_free(&w);
+	{
+		size_t len = 0;
+		void* blob = nvlist_pack(nvl, &len);
+
+		if (blob != NULL) {
+			(void)bus_publish(topic, blob, len);
+			// `op` is the firehose: a watcher that does not yet know
+			// an op id can follow every operation.
+			if (strcmp(topic, "op") != 0)
+				(void)bus_publish("op", blob, len);
+			free(blob);
+		}
+	}
+	nvlist_destroy(nvl);
 }
 
 static void sink_log(void* ctx, int level, const char* scope,
@@ -1446,24 +1445,21 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 		if ((pfd[0].revents & POLLIN) == 0) continue;
 
 		c.last_client = time(NULL);
-		fp_frame_hdr_t hdr;
-		uint8_t* payload = NULL;
-		int fds[FP_MAX_FDS];
-		size_t nfds = 0;
-		int rc = fp_frame_read_fds(conn, &hdr, &payload, fds,
-					   FP_MAX_FDS, &nfds);
+		nvlist_t* nvl = NULL;
+		int rc = fp_frame_recv(conn, &nvl);
 		if (rc != FP_P_OK) {
-			free(payload);
+			nvlist_destroy(nvl);
 			if (rc != FP_P_EOF)
 				fpkg_warnf("dropping a connection: %s",
 					   fp_proto_strerror(rc));
 			break;
 		}
 		fp_req_t req;
-		rc = fp_req_decode(&hdr, payload, &req);
-		free(payload);
+		uint32_t id = 0;
+		rc = fp_req_decode(nvl, &id, &req);
 		if (rc != FP_P_OK) {
-			ack_err(&c, hdr.id, FP_E_INVALID, "malformed request");
+			ack_err(&c, id, FP_E_INVALID, "malformed request");
+			nvlist_destroy(nvl);
 			if (c.dead) break;
 			if (++c.bad_frames >= FP_MAX_BAD_FRAMES) {
 				fpkg_warnf("closing a connection after %zu "
@@ -1479,62 +1475,121 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 		if (!c.hello && (req.type == FP_REQ_STDIO ||
 				 req.type == FP_REQ_INSTALL_BUNDLE ||
 				 req.type == FP_REQ_RUN)) {
-			for (size_t i = 0; i < nfds; i++) close(fds[i]);
-			ack_err(&c, hdr.id, FP_E_INVALID,
+			nvlist_destroy(nvl); // closes the frame's descriptors
+			ack_err(&c, id, FP_E_INVALID,
 				"the first request must be HELLO");
 			fp_req_free(&req);
 			if (c.dead) break;
 			continue;
 		}
 		if (req.type == FP_REQ_STDIO) {
-			// The caller's terminal substitutes; RUN is the other
-			// request that may carry descriptors.
-			if (nfds != FP_STDIO_FDS || c.have_stdio) {
-				for (size_t i = 0; i < nfds; i++) close(fds[i]);
-				ack_err(&c, hdr.id, FP_E_INVALID,
-					nfds != FP_STDIO_FDS
-						? "STDIO carries three "
-						  "descriptors"
-						: "STDIO was already given");
+			static const char* const names[FP_STDIO_FDS] = {
+			    FP_FD_STDIN, FP_FD_STDOUT, FP_FD_STDERR};
+			int fds[FP_STDIO_FDS] = {-1, -1, -1};
+			int nfds = 0;
+			bool ok = fp_nvl_fd_count(nvl) == FP_STDIO_FDS;
+
+			for (int i = 0; ok && i < FP_STDIO_FDS; i++) {
+				if (!nvlist_exists_descriptor(nvl, names[i])) {
+					ok = false;
+					break;
+				}
+				fds[nfds++] =
+					nvlist_take_descriptor(nvl, names[i]);
+			}
+			if (!ok) {
+				for (int i = 0; i < nfds; i++) close(fds[i]);
+				ack_err(&c, id, FP_E_INVALID,
+					"STDIO carries three descriptors");
+			} else if (c.have_stdio) {
+				for (int i = 0; i < nfds; i++) close(fds[i]);
+				ack_err(&c, id, FP_E_INVALID,
+					"STDIO was already given");
 			} else {
-				for (size_t i = 0; i < nfds; i++) {
+				for (int i = 0; i < nfds; i++) {
 					c.stdio[i] = fds[i];
 					(void)fcntl(fds[i], F_SETFD,
 						    FD_CLOEXEC);
 				}
 				c.have_stdio = true;
-				ack_ok(&c, hdr.id, 0);
+				ack_ok(&c, id, 0);
 			}
+			nvlist_destroy(nvl);
 			fp_req_free(&req);
 			if (c.dead) break;
 			continue;
 		}
 		if (req.type == FP_REQ_INSTALL_BUNDLE) {
-			if (nfds != FP_BUNDLE_FDS) {
-				for (size_t i = 0; i < nfds; i++) close(fds[i]);
-				ack_err(&c, hdr.id, FP_E_INVALID,
+			int bfd = -1;
+			bool ok = fp_nvl_fd_count(nvl) == FP_BUNDLE_FDS &&
+				  nvlist_exists_descriptor(nvl,
+							   FP_FD_BUNDLE);
+
+			if (ok) bfd = nvlist_take_descriptor(nvl, FP_FD_BUNDLE);
+			if (!ok || bfd < 0) {
+				if (bfd >= 0) close(bfd);
+				ack_err(&c, id, FP_E_INVALID,
 					"a bundle comes as exactly one "
 					"descriptor");
 			} else {
-				(void)fcntl(fds[0], F_SETFD, FD_CLOEXEC);
-				op_start(&c, hdr.id, 12, "install-bundle");
-				int brc = install_bundle_fd(fds[0]);
-				close(fds[0]);
+				(void)fcntl(bfd, F_SETFD, FD_CLOEXEC);
+				op_start(&c, id, 12, "install-bundle");
+				int brc = install_bundle_fd(bfd);
+				close(bfd);
 				op_finish(&c, brc,
 					  "install from the bundle failed");
 			}
+			nvlist_destroy(nvl);
 			fp_req_free(&req);
 			if (c.dead) break;
 			continue;
 		}
 		if (req.type == FP_REQ_RUN) {
-			run_request(&c, hdr.id, &req, fds, nfds);
+			int targets[FP_MAX_FDS];
+			int fds[FP_MAX_FDS];
+			size_t ntargets = 0, nfds = 0;
+			bool ok = forward_parse(req.u.run.forward, targets,
+						&ntargets) &&
+				  fp_nvl_fd_count(nvl) == ntargets;
+
+			for (size_t i = 0; ok && i < ntargets; i++) {
+				char name[32];
+
+				snprintf(name, sizeof(name),
+					 FP_FD_PREFIX "%d", targets[i]);
+				if (!nvlist_exists_descriptor(nvl, name)) {
+					ok = false;
+					break;
+				}
+				fds[nfds++] =
+					nvlist_take_descriptor(nvl, name);
+			}
+			if (!ok) {
+				for (size_t i = 0; i < nfds; i++)
+					close(fds[i]);
+				ack_err(&c, id, FP_E_INVALID,
+					"the forwarded descriptors do not "
+					"match the list");
+			} else {
+				run_request(&c, id, &req, fds, nfds);
+			}
+			nvlist_destroy(nvl);
 			fp_req_free(&req);
 			if (c.dead) break;
 			continue;
 		}
-		for (size_t i = 0; i < nfds; i++) close(fds[i]);
-		handle(&c, hdr.id, &req);
+		// No other request carries a descriptor; one that does is not the
+		// frame it claims to be.
+		if (fp_nvl_fd_count(nvl) != 0) {
+			ack_err(&c, id, FP_E_INVALID,
+				"this request carries no descriptors");
+			nvlist_destroy(nvl);
+			fp_req_free(&req);
+			if (c.dead) break;
+			continue;
+		}
+		handle(&c, id, &req);
+		nvlist_destroy(nvl);
 		fp_req_free(&req);
 		if (c.dead) break;
 	}

@@ -383,31 +383,32 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned,
 	}
 }
 
+// Send a frame the caller built and owns; 0 or the errno to report.
+static int send_frame(int fd, nvlist_t* nvl) {
+	int e = fp_frame_send(fd, nvl);
+
+	nvlist_destroy(nvl);
+	if (e != FP_P_OK) return errno ? errno : EIO;
+	return 0;
+}
+
 static int send_req(int fd, uint32_t id, const fp_req_t* r) {
-	fp_wbuf_t w;
-	fp_w_init(&w);
-	if (fp_req_encode(&w, id, r) != 0) {
-		fp_w_free(&w);
-		return EIO;
-	}
-	int e = fp_frame_write(fd, w.p, w.len);
-	fp_w_free(&w);
-	return e == FP_P_OK ? 0 : (errno ? errno : EIO);
+	nvlist_t* nvl = NULL;
+
+	if (fp_req_encode(&nvl, id, r) != FP_P_OK) return EIO;
+	return send_frame(fd, nvl);
 }
 
 static int read_ack(int fd, uint64_t* op_id) {
-	fp_frame_hdr_t hdr;
-	uint8_t* payload = NULL;
+	nvlist_t* nvl = NULL;
 	fp_ack_t ack;
+	int e, rc;
 
-	if (fp_frame_read(fd, &hdr, &payload) != FP_P_OK) {
-		free(payload);
-		return -1;
-	}
-	int e = fp_ack_decode(&hdr, payload, &ack);
-	free(payload);
-	if (e != 0) return -1;
-	int rc = 0;
+	if (fp_frame_recv(fd, &nvl) != FP_P_OK) return -1;
+	e = fp_ack_decode(nvl, NULL, &ack);
+	nvlist_destroy(nvl);
+	if (e != FP_P_OK) return -1;
+	rc = 0;
 	if (ack.type == FP_ACK_ERR) {
 		fpkg_errorf("%s", ack.message ? ack.message : "refused");
 		rc = 1;
@@ -440,7 +441,7 @@ static void render_log(const fp_event_t* ev) {
 
 static int prefetch_meta(int fd, const char* const* refs, size_t n) {
 	fp_req_t r;
-	fp_wbuf_t w;
+	nvlist_t* nvl = NULL;
 	int e;
 
 	if (n == 0) return 0;
@@ -449,22 +450,17 @@ static int prefetch_meta(int fd, const char* const* refs, size_t n) {
 	r.u.prefetch.remote = "";
 	r.u.prefetch.refs = (char**)refs;
 	r.u.prefetch.nrefs = n;
-	fp_w_init(&w);
-	e = fp_req_encode(&w, 3, &r);
-	if (e == FP_P_OK) e = fp_frame_write(fd, w.p, w.len);
-	fp_w_free(&w);
+	e = fp_req_encode(&nvl, 3, &r);
+	if (e == FP_P_OK) e = fp_frame_send(fd, nvl);
+	nvlist_destroy(nvl);
 	if (e != FP_P_OK || read_ack(fd, NULL) != 0) return 1;
 
 	for (;;) {
-		fp_frame_hdr_t h;
-		uint8_t* payload = NULL;
 		fp_event_t ev;
-		if (fp_frame_read(fd, &h, &payload) != FP_P_OK) {
-			free(payload);
-			return 1;
-		}
-		e = fp_event_decode(&h, payload, &ev);
-		free(payload);
+		nvl = NULL;
+		if (fp_frame_recv(fd, &nvl) != FP_P_OK) return 1;
+		e = fp_event_decode(nvl, NULL, &ev);
+		nvlist_destroy(nvl);
 		if (e != FP_P_OK) return 1;
 		if (ev.type == FP_EV_META) {
 			if (ev.u.meta.ref == NULL || ev.u.meta.metadata == NULL ||
@@ -488,36 +484,26 @@ static int prefetch_meta(int fd, const char* const* refs, size_t n) {
 // the daemon only maps it to clients/<hello client>/<name>.
 static int state_declare(int fd, uint32_t id, const char* name) {
 	fp_req_t r;
-	fp_wbuf_t w;
 	char* names[1] = {(char*)name};
-	int e;
+
 	memset(&r, 0, sizeof(r));
 	r.type = FP_REQ_CLIENT_DECLARE;
 	r.u.client_declare.names = names;
 	r.u.client_declare.nnames = 1;
-	fp_w_init(&w);
-	e = fp_req_encode(&w, id, &r);
-	if (e == FP_P_OK) e = fp_frame_write(fd, w.p, w.len);
-	fp_w_free(&w);
-	if (e != FP_P_OK) return -1;
+	if (send_req(fd, id, &r) != 0) return -1;
 	return read_ack(fd, NULL) == 0 ? 0 : -1;
 }
 
 static int state_write(int fd, uint32_t id, const char* name,
 		       const char* data) {
 	fp_req_t r;
-	fp_wbuf_t w;
-	int e;
+
 	memset(&r, 0, sizeof(r));
 	r.type = FP_REQ_CLIENT_STATE;
 	r.u.client_state.flags = FP_CLIENT_STATE_WRITE;
 	r.u.client_state.name = (char*)name;
 	r.u.client_state.data = (char*)data;
-	fp_w_init(&w);
-	e = fp_req_encode(&w, id, &r);
-	if (e == FP_P_OK) e = fp_frame_write(fd, w.p, w.len);
-	fp_w_free(&w);
-	if (e != FP_P_OK) return -1;
+	if (send_req(fd, id, &r) != 0) return -1;
 	return read_ack(fd, NULL) == 0 ? 0 : -1;
 }
 
@@ -598,8 +584,8 @@ static int typed_handshake(typed_ctx_t* c) {
 
 static int typed_send_stdio(typed_ctx_t* c) {
 	fp_req_t sio;
-	fp_wbuf_t w;
-	int fds[FP_STDIO_FDS] = {STDIN_FILENO, STDOUT_FILENO, STDERR_FILENO};
+	nvlist_t* nvl = NULL;
+	int e;
 
 	// The daemon relays this stdin to the app's pty, so it must arrive unedited and
 	// unechoed; the pty does both. Only stdin: stdout and stderr may be files.
@@ -608,15 +594,17 @@ static int typed_send_stdio(typed_ctx_t* c) {
 	memset(&sio, 0, sizeof(sio));
 	sio.type = FP_REQ_STDIO;
 	sio.u.stdio.count = FP_STDIO_FDS;
-	fp_w_init(&w);
-	if (fp_req_encode(&w, 4, &sio) != 0 ||
-	    fp_frame_write_fds(c->fd, w.p, w.len, fds, FP_STDIO_FDS) !=
-		    FP_P_OK ||
-	    read_ack(c->fd, NULL) != 0) {
-		fp_w_free(&w);
-		return daemon_unreachable(EIO);
+	e = fp_req_encode(&nvl, 4, &sio);
+	if (e == FP_P_OK) {
+		nvlist_add_descriptor(nvl, FP_FD_STDIN, STDIN_FILENO);
+		nvlist_add_descriptor(nvl, FP_FD_STDOUT, STDOUT_FILENO);
+		nvlist_add_descriptor(nvl, FP_FD_STDERR, STDERR_FILENO);
+		if (nvlist_error(nvl) != 0) e = FP_P_ERR_NOMEM;
 	}
-	fp_w_free(&w);
+	if (e == FP_P_OK) e = fp_frame_send(c->fd, nvl);
+	nvlist_destroy(nvl);
+	if (e != FP_P_OK || read_ack(c->fd, NULL) != 0)
+		return daemon_unreachable(EIO);
 	return 0;
 }
 
@@ -778,30 +766,46 @@ static int typed_send_request(typed_ctx_t* c) {
 
 	if (c->typed.type == FP_REQ_INSTALL_BUNDLE) {
 		int bfd = open(c->req.from, O_RDONLY | O_CLOEXEC);
+		nvlist_t* nvl = NULL;
+
 		if (bfd < 0) {
 			fpkg_errorf("cannot open %s: %s", c->req.from,
 				    strerror(errno));
 			return 1;
 		}
-		fp_wbuf_t w;
-		fp_w_init(&w);
-		e = fp_req_encode(&w, c->req_id, &c->typed);
-		if (e == 0)
-			e = fp_frame_write_fds(c->fd, w.p, w.len, &bfd,
-					       FP_BUNDLE_FDS);
-		fp_w_free(&w);
+		e = fp_req_encode(&nvl, c->req_id, &c->typed);
+		if (e == FP_P_OK) {
+			nvlist_add_descriptor(nvl, FP_FD_BUNDLE, bfd);
+			if (nvlist_error(nvl) != 0) e = FP_P_ERR_NOMEM;
+		}
+		if (e == FP_P_OK) {
+			e = send_frame(c->fd, nvl);
+		} else {
+			nvlist_destroy(nvl);
+			e = EIO;
+		}
 		close(bfd);
 	} else if (c->typed.type == FP_REQ_RUN && c->nfwd > 0) {
 		// The descriptors go with the request itself: the daemon
 		// applies them just before the launch and only for this run.
-		fp_wbuf_t w;
-		fp_w_init(&w);
-		e = fp_req_encode(&w, c->req_id, &c->typed);
-		if (e == 0 &&
-		    fp_frame_write_fds(c->fd, w.p, w.len, c->fwd,
-				       c->nfwd) != FP_P_OK)
+		nvlist_t* nvl = NULL;
+
+		e = fp_req_encode(&nvl, c->req_id, &c->typed);
+		for (size_t i = 0; e == FP_P_OK && i < c->nfwd; i++) {
+			char name[32];
+
+			snprintf(name, sizeof(name), FP_FD_PREFIX "%d",
+				 c->fwd[i]);
+			nvlist_add_descriptor(nvl, name, c->fwd[i]);
+		}
+		if (e == FP_P_OK && nvlist_error(nvl) != 0)
+			e = FP_P_ERR_NOMEM;
+		if (e == FP_P_OK) {
+			e = send_frame(c->fd, nvl);
+		} else {
+			nvlist_destroy(nvl);
 			e = EIO;
-		fp_w_free(&w);
+		}
 	} else {
 		e = send_req(c->fd, c->req_id, &c->typed);
 	}
@@ -820,16 +824,12 @@ static int typed_render(typed_ctx_t* c) {
 	int e;
 
 	while (!finished) {
-		fp_frame_hdr_t hdr;
-		uint8_t* payload = NULL;
+		nvlist_t* nvl = NULL;
 		fp_event_t ev;
 
-		if (fp_frame_read(c->fd, &hdr, &payload) != FP_P_OK) {
-			free(payload);
-			break;
-		}
-		e = fp_event_decode(&hdr, payload, &ev);
-		free(payload);
+		if (fp_frame_recv(c->fd, &nvl) != FP_P_OK) break;
+		e = fp_event_decode(nvl, NULL, &ev);
+		nvlist_destroy(nvl);
 		if (e != 0) break;
 		switch (ev.type) {
 		case FP_EV_OP_LOG:

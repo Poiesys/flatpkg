@@ -1,6 +1,8 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
+#include <sys/endian.h>
 #include <sys/nv.h>
 #include <sys/socket.h>
 #include <sys/types.h>
@@ -13,49 +15,6 @@
 // checks a name and a type instead of a position, and the host's endianness
 // and the length arithmetic are the library's.  Descriptors still travel in
 // SCM_RIGHTS beside the frame.
-
-void fp_w_init(fp_wbuf_t* w) { memset(w, 0, sizeof(*w)); }
-
-void fp_w_free(fp_wbuf_t* w) {
-	free(w->p);
-	memset(w, 0, sizeof(*w));
-}
-
-static bool w_reserve(fp_wbuf_t* w, size_t n) {
-	if (w->failed) return false;
-	if (n > SIZE_MAX - w->len) {
-		w->failed = true;
-		return false;
-	}
-	if (w->len + n <= w->cap) return true;
-	size_t cap = w->cap ? w->cap : 256;
-	while (cap < w->len + n) {
-		if (cap > SIZE_MAX / 2) {
-			w->failed = true;
-			return false;
-		}
-		cap *= 2;
-	}
-	uint8_t* p = realloc(w->p, cap);
-	if (p == NULL) {
-		w->failed = true;
-		return false;
-	}
-	w->p = p;
-	w->cap = cap;
-	return true;
-}
-
-static void w_put(fp_wbuf_t* w, const void* src, size_t n) {
-	if (n == 0 || !w_reserve(w, n)) return;
-	memcpy(w->p + w->len, src, n);
-	w->len += n;
-}
-
-static uint32_t be32(const uint8_t* b) {
-	return ((uint32_t)b[0] << 24) | ((uint32_t)b[1] << 16) |
-	       ((uint32_t)b[2] << 8) | (uint32_t)b[3];
-}
 
 bool fp_topic_valid(const char* s) {
 	if (s == NULL) return false;
@@ -97,37 +56,6 @@ const char* fp_proto_strerror(int err) {
 		return "connection closed";
 	}
 	return "unknown error";
-}
-
-void fp_frame_hdr_encode(uint8_t out[FP_PROTO_HDR_LEN],
-			 const fp_frame_hdr_t* h) {
-	out[0] = (uint8_t)(FP_PROTO_MAGIC >> 8);
-	out[1] = (uint8_t)FP_PROTO_MAGIC;
-	out[2] = (uint8_t)FP_PROTO_VERSION;
-	out[3] = h->kind;
-	for (int i = 0; i < 4; i++) {
-		out[4 + i] = (uint8_t)(h->type >> (24 - 8 * i));
-		out[8 + i] = (uint8_t)(h->id >> (24 - 8 * i));
-		out[12 + i] = (uint8_t)(h->len >> (24 - 8 * i));
-	}
-}
-
-int fp_frame_hdr_decode(const uint8_t in[FP_PROTO_HDR_LEN], fp_frame_hdr_t* h) {
-	memset(h, 0, sizeof(*h));
-	if ((((unsigned)in[0] << 8) | in[1]) != FP_PROTO_MAGIC)
-		return FP_P_ERR_MAGIC;
-	if (in[2] != FP_PROTO_VERSION) return FP_P_ERR_VERSION;
-	if (in[3] < FP_FRAME_REQUEST || in[3] > FP_FRAME_EVENT)
-		return FP_P_ERR_KIND;
-	h->kind = in[3];
-	h->type = be32(in + 4);
-	h->id = be32(in + 8);
-	h->len = be32(in + 12);
-	if (h->len > FP_PROTO_MAX_PAYLOAD) {
-		memset(h, 0, sizeof(*h));
-		return FP_P_ERR_TOO_BIG;
-	}
-	return FP_P_OK;
 }
 
 // --- encoding -------------------------------------------------------------
@@ -211,50 +139,45 @@ out:
 	return e;
 }
 
-// Append one frame to `w`, or leave it exactly as it was.
-static int pack_frame(fp_wbuf_t* w, uint8_t kind, uint32_t type, uint32_t id,
-		      nvlist_t* nvl) {
-	uint8_t hdr[FP_PROTO_HDR_LEN];
-	fp_frame_hdr_t h = {.kind = kind, .type = type, .id = id, .len = 0};
-	size_t start = w->len;
-	bool was_failed = w->failed;
-	void* blob;
-	size_t len = 0;
-	int e = FP_P_OK;
-	int nverr;
+// The frame is assembled in the nvlist, so a refused field cannot leave a
+// half frame behind: the caller gets nothing on failure.
+static int finish_build(nvlist_t** out, nvlist_t* nvl) {
+	int nverr = nvlist_error(nvl);
 
-	if (nvl == NULL) return FP_P_ERR_NOMEM;
-	nverr = nvlist_error(nvl);
 	if (nverr != 0) {
 		nvlist_destroy(nvl);
 		return nverr == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
 	}
-	blob = nvlist_pack(nvl, &len);
-	nvlist_destroy(nvl);
-	if (blob == NULL)
-		return errno == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
-	if (len > FP_PROTO_MAX_PAYLOAD) {
-		free(blob);
+	if (nvlist_size(nvl) > FP_PROTO_MAX_PAYLOAD) {
+		nvlist_destroy(nvl);
 		return FP_P_ERR_TOO_BIG;
 	}
-	h.len = (uint32_t)len;
-	fp_frame_hdr_encode(hdr, &h);
-	w_put(w, hdr, sizeof(hdr));
-	w_put(w, blob, len);
-	free(blob);
-	if (w->failed) {
-		w->len = start;
-		w->failed = was_failed;
-		e = FP_P_ERR_NOMEM;
-	}
+	*out = nvl;
+	return FP_P_OK;
+}
+
+// The envelope every frame carries: what it is, which message kind it is and
+// which request/sequence number it answers.
+static int add_frame_fields(nvlist_t* nvl, uint8_t kind, uint32_t type,
+			    uint32_t id) {
+	int e = add_num(nvl, "kind", kind);
+
+	if (e == FP_P_OK) e = add_num(nvl, "type", type);
+	if (e == FP_P_OK) e = add_num(nvl, "id", id);
 	return e;
 }
 
-int fp_req_encode(fp_wbuf_t* w, uint32_t id, const fp_req_t* r) {
+int fp_req_encode(nvlist_t** out, uint32_t id, const fp_req_t* r) {
 	nvlist_t* nvl = nvlist_create(0);
-	int e = FP_P_OK;
+	int e;
 
+	*out = NULL;
 	if (nvl == NULL) return FP_P_ERR_NOMEM;
+	e = add_frame_fields(nvl, FP_FRAME_REQUEST, r->type, id);
+	if (e != FP_P_OK) {
+		nvlist_destroy(nvl);
+		return e;
+	}
 	switch (r->type) {
 	case FP_REQ_HELLO:
 		e = add_num(nvl, "version", r->u.hello.version);
@@ -412,14 +335,20 @@ int fp_req_encode(fp_wbuf_t* w, uint32_t id, const fp_req_t* r) {
 		nvlist_destroy(nvl);
 		return e;
 	}
-	return pack_frame(w, FP_FRAME_REQUEST, r->type, id, nvl);
+	return finish_build(out, nvl);
 }
 
-int fp_ack_encode(fp_wbuf_t* w, uint32_t id, const fp_ack_t* a) {
+int fp_ack_encode(nvlist_t** out, uint32_t id, const fp_ack_t* a) {
 	nvlist_t* nvl = nvlist_create(0);
-	int e = FP_P_OK;
+	int e;
 
+	*out = NULL;
 	if (nvl == NULL) return FP_P_ERR_NOMEM;
+	e = add_frame_fields(nvl, FP_FRAME_ACK, a->type, id);
+	if (e != FP_P_OK) {
+		nvlist_destroy(nvl);
+		return e;
+	}
 	switch (a->type) {
 	case FP_ACK_OK:
 		e = add_num(nvl, "op_id", a->op_id);
@@ -437,23 +366,30 @@ int fp_ack_encode(fp_wbuf_t* w, uint32_t id, const fp_ack_t* a) {
 		nvlist_destroy(nvl);
 		return e;
 	}
-	return pack_frame(w, FP_FRAME_ACK, a->type, id, nvl);
+	return finish_build(out, nvl);
 }
 
-int fp_event_encode(fp_wbuf_t* w, uint32_t seq, const fp_event_t* ev) {
+int fp_event_encode(nvlist_t** out, uint32_t seq, const fp_event_t* ev) {
 	nvlist_t* nvl = nvlist_create(0);
-	int e = FP_P_OK;
+	int e;
 
+	*out = NULL;
 	if (nvl == NULL) return FP_P_ERR_NOMEM;
 	if (!fp_topic_valid(ev->topic)) {
 		nvlist_destroy(nvl);
 		return FP_P_ERR_MALFORMED;
 	}
+	e = add_frame_fields(nvl, FP_FRAME_EVENT, ev->type, seq);
+	if (e != FP_P_OK) {
+		nvlist_destroy(nvl);
+		return e;
+	}
 	e = add_str(nvl, "topic", ev->topic);
 	if (e == FP_P_OK) e = add_num(nvl, "op_id", ev->op_id);
 	switch (ev->type) {
 	case FP_EV_OP_STARTED:
-		if (e == FP_P_OK) e = add_num(nvl, "kind", ev->u.started.kind);
+		if (e == FP_P_OK)
+			e = add_num(nvl, "op_kind", ev->u.started.kind);
 		if (e == FP_P_OK)
 			e = add_str(nvl, "label", ev->u.started.label);
 		break;
@@ -555,7 +491,7 @@ int fp_event_encode(fp_wbuf_t* w, uint32_t seq, const fp_event_t* ev) {
 		nvlist_destroy(nvl);
 		return e;
 	}
-	return pack_frame(w, FP_FRAME_EVENT, ev->type, seq, nvl);
+	return finish_build(out, nvl);
 }
 
 void fp_strlist_free(char** v, size_t n) {
@@ -716,31 +652,6 @@ void fp_event_free(fp_event_t* e) {
 // from a caller-chosen frame: every read below asks nvlist_exists_*() first and
 // a missing or mistyped field is FP_P_ERR_MALFORMED, never an exit in root's
 // worker.
-
-static nvlist_t* unpack_frame(const fp_frame_hdr_t* h, const uint8_t* payload,
-			      int* err) {
-	nvlist_t* nvl;
-
-	*err = FP_P_OK;
-	if (h->len == 0 || payload == NULL) {
-		*err = FP_P_ERR_MALFORMED;
-		return NULL;
-	}
-	errno = 0;
-	nvl = nvlist_unpack(payload, h->len, 0);
-	if (nvl == NULL) {
-		*err = errno == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
-		return NULL;
-	}
-	if (nvlist_error(nvl) != 0) {
-		int e = nvlist_error(nvl);
-
-		nvlist_destroy(nvl);
-		*err = e == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
-		return NULL;
-	}
-	return nvl;
-}
 
 static const char* need_str(const nvlist_t* nvl, const char* name, int* err) {
 	const char* s;
@@ -924,24 +835,37 @@ static fp_change_row_t* dup_rows(const nvlist_t* nvl, size_t* n_out,
 	return rows;
 }
 
-static int hdr_is(const fp_frame_hdr_t* h, uint8_t kind) {
-	if (h->kind != kind) return FP_P_ERR_KIND;
-	if (h->len > FP_PROTO_MAX_PAYLOAD) return FP_P_ERR_TOO_BIG;
-	return FP_P_OK;
+// Every frame carries its kind, its type and the request or sequence number
+// it answers.  A frame handed to the wrong decoder is malformed, not
+// reinterpreted.
+static bool frame_fields(const nvlist_t* nvl, uint8_t kind, uint32_t* type_out,
+			 uint32_t* id_out, int* err) {
+	uint32_t kindv = need_u32(nvl, "kind", err);
+	uint32_t type = need_u32(nvl, "type", err);
+	uint32_t id = need_u32(nvl, "id", err);
+
+	if (*err != FP_P_OK) return false;
+	if (kindv != kind) {
+		*err = FP_P_ERR_MALFORMED;
+		return false;
+	}
+	*type_out = type;
+	*id_out = id;
+	return true;
 }
 
-int fp_req_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
-		  fp_req_t* out) {
+int fp_req_decode(const nvlist_t* nvl, uint32_t* id_out, fp_req_t* out) {
+	if (nvl == NULL || nvlist_error(nvl) != 0)
+		return FP_P_ERR_MALFORMED;
+	uint32_t type = 0, id = 0;
 	int err = FP_P_OK;
-	nvlist_t* nvl;
-	int e = hdr_is(h, FP_FRAME_REQUEST);
 
 	memset(out, 0, sizeof(*out));
-	if (e != FP_P_OK) return e;
-	nvl = unpack_frame(h, payload, &err);
-	if (nvl == NULL) return err;
-	out->type = h->type;
-	switch (h->type) {
+	if (id_out != NULL) *id_out = 0;
+	if (!frame_fields(nvl, FP_FRAME_REQUEST, &type, &id, &err)) return err;
+	if (id_out != NULL) *id_out = id;
+	out->type = type;
+	switch (type) {
 	case FP_REQ_HELLO:
 		out->u.hello.version = need_u32(nvl, "version", &err);
 		out->u.hello.client = dup_str(nvl, "client", &err);
@@ -1066,7 +990,6 @@ int fp_req_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 		err = FP_P_ERR_MALFORMED;
 		break;
 	}
-	nvlist_destroy(nvl);
 	if (err != FP_P_OK) {
 		fp_req_free(out);
 		return err;
@@ -1074,18 +997,18 @@ int fp_req_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 	return FP_P_OK;
 }
 
-int fp_ack_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
-		  fp_ack_t* out) {
+int fp_ack_decode(const nvlist_t* nvl, uint32_t* id_out, fp_ack_t* out) {
+	if (nvl == NULL || nvlist_error(nvl) != 0)
+		return FP_P_ERR_MALFORMED;
+	uint32_t type = 0, id = 0;
 	int err = FP_P_OK;
-	nvlist_t* nvl;
-	int e = hdr_is(h, FP_FRAME_ACK);
 
 	memset(out, 0, sizeof(*out));
-	if (e != FP_P_OK) return e;
-	nvl = unpack_frame(h, payload, &err);
-	if (nvl == NULL) return err;
-	out->type = h->type;
-	switch (h->type) {
+	if (id_out != NULL) *id_out = 0;
+	if (!frame_fields(nvl, FP_FRAME_ACK, &type, &id, &err)) return err;
+	if (id_out != NULL) *id_out = id;
+	out->type = type;
+	switch (type) {
 	case FP_ACK_OK:
 		out->op_id = need_num(nvl, "op_id", &err);
 		break;
@@ -1097,7 +1020,6 @@ int fp_ack_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 		err = FP_P_ERR_MALFORMED;
 		break;
 	}
-	nvlist_destroy(nvl);
 	if (err != FP_P_OK) {
 		fp_ack_free(out);
 		return err;
@@ -1105,27 +1027,27 @@ int fp_ack_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 	return FP_P_OK;
 }
 
-int fp_event_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
-		    fp_event_t* out) {
+int fp_event_decode(const nvlist_t* nvl, uint32_t* id_out, fp_event_t* out) {
+	if (nvl == NULL || nvlist_error(nvl) != 0)
+		return FP_P_ERR_MALFORMED;
+	uint32_t type = 0, id = 0;
 	int err = FP_P_OK;
-	nvlist_t* nvl;
 	char** table_headers = NULL;
 	char** table_cells = NULL;
 	size_t table_hn = 0, table_cn = 0;
-	int e = hdr_is(h, FP_FRAME_EVENT);
 
 	memset(out, 0, sizeof(*out));
-	if (e != FP_P_OK) return e;
-	nvl = unpack_frame(h, payload, &err);
-	if (nvl == NULL) return err;
-	out->type = h->type;
+	if (id_out != NULL) *id_out = 0;
+	if (!frame_fields(nvl, FP_FRAME_EVENT, &type, &id, &err)) return err;
+	if (id_out != NULL) *id_out = id;
+	out->type = type;
 	out->topic = dup_str(nvl, "topic", &err);
 	if (err == FP_P_OK && !fp_topic_valid(out->topic))
 		err = FP_P_ERR_MALFORMED;
 	out->op_id = need_num(nvl, "op_id", &err);
-	switch (h->type) {
+	switch (type) {
 	case FP_EV_OP_STARTED:
-		out->u.started.kind = need_u32(nvl, "kind", &err);
+		out->u.started.kind = need_u32(nvl, "op_kind", &err);
 		out->u.started.label = dup_str(nvl, "label", &err);
 		break;
 	case FP_EV_OP_PROGRESS:
@@ -1214,7 +1136,6 @@ int fp_event_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 		err = FP_P_ERR_MALFORMED;
 		break;
 	}
-	nvlist_destroy(nvl);
 	if (err != FP_P_OK) {
 		fp_strlist_free(table_headers, table_hn);
 		fp_strlist_free(table_cells, table_cn);
@@ -1226,172 +1147,131 @@ int fp_event_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
 
 // --- stream transport -----------------------------------------------------
 
-// Read exactly n bytes.  Returns the number read, which is short only at
-// end of stream; -1 on error.
-static ssize_t read_full(int fd, uint8_t* buf, size_t n) {
-	size_t got = 0;
-	while (got < n) {
-		ssize_t k = read(fd, buf + got, n - got);
-		if (k == 0) break;
-		if (k < 0) {
-			if (errno == EINTR) continue;
-			return -1;
-		}
-		got += (size_t)k;
-	}
-	return (ssize_t)got;
+// libnv's wire header, which nvlist_send(2) writes in front of the packed
+// list.  It is read with MSG_PEEK before nvlist_recv() so a frame over the
+// payload cap, or one carrying more descriptors than the protocol allows, is
+// refused before the library allocates anything for it.
+struct fp_nv_header {
+	uint8_t magic;
+	uint8_t version;
+	uint8_t flags;
+	uint64_t descriptors;
+	uint64_t size;
+} __packed;
+
+#define FP_NV_MAGIC 0x6c
+#define FP_NV_VERSION 0x00
+#define FP_NV_FLAG_BIG_ENDIAN 0x080u
+
+static uint64_t nv_hdr64(const uint8_t* p, bool be) {
+	uint64_t v;
+
+	memcpy(&v, p, sizeof(v));
+	return be ? be64toh(v) : le64toh(v);
 }
 
-int fp_frame_read(int fd, fp_frame_hdr_t* h, uint8_t** payload) {
-	uint8_t hdr[FP_PROTO_HDR_LEN];
-	*payload = NULL;
-	ssize_t got = read_full(fd, hdr, sizeof(hdr));
-	if (got < 0) return FP_P_ERR_IO;
-	if (got == 0) return FP_P_EOF;
-	if ((size_t)got < sizeof(hdr)) return FP_P_ERR_TRUNCATED;
-	int e = fp_frame_hdr_decode(hdr, h);
-	if (e != FP_P_OK) return e;
-	if (h->len == 0) return FP_P_OK;
-	uint8_t* buf = malloc(h->len);
-	if (buf == NULL) return FP_P_ERR_NOMEM;
-	got = read_full(fd, buf, h->len);
-	if (got < 0 || (size_t)got < h->len) {
-		free(buf);
-		return got < 0 ? FP_P_ERR_IO : FP_P_ERR_TRUNCATED;
-	}
-	*payload = buf;
+// The header is 19 bytes: magic, version, flags, then the descriptor count and
+// the body size in the sender's byte order.  The public flags are ours to
+// refuse: this protocol never uses case-folding or duplicate names.
+static int nv_header_check(const struct fp_nv_header* h, size_t* bodyp) {
+	bool be;
+	uint64_t size, descs;
+
+	if (h->magic != FP_NV_MAGIC || h->version != FP_NV_VERSION)
+		return FP_P_ERR_MAGIC;
+	if ((h->flags & ~FP_NV_FLAG_BIG_ENDIAN) != 0)
+		return FP_P_ERR_MALFORMED;
+	be = (h->flags & FP_NV_FLAG_BIG_ENDIAN) != 0;
+	size = nv_hdr64((const uint8_t*)&h->size, be);
+	descs = nv_hdr64((const uint8_t*)&h->descriptors, be);
+	if (size > FP_PROTO_MAX_PAYLOAD - sizeof(*h))
+		return FP_P_ERR_TOO_BIG;
+	if (descs > FP_MAX_FDS) return FP_P_ERR_TOO_BIG;
+	*bodyp = (size_t)size;
 	return FP_P_OK;
 }
 
-// MSG_NOSIGNAL: a client that vanished mid-write must not kill the daemon
-// with SIGPIPE.  This is why the helper is for sockets only.
-int fp_frame_write(int fd, const uint8_t* buf, size_t len) {
-	size_t sent = 0;
-	while (sent < len) {
-		ssize_t k = send(fd, buf + sent, len - sent, MSG_NOSIGNAL);
-		if (k < 0) {
+int fp_frame_recv(int fd, nvlist_t** out) {
+	struct fp_nv_header h;
+	ssize_t n;
+	size_t body = 0;
+	int e;
+
+	if (out == NULL) return FP_P_ERR_MALFORMED;
+	*out = NULL;
+	// Wait for the header only.  A peer that sends half of it and stops is
+	// a truncated frame, not a frame whose body is read.  MSG_WAITALL is
+	// not honoured together with MSG_PEEK on this kernel, so peek what is
+	// there and wait for the rest without consuming it.
+	for (;;) {
+		n = recv(fd, &h, sizeof(h), MSG_PEEK);
+		if (n < 0) {
 			if (errno == EINTR) continue;
 			return FP_P_ERR_IO;
 		}
-		sent += (size_t)k;
+		if ((size_t)n >= sizeof(h)) break;
+		if (n == 0) return FP_P_EOF;
+		{
+			struct pollfd p = {fd, POLLIN, 0};
+			int pr;
+
+			do pr = poll(&p, 1, -1);
+			while (pr < 0 && errno == EINTR);
+			if (pr < 0) return FP_P_ERR_IO;
+			// Data left over after the peer closed cannot become a
+			// whole header: that is a truncated frame.
+			if ((p.revents & (POLLHUP | POLLERR)) != 0)
+				return FP_P_ERR_TRUNCATED;
+		}
+	}
+	e = nv_header_check(&h, &body);
+	if (e != FP_P_OK) return e;
+	(void)body;
+	errno = 0;
+	*out = nvlist_recv(fd, 0);
+	if (*out == NULL) {
+		int err = errno;
+
+		return err == ENOMEM ? FP_P_ERR_NOMEM : FP_P_ERR_MALFORMED;
 	}
 	return FP_P_OK;
 }
 
-#include <sys/uio.h>
+size_t fp_nvl_fd_count(const nvlist_t* nvl) {
+	void* cookie = NULL;
+	size_t n = 0;
+	const char* name;
+	int type;
 
-#define FP_MAX_CTL_FDS FP_MAX_FDS
+	if (nvl == NULL) return 0;
+	while ((name = nvlist_next(nvl, &type, &cookie)) != NULL) {
+		if (type == NV_TYPE_DESCRIPTOR) {
+			n++;
+		} else if (type == NV_TYPE_DESCRIPTOR_ARRAY) {
+			size_t k = 0;
 
-int fp_frame_write_fds(int fd, const uint8_t* buf, size_t len, const int* fds,
-		       size_t nfds) {
-	if (nfds == 0) return fp_frame_write(fd, buf, len);
-	if (nfds > FP_MAX_CTL_FDS || len == 0) return FP_P_ERR_MALFORMED;
-
-	union {
-		struct cmsghdr h;
-		char b[CMSG_SPACE(sizeof(int) * FP_MAX_CTL_FDS)];
-	} ctl;
-	memset(&ctl, 0, sizeof(ctl));
-	struct iovec iov = {(void*)buf, len};
-	struct msghdr m;
-	memset(&m, 0, sizeof(m));
-	m.msg_iov = &iov;
-	m.msg_iovlen = 1;
-	m.msg_control = ctl.b;
-	m.msg_controllen = CMSG_SPACE(sizeof(int) * nfds);
-	struct cmsghdr* c = CMSG_FIRSTHDR(&m);
-	c->cmsg_level = SOL_SOCKET;
-	c->cmsg_type = SCM_RIGHTS;
-	c->cmsg_len = CMSG_LEN(sizeof(int) * nfds);
-	memcpy(CMSG_DATA(c), fds, sizeof(int) * nfds);
-
-	ssize_t k;
-	do {
-		k = sendmsg(fd, &m, MSG_NOSIGNAL);
-	} while (k < 0 && errno == EINTR);
-	if (k < 0) return FP_P_ERR_IO;
-	if ((size_t)k == len) return FP_P_OK;
-	return fp_frame_write(fd, buf + k, len - (size_t)k);
+			(void)nvlist_get_descriptor_array(nvl, name, &k);
+			n += k;
+		}
+	}
+	return n;
 }
 
-// Header bytes with recvmsg, so descriptors riding on them are seen.
-static ssize_t read_hdr_fds(int fd, uint8_t* buf, size_t n, int* fds,
-			    size_t max, size_t* nfds) {
-	size_t got = 0;
-	while (got < n) {
-		union {
-			struct cmsghdr h;
-			char b[CMSG_SPACE(sizeof(int) * FP_MAX_CTL_FDS)];
-		} ctl;
-		struct iovec iov = {buf + got, n - got};
-		struct msghdr m;
-		memset(&m, 0, sizeof(m));
-		m.msg_iov = &iov;
-		m.msg_iovlen = 1;
-		m.msg_control = ctl.b;
-		m.msg_controllen = sizeof(ctl.b);
-		ssize_t k = recvmsg(fd, &m, MSG_CMSG_CLOEXEC);
-		if (k == 0) break;
-		if (k < 0) {
-			if (errno == EINTR) continue;
-			return -1;
-		}
-		for (struct cmsghdr* c = CMSG_FIRSTHDR(&m); c != NULL;
-		     c = CMSG_NXTHDR(&m, c)) {
-			if (c->cmsg_level != SOL_SOCKET ||
-			    c->cmsg_type != SCM_RIGHTS)
-				continue;
-			size_t cnt = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
-			int tmp[FP_MAX_CTL_FDS];
-			if (cnt > FP_MAX_CTL_FDS) cnt = FP_MAX_CTL_FDS;
-			memcpy(tmp, CMSG_DATA(c), cnt * sizeof(int));
-			for (size_t i = 0; i < cnt; i++) {
-				if (*nfds < max) fds[(*nfds)++] = tmp[i];
-				else
-					close(tmp[i]);
-			}
-		}
-		// More descriptors than the control buffer holds: the kernel
-		// dropped the rest and this is not a frame the protocol
-		// carries.  Refuse it; the caller closes what did fit.
-		if ((m.msg_flags & MSG_CTRUNC) != 0) return -1;
-		got += (size_t)k;
-	}
-	return (ssize_t)got;
-}
+int fp_frame_send(int fd, const nvlist_t* nvl) {
+	if (nvl == NULL || nvlist_error(nvl) != 0)
+		return FP_P_ERR_MALFORMED;
+	if (nvlist_size(nvl) > FP_PROTO_MAX_PAYLOAD)
+		return FP_P_ERR_TOO_BIG;
+	if (fp_nvl_fd_count(nvl) > FP_MAX_FDS) return FP_P_ERR_TOO_BIG;
+	{
+		// nvlist_send(2) uses send(2)/sendmsg(2) without MSG_NOSIGNAL: a
+		// peer that vanished mid-frame would otherwise kill the caller
+		// with SIGPIPE.
+		int one = 1;
 
-int fp_frame_read_fds(int fd, fp_frame_hdr_t* h, uint8_t** payload, int* fds,
-		      size_t max, size_t* nfds) {
-	uint8_t hdr[FP_PROTO_HDR_LEN];
-	*payload = NULL;
-	*nfds = 0;
-	ssize_t got = read_hdr_fds(fd, hdr, sizeof(hdr), fds, max, nfds);
-	if (got < 0) goto io;
-	if (got == 0) return FP_P_EOF;
-	if ((size_t)got < sizeof(hdr)) goto trunc;
-	int e = fp_frame_hdr_decode(hdr, h);
-	if (e != FP_P_OK) goto bad;
-	if (h->len == 0) return FP_P_OK;
-	uint8_t* buf = malloc(h->len);
-	if (buf == NULL) {
-		e = FP_P_ERR_NOMEM;
-		goto bad;
+		(void)setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one,
+				 sizeof(one));
 	}
-	got = read_full(fd, buf, h->len);
-	if (got < 0 || (size_t)got < h->len) {
-		free(buf);
-		e = got < 0 ? FP_P_ERR_IO : FP_P_ERR_TRUNCATED;
-		goto bad;
-	}
-	*payload = buf;
+	if (nvlist_send(fd, nvl) != 0) return FP_P_ERR_IO;
 	return FP_P_OK;
-io:
-	e = FP_P_ERR_IO;
-	goto bad;
-trunc:
-	e = FP_P_ERR_TRUNCATED;
-bad:
-	for (size_t i = 0; i < *nfds; i++) close(fds[i]);
-	*nfds = 0;
-	return e;
 }

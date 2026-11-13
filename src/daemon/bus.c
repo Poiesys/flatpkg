@@ -467,7 +467,9 @@ out:
 int bus_emit_event(const char* topic, const fp_event_t* ev) {
 	static uint32_t seq;
 	fp_event_t e;
-	fp_wbuf_t w;
+	nvlist_t* nvl = NULL;
+	size_t len = 0;
+	void* blob;
 	int rc;
 
 	if (worker_fd < 0 || topic == NULL || !fp_topic_valid(topic))
@@ -475,9 +477,11 @@ int bus_emit_event(const char* topic, const fp_event_t* ev) {
 	e = *ev;
 	e.topic = (char*)topic;
 	e.op_id = 0;
-	fp_w_init(&w);
-	rc = fp_event_encode(&w, seq++, &e);
-	if (rc == FP_P_OK) rc = bus_publish(topic, w.p, w.len);
-	fp_w_free(&w);
-	return rc == FP_P_OK ? 0 : -1;
+	if (fp_event_encode(&nvl, seq++, &e) != FP_P_OK) return -1;
+	blob = nvlist_pack(nvl, &len);
+	nvlist_destroy(nvl);
+	if (blob == NULL) return -1;
+	rc = bus_publish(topic, blob, len);
+	free(blob);
+	return rc == 0 ? 0 : -1;
 }

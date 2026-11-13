@@ -78,7 +78,7 @@ bin="$tmp/build/flatpkg"
 # A second client for the bus: follow an operation and cancel one.
 busprobe=""
 if cc -O2 -Wall -Wextra -I"$ROOT/include" -o "$tmp/busprobe" \
-    "$ROOT/tests/busprobe.c" -L"$tmp/build" -lflatpkg_shared \
+    "$ROOT/tests/busprobe.c" -L"$tmp/build" -lflatpkg_shared -lnv \
     -Wl,-rpath,"$tmp/build" >"$tmp/busprobe.cc" 2>&1; then
 	busprobe="$tmp/busprobe"
 fi

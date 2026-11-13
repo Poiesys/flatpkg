@@ -4,15 +4,18 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/nv.h>
 
-// Wire format: a 16-byte big-endian envelope (magic, version, kind, type, id,
-// payload length), then an nvlist packed by libnv.  Every payload field is a
-// named, typed value, and decoding runs as root on caller-chosen bytes.
-#define FP_PROTO_MAGIC 0x4650u
-// An unknown event type cannot be skipped, only refused, so a new type is a
-// new version and the mismatch fails at the first frame, not mid-operation.
-#define FP_PROTO_VERSION 9u
-#define FP_PROTO_HDR_LEN 16u
+// Wire format: one nvlist per frame, sent with nvlist_send(2).  `kind`, `type`
+// and `id` are fields, the message's own fields are named values, and
+// descriptors are named values in the same nvlist.  Decoding runs as root on
+// caller-chosen bytes.
+//
+// An unknown event type cannot be skipped, only refused, so a new type or a
+// new framing is a new version and the mismatch fails at HELLO, not
+// mid-operation.
+#define FP_PROTO_VERSION 10u
+// The whole packed frame, including libnv's own header.
 #define FP_PROTO_MAX_PAYLOAD (1u << 20)
 #define FP_PROTO_MAX_STR (64u << 10)
 #define FP_PROTO_MAX_LIST 4096u
@@ -37,13 +40,6 @@ typedef enum {
 	FP_FRAME_ACK = 2,
 	FP_FRAME_EVENT = 3,
 } fp_frame_kind_t;
-
-typedef struct {
-	uint8_t kind;
-	uint32_t type;
-	uint32_t id;
-	uint32_t len;
-} fp_frame_hdr_t;
 
 // Primitives, not policy: the client solves, so upgrade is absent on purpose.
 typedef enum {
@@ -342,52 +338,44 @@ typedef struct {
 	} u;
 } fp_event_t;
 
-typedef struct {
-	uint8_t* p;
-	size_t len;
-	size_t cap;
-	bool failed; // out of memory or over a limit; sticky
-} fp_wbuf_t;
+// Descriptor names.  A forwarded descriptor is named by the number the app
+// will see it on, so the frame says which fd is which.
+#define FP_FD_STDIN "stdin"
+#define FP_FD_STDOUT "stdout"
+#define FP_FD_STDERR "stderr"
+#define FP_FD_BUNDLE "bundle"
+#define FP_FD_PREFIX "fd/"
 
-void fp_w_init(fp_wbuf_t* w);
-void fp_w_free(fp_wbuf_t* w);
-void fp_strlist_free(char** v, size_t n);
+// Build one frame.  On success *out is a new nvlist the caller sends and
+// destroys; the caller may add descriptor fields to it first.  On error *out
+// is NULL.
+int fp_req_encode(nvlist_t** out, uint32_t id, const fp_req_t* r);
+int fp_ack_encode(nvlist_t** out, uint32_t id, const fp_ack_t* a);
+int fp_event_encode(nvlist_t** out, uint32_t seq, const fp_event_t* e);
+
+// Parse one frame.  The kind and the type are checked before anything else;
+// a missing or mistyped field is FP_P_ERR_MALFORMED.  id_out may be NULL.
+int fp_req_decode(const nvlist_t* nvl, uint32_t* id_out, fp_req_t* out);
+int fp_ack_decode(const nvlist_t* nvl, uint32_t* id_out, fp_ack_t* out);
+int fp_event_decode(const nvlist_t* nvl, uint32_t* id_out, fp_event_t* out);
+void fp_req_free(fp_req_t* r);
+void fp_ack_free(fp_ack_t* a);
+void fp_event_free(fp_event_t* e);
 
 // A topic is 1..FP_PROTO_MAX_TOPIC characters of [a-z0-9/._-] with no ".."
 // and no leading or trailing '/'; it is a lookup key, so check it on decode.
 bool fp_topic_valid(const char* s);
 
-void fp_frame_hdr_encode(uint8_t out[FP_PROTO_HDR_LEN],
-			 const fp_frame_hdr_t* h);
-int fp_frame_hdr_decode(const uint8_t in[FP_PROTO_HDR_LEN], fp_frame_hdr_t* h);
+// Stream transport.  The receive side peeks libnv's wire header first and
+// refuses an over-sized body or a descriptor count over FP_MAX_FDS before
+// nvlist_recv() allocates anything.  FP_P_EOF is a clean close between
+// frames.
+int fp_frame_send(int fd, const nvlist_t* nvl);
+int fp_frame_recv(int fd, nvlist_t** out);
 
-// Encode one frame onto the end of w; on error w is left untouched.
-int fp_req_encode(fp_wbuf_t* w, uint32_t id, const fp_req_t* r);
-int fp_ack_encode(fp_wbuf_t* w, uint32_t id, const fp_ack_t* a);
-int fp_event_encode(fp_wbuf_t* w, uint32_t seq, const fp_event_t* e);
-
-// The header must already be validated.  On failure the result is zeroed.
-int fp_req_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
-		  fp_req_t* out);
-int fp_ack_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
-		  fp_ack_t* out);
-int fp_event_decode(const fp_frame_hdr_t* h, const uint8_t* payload,
-		    fp_event_t* out);
-void fp_req_free(fp_req_t* r);
-void fp_ack_free(fp_ack_t* a);
-void fp_event_free(fp_event_t* e);
-
-// Blocking helpers for a connected stream socket: FP_P_EOF on a clean close
-// between frames, FP_P_ERR_TRUNCATED on a close inside one.
-int fp_frame_read(int fd, fp_frame_hdr_t* h, uint8_t** payload);
-int fp_frame_write(int fd, const uint8_t* buf, size_t len);
-
-// For frames that carry descriptors (FP_REQ_STDIO, RUN forwarding any,
-// FP_REQ_INSTALL_BUNDLE): anything beyond `max` is closed, not leaked.
-int fp_frame_write_fds(int fd, const uint8_t* buf, size_t len, const int* fds,
-		       size_t nfds);
-int fp_frame_read_fds(int fd, fp_frame_hdr_t* h, uint8_t** payload, int* fds,
-		      size_t max, size_t* nfds);
+// How many descriptors a frame carries.  libnv 1.7 ships the counter but its
+// header does not declare it, so the frame walks its own names.
+size_t fp_nvl_fd_count(const nvlist_t* nvl);
 
 const char* fp_proto_strerror(int err);
 
