@@ -519,6 +519,17 @@ int cmd_complete(const char* what, const char* arg) {
 		return 0;
 	}
 
+	if (strcmp(what, "bash") == 0 || strcmp(what, "zsh") == 0 ||
+	    strcmp(what, "fish") == 0) {
+		if (cli_complete_shell(what, arg) != 0) {
+			fpkg_errorf("unknown program '%s' for complete %s "
+				    "(flatpkg, flatpak or flatpkgd)",
+				    arg != NULL ? arg : "", what);
+			return 1;
+		}
+		return 0;
+	}
+
 	if (strcmp(what, "man") == 0) {
 		if (arg == NULL) {
 			fpkg_errorf("complete man needs a section");
@@ -560,7 +571,7 @@ int cmd_complete(const char* what, const char* arg) {
 	if (!want_app && !want_runtime && !want_refs) {
 		fpkg_errorf("unknown kind '%s' for complete (apps, refs, "
 			    "runtimes, world, remotes, instances, commands, "
-			    "words, values, operands, man)",
+			    "words, values, operands, man, bash, zsh, fish)",
 			    what);
 		return 1;
 	}

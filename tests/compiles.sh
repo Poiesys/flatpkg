@@ -64,7 +64,9 @@ fi
 export ASAN_OPTIONS="detect_leaks=0:abort_on_error=1"
 export UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1"
 for args in "--version" "help" "help run" "complete commands" \
-	    "complete words run" "complete man global"; do
+	    "complete words run" "complete man global" \
+	    "complete bash flatpkg" "complete zsh flatpkgd" \
+	    "complete fish flatpak"; do
 	# shellcheck disable=SC2086
 	if ! "$asan/flatpkg" $args >/dev/null 2>"$SCRATCH/san.err"; then
 		echo "FAIL the sanitizer binary failed on 'flatpkg $args':"

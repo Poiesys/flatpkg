@@ -151,6 +151,9 @@ void cli_complete_commands(void);
 void cli_complete_words(const char* cmd);
 void cli_complete_values(const char* opt);
 void cli_complete_operands(const char* cmd);
+// Write a whole bash, zsh or fish completion script for PROG (flatpkg,
+// flatpak or flatpkgd) to stdout.  Returns -1 for an unknown shell or program.
+int cli_complete_shell(const char* shell, const char* prog);
 // The generated option sections of man/flatpkg.8.
 void cli_man_options(const char* which);
 

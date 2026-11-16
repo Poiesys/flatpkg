@@ -33,6 +33,20 @@ MANPAGE=        $(BUILD)/flatpkg.8
 BIN_DAEMON=     $(BUILD)/flatpkgd
 SHLIB=          $(BUILD)/libflatpkg_shared.so
 
+# The completion scripts are data emitted by cli.c from its tables, not
+# checked-in copies that can drift from the parser.
+COMPLETIONS=    $(BUILD)/completions
+COMPLETION_FILES= \
+    $(COMPLETIONS)/bash/flatpkg \
+    $(COMPLETIONS)/bash/flatpak \
+    $(COMPLETIONS)/bash/flatpkgd \
+    $(COMPLETIONS)/zsh/_flatpkg \
+    $(COMPLETIONS)/zsh/_flatpak \
+    $(COMPLETIONS)/zsh/_flatpkgd \
+    $(COMPLETIONS)/fish/flatpkg.fish \
+    $(COMPLETIONS)/fish/flatpak.fish \
+    $(COMPLETIONS)/fish/flatpkgd.fish
+
 SHIM=           $(BUILD)/signalfd_shim.so
 SHIM_SRC=       src/signalfd_shim.c
 SECCOMP_SHIM=   $(BUILD)/seccomp_shim.so
@@ -55,7 +69,8 @@ MADVISE_SHIM_SRC= src/madvise_shim.c
 
 .PHONY: all
 all: $(BIN_CLI) $(BIN_DAEMON) $(SHLIB) $(SHIM) $(SECCOMP_SHIM) $(DEVT_SHIM) \
-    $(MEMFD_SHIM) $(SYNC_SHIM) $(RLIMIT_SHIM) $(MADVISE_SHIM) $(MANPAGE)
+    $(MEMFD_SHIM) $(SYNC_SHIM) $(RLIMIT_SHIM) $(MADVISE_SHIM) $(MANPAGE) \
+    $(COMPLETION_FILES)
 
 
 # Shared library objects
@@ -425,8 +440,44 @@ dist:
 $(MANPAGE): $(BIN_CLI) man/flatpkg.8.in scripts/gen-man.sh
 	sh scripts/gen-man.sh $(BIN_CLI) man/flatpkg.8.in > $@
 
+$(COMPLETIONS)/bash/flatpkg: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete bash flatpkg > $@
+
+$(COMPLETIONS)/bash/flatpak: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete bash flatpak > $@
+
+$(COMPLETIONS)/bash/flatpkgd: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete bash flatpkgd > $@
+
+$(COMPLETIONS)/zsh/_flatpkg: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete zsh flatpkg > $@
+
+$(COMPLETIONS)/zsh/_flatpak: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete zsh flatpak > $@
+
+$(COMPLETIONS)/zsh/_flatpkgd: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete zsh flatpkgd > $@
+
+$(COMPLETIONS)/fish/flatpkg.fish: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete fish flatpkg > $@
+
+$(COMPLETIONS)/fish/flatpak.fish: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete fish flatpak > $@
+
+$(COMPLETIONS)/fish/flatpkgd.fish: $(BIN_CLI) Makefile
+	@mkdir -p $(@D)
+	$(BIN_CLI) complete fish flatpkgd > $@
+
 install: $(BIN_CLI) $(BIN_DAEMON) $(SHLIB) $(SHIM) $(SECCOMP_SHIM) $(DEVT_SHIM) $(MEMFD_SHIM) \
-    $(SYNC_SHIM) $(RLIMIT_SHIM) $(MADVISE_SHIM) $(MANPAGE)
+    $(SYNC_SHIM) $(RLIMIT_SHIM) $(MADVISE_SHIM) $(MANPAGE) $(COMPLETION_FILES)
 	install -d ${DESTDIR}${PREFIX}/sbin
 	install -o root -g wheel -m 0755 $(BIN_CLI) ${DESTDIR}${PREFIX}/sbin/flatpkg
 	install -o root -g wheel -m 0755 $(BIN_DAEMON) ${DESTDIR}${PREFIX}/sbin/flatpkgd
@@ -478,15 +529,23 @@ install: $(BIN_CLI) $(BIN_DAEMON) $(SHLIB) $(SHIM) $(SECCOMP_SHIM) $(DEVT_SHIM) 
 	install -m 0644 scripts/99-flatpkg.conf \
 	    ${DESTDIR}${PREFIX}/lib/environment.d/99-flatpkg.conf
 	install -d ${DESTDIR}${PREFIX}/share/bash-completion/completions
-	install -m 0644 completions/flatpkg.bash \
+	install -m 0644 $(COMPLETIONS)/bash/flatpkg \
 	    ${DESTDIR}${PREFIX}/share/bash-completion/completions/flatpkg
-	install -m 0644 completions/flatpkg.bash \
+	install -m 0644 $(COMPLETIONS)/bash/flatpak \
 	    ${DESTDIR}${PREFIX}/share/bash-completion/completions/flatpak
+	install -m 0644 $(COMPLETIONS)/bash/flatpkgd \
+	    ${DESTDIR}${PREFIX}/share/bash-completion/completions/flatpkgd
 	install -d ${DESTDIR}${PREFIX}/share/zsh/site-functions
-	install -m 0644 completions/_flatpkg \
+	install -m 0644 $(COMPLETIONS)/zsh/_flatpkg \
 	    ${DESTDIR}${PREFIX}/share/zsh/site-functions/_flatpkg
+	install -m 0644 $(COMPLETIONS)/zsh/_flatpak \
+	    ${DESTDIR}${PREFIX}/share/zsh/site-functions/_flatpak
+	install -m 0644 $(COMPLETIONS)/zsh/_flatpkgd \
+	    ${DESTDIR}${PREFIX}/share/zsh/site-functions/_flatpkgd
 	install -d ${DESTDIR}${PREFIX}/share/fish/vendor_completions.d
-	install -m 0644 completions/flatpkg.fish \
+	install -m 0644 $(COMPLETIONS)/fish/flatpkg.fish \
 	    ${DESTDIR}${PREFIX}/share/fish/vendor_completions.d/flatpkg.fish
-	install -m 0644 completions/flatpkg.fish \
+	install -m 0644 $(COMPLETIONS)/fish/flatpak.fish \
 	    ${DESTDIR}${PREFIX}/share/fish/vendor_completions.d/flatpak.fish
+	install -m 0644 $(COMPLETIONS)/fish/flatpkgd.fish \
+	    ${DESTDIR}${PREFIX}/share/fish/vendor_completions.d/flatpkgd.fish

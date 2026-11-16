@@ -19,12 +19,17 @@ carve_block() {
 
 DIR=$(dirname "$0")
 SRC="$DIR/../src/cli/cli.c"
-BASH="$DIR/../completions/flatpkg.bash"
-ZSH="$DIR/../completions/_flatpkg"
-FISH="$DIR/../completions/flatpkg.fish"
 
 tmp=$(mktemp -d /tmp/.fpkg-optvals-test.XXXXXX)
 trap 'rm -rf "$tmp"' EXIT
+BASH="$tmp/flatpkg.bash"
+ZSH="$tmp/_flatpkg"
+FISH="$tmp/flatpkg.fish"
+# Keep the shells' absolute paths before the restricted PATH below hides
+# /usr/local/bin, where FreeBSD installs them.
+BASH_BIN=$(command -v bash 2>/dev/null || true)
+ZSH_BIN=$(command -v zsh 2>/dev/null || true)
+FISH_BIN=$(command -v fish 2>/dev/null || true)
 
 # This guard runs the binary for the completion vocabulary, so it owns the
 # caller environment those commands could read (tests/worker-env.sh's rule).
@@ -37,14 +42,6 @@ export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 export TERM=dumb
 export NO_COLOR= FORCE_COLOR=
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR"
-
-# fish spreads `complete -l NAME \` over two lines; join the continuations
-# so one option is one record.  awk, not `sed :a;N;$!ba`: that is a GNUism.
-awk '
-	/\\$/ { sub(/\\$/, " "); buf = buf $0; next }
-	{ print buf $0; buf = "" }
-	END { if (buf != "") print buf }
-' "$FISH" > "$tmp/fish.flat"
 
 # Carve by counting braces; the `{` is on the line after the signature, so
 # only exit once one is seen.  The signature travels in the environment, not
@@ -118,17 +115,72 @@ set_expected() {
 	esac
 }
 
-# The completions no longer carry a value list: each asks `flatpkg complete
-# values`, which reads the same table the parser does.  So the check is that
-# they ask, and that the answer is the parser's vocabulary.
+# The scripts are emitted by cli.c from the same tables the parser reads, so
+# the tables must be in each script, and the value vocabulary must be there
+# rather than only in `complete values`.
 FLATPKG="$DIR/../build/flatpkg"
 [ -x "$FLATPKG" ] || { echo "SKIP: build/flatpkg not built"; exit 0; }
 
+"$FLATPKG" complete bash flatpkg > "$BASH"
+"$FLATPKG" complete zsh flatpkg > "$ZSH"
+"$FLATPKG" complete fish flatpkg > "$FISH"
 for f in "$BASH" "$ZSH" "$FISH"; do
-	grep -q 'complete words' "$f" || fail "$(basename "$f") does not ask for options"
-	grep -q 'complete values' "$f" || fail "$(basename "$f") does not ask for values"
-	grep -q 'complete operands' "$f" || fail "$(basename "$f") does not ask for operands"
+	[ -s "$f" ] || fail "$(basename "$f") is empty"
+	grep -q 'flatpkg' "$f" || fail "$(basename "$f") does not register flatpkg"
+	for c in $("$FLATPKG" complete commands); do
+		grep -Fqw -- "$c" "$f" ||
+			fail "$(basename "$f") does not offer command '$c'"
+	done
 done
+
+# flatpkgd has one word of its own, and all three shells must know it.
+"$FLATPKG" complete bash flatpak > "$tmp/flatpak.bash"
+"$FLATPKG" complete bash flatpkgd > "$tmp/flatpkgd.bash"
+"$FLATPKG" complete zsh flatpkgd > "$tmp/_flatpkgd"
+"$FLATPKG" complete fish flatpkgd > "$tmp/flatpkgd.fish"
+for f in "$tmp/flatpkgd.bash" "$tmp/_flatpkgd" "$tmp/flatpkgd.fish"; do
+	[ -s "$f" ] || fail "$(basename "$f") is empty"
+	grep -q 'system-helper' "$f" ||
+		fail "$(basename "$f") does not offer flatpkgd's system-helper"
+done
+
+# A generated script that does not parse is not a completion.  The shells are
+# not build dependencies, so a missing one is a note, not a failure.
+if [ -n "$BASH_BIN" ]; then
+	for f in "$BASH" "$tmp/flatpak.bash" "$tmp/flatpkgd.bash"; do
+		"$BASH_BIN" -n "$f" || fail "$(basename "$f") does not parse in bash"
+	done
+	got=$("$BASH_BIN" -c 'source "$1"; COMP_WORDS=(flatpkg run --socket=);
+		COMP_CWORD=2; _flatpkg; printf "%s\n" "${COMPREPLY[@]}"' sh "$BASH")
+	printf '%s\n' "$got" | grep -qx -- '--socket=x11' ||
+		fail "the bash flatpkg script does not complete --socket values"
+	got=$("$BASH_BIN" -c 'source "$1"; COMP_WORDS=(flatpak ins);
+		COMP_CWORD=1; _flatpak; printf "%s\n" "${COMPREPLY[@]}"' \
+		sh "$tmp/flatpak.bash")
+	printf '%s\n' "$got" | grep -qx -- install ||
+		fail "the bash flatpak script does not complete commands"
+	got=$("$BASH_BIN" -c 'source "$1"; COMP_WORDS=(flatpkgd sys);
+		COMP_CWORD=1; _flatpkgd; printf "%s\n" "${COMPREPLY[@]}"' \
+		sh "$tmp/flatpkgd.bash")
+	printf '%s\n' "$got" | grep -qx -- system-helper ||
+		fail "the bash flatpkgd script does not complete system-helper"
+else
+	echo "note bash is not installed; the bash syntax and lookup checks did not run"
+fi
+if [ -n "$ZSH_BIN" ]; then
+	for f in "$ZSH" "$tmp/_flatpkgd"; do
+		"$ZSH_BIN" -n "$f" || fail "$(basename "$f") does not parse in zsh"
+	done
+else
+	echo "note zsh is not installed; the zsh syntax checks did not run"
+fi
+if [ -n "$FISH_BIN" ]; then
+	for f in "$FISH" "$tmp/flatpkgd.fish"; do
+		"$FISH_BIN" -n "$f" || fail "$(basename "$f") does not parse in fish"
+	done
+else
+	echo "note fish is not installed; the fish syntax checks did not run"
+fi
 
 rc=0
 for opt in socket share unshare device; do
@@ -150,6 +202,14 @@ for opt in socket share unshare device; do
 		echo "FAIL: complete values --$opt offers value(s) the parser rejects: $extra"
 		rc=1
 	}
+	for f in "$BASH" "$ZSH" "$FISH"; do
+		while IFS= read -r v; do
+			grep -Fqw -- "$v" "$f" || {
+				echo "FAIL: $(basename "$f") does not carry --$opt value '$v'"
+				rc=1
+			}
+		done < "$offered"
+	done
 done
 
 # ---- and the vocabulary is written FOUR times ------------------------

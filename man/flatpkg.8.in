@@ -338,7 +338,7 @@ The same bytes are printed by
 .Fl h
 and
 .Nm Ar command Fl h .
-.It Cm complete Ar what
+.It Cm complete Ar what Op Ar arg
 Hidden helper for shell completion.
 .Ar what
 is one of
@@ -350,6 +350,14 @@ is one of
 or
 .Cm commands ,
 and the output is one bare candidate per line.
+.Cm bash ,
+.Cm zsh
+and
+.Cm fish
+write a whole completion script for
+.Ar arg
+.Pq Pa flatpkg , flatpak No or Pa flatpkgd ;
+the script is generated from the same tables as this manual.
 .El
 .Ss RUN OPTIONS
 These are the options

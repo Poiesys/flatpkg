@@ -5,7 +5,7 @@
 #include "flatpkg.h"
 
 int main(int argc, char* argv[]) {
-	if (argc == 2 && strcmp(argv[1], "system-helper") == 0)
+	if (argc == 2 && strcmp(argv[1], FLATPKG_SYSTEM_HELPER_ARG) == 0)
 		return system_helper_main(argc, argv);
 	return daemon_main();
 }

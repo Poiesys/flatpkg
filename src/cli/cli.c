@@ -675,8 +675,10 @@ static const cli_cmd_t commands[] = {
 	{CMD_COMPLETE, "complete", NULL, G_MISC, "List completion candidates",
 	 "KIND [ARG]",
 	 "KIND is apps, refs, runtimes, world, remotes, instances or "
-	 "commands; words, values or man generate the option half of the "
-	 "completions and the man page and are what the shell scripts call.",
+	 "commands; words and values are the table half of the completions, "
+	 "man generates the option sections of the man page, and "
+	 "bash, zsh or fish write a whole completion script for ARG "
+	 "(flatpkg, flatpak or flatpkgd).",
 	 no_opts, 1, 2, CLI_CMD_HIDDEN | CLI_CMD_LOCAL},
 	{CMD_NONE, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, 0}};
 
@@ -763,8 +765,13 @@ void cli_complete_words(const char* cmd) {
 	opt_words(global_opts);
 }
 
-void cli_complete_operands(const char* cmd) {
-	const cli_cmd_t* c = cmd != NULL ? cli_find(cmd) : NULL;
+// The operand kinds a command takes, for both the runtime `complete operands`
+// answer and the generated completion scripts.  At most two; remote-info is
+// the one command that takes a remote and a ref.
+static void command_operands(const cli_cmd_t* c, const char** first,
+			     const char** second) {
+	*first = NULL;
+	*second = NULL;
 	if (c == NULL) return;
 	switch (c->id) {
 	case CMD_INSTALL:
@@ -775,33 +782,42 @@ void cli_complete_operands(const char* cmd) {
 	case CMD_SEARCH:
 	case CMD_LIST_COMMITS:
 	case CMD_OVERRIDE:
-		fp_outl("refs");
+		*first = "refs";
 		break;
 	case CMD_UNINSTALL:
-		fp_outl("world");
+		*first = "world";
 		break;
 	case CMD_RUN:
-		fp_outl("apps");
+		*first = "apps";
 		break;
 	case CMD_ENTER:
 	case CMD_KILL:
-		fp_outl("instances");
+		*first = "instances";
 		break;
 	case CMD_REMOTE_DELETE:
 	case CMD_REMOTE_MODIFY:
-		fp_outl("remotes");
+		*first = "remotes";
 		break;
 	case CMD_REMOTE_INFO:
-		fp_outl("remotes");
-		fp_outl("refs");
+		*first = "remotes";
+		*second = "refs";
 		break;
 	case CMD_IMPORT:
 	case CMD_REMOTE_ADD:
-		fp_outl("files");
+		*first = "files";
 		break;
 	default:
 		break;
 	}
+}
+
+void cli_complete_operands(const char* cmd) {
+	const cli_cmd_t* c = cmd != NULL ? cli_find(cmd) : NULL;
+	const char* first;
+	const char* second;
+	command_operands(c, &first, &second);
+	if (first != NULL) fp_outl("%s", first);
+	if (second != NULL) fp_outl("%s", second);
 }
 
 void cli_complete_values(const char* opt) {
@@ -810,6 +826,428 @@ void cli_complete_values(const char* opt) {
 	const char* const* set = o->choices != NULL ? o->choices : o->values;
 	if (set == NULL) return;
 	for (const char* const* v = set; *v != NULL; v++) fp_outl("%s", *v);
+}
+
+#define COMP_WORDS_MAX 8192
+
+static void comp_word(char* out, size_t n, const char* word) {
+	if (word == NULL || *word == '\0') return;
+	if (out[0] != '\0') strlcat(out, " ", n);
+	strlcat(out, word, n);
+}
+
+static void comp_opt_words(char* out, size_t n, const cli_opt_t* tab) {
+	char word[128];
+	for (const cli_opt_t* o = tab; o->id != OPT_NONE; o++) {
+		if (!opt_visible(o)) continue;
+		if (o->sname != 0) {
+			snprintf(word, sizeof(word), "-%c", o->sname);
+			comp_word(out, n, word);
+		}
+		if (o->lname != NULL) {
+			snprintf(word, sizeof(word), "%s%s", o->lname,
+				 o->arg != NULL ? "=" : "");
+			comp_word(out, n, word);
+		}
+		if (o->alt != NULL) {
+			snprintf(word, sizeof(word), "%s%s", o->alt,
+				 o->arg != NULL ? "=" : "");
+			comp_word(out, n, word);
+		}
+	}
+}
+
+static void comp_cmd_words(const cli_cmd_t* c, char* out, size_t n) {
+	out[0] = '\0';
+	if (c != NULL) comp_opt_words(out, n, c->opts);
+	comp_opt_words(out, n, global_opts);
+}
+
+static void comp_cmd_names(char* out, size_t n) {
+	out[0] = '\0';
+	for (const cli_cmd_t* c = commands; c->name; c++) {
+		comp_word(out, n, c->name);
+		if (c->alias != NULL) comp_word(out, n, c->alias);
+	}
+}
+
+static void comp_cmd_kinds(const cli_cmd_t* c, char* out, size_t n) {
+	const char* first;
+	const char* second;
+	out[0] = '\0';
+	command_operands(c, &first, &second);
+	comp_word(out, n, first);
+	comp_word(out, n, second);
+}
+
+static void comp_value_words(char* out, size_t n, const cli_opt_t* o) {
+	out[0] = '\0';
+	for (const char* const* v = opt_values(o); v != NULL && *v != NULL; v++)
+		comp_word(out, n, *v);
+}
+
+static void comp_line(const char* line) { fp_outl("%s", line); }
+
+static bool comp_bash_values(void) {
+	bool any = false;
+	for (size_t t = 0; opt_tables[t] != NULL; t++)
+		for (const cli_opt_t* o = opt_tables[t]; o->id != OPT_NONE; o++) {
+			if (!opt_visible(o) || o->lname == NULL ||
+			    opt_values(o) == NULL)
+				continue;
+			char vals[1024];
+			comp_value_words(vals, sizeof(vals), o);
+			if (!any) {
+				comp_line("        case \"$opt\" in");
+				any = true;
+			}
+			fp_outl("        %s) vals=\"%s\" ;;", o->lname, vals);
+			if (o->alt != NULL)
+				fp_outl("        %s) vals=\"%s\" ;;", o->alt,
+					vals);
+		}
+	if (any) comp_line("        esac");
+	return any;
+}
+
+static void comp_zsh_values(void) {
+	bool any = false;
+	for (size_t t = 0; opt_tables[t] != NULL; t++)
+		for (const cli_opt_t* o = opt_tables[t]; o->id != OPT_NONE; o++) {
+			if (!opt_visible(o) || o->lname == NULL ||
+			    opt_values(o) == NULL)
+				continue;
+			char vals[1024];
+			comp_value_words(vals, sizeof(vals), o);
+			if (!any) {
+				comp_line("            case $opt in");
+				any = true;
+			}
+			fp_outl("            %s) vals=(%s) ;;", o->lname, vals);
+			if (o->alt != NULL)
+				fp_outl("            %s) vals=(%s) ;;", o->alt,
+					vals);
+		}
+	if (any) comp_line("            esac");
+}
+
+static void comp_fish_values(void) {
+	for (size_t t = 0; opt_tables[t] != NULL; t++)
+		for (const cli_opt_t* o = opt_tables[t]; o->id != OPT_NONE; o++) {
+			if (!opt_visible(o) || o->lname == NULL ||
+			    opt_values(o) == NULL)
+				continue;
+			char vals[1024];
+			char pats[128];
+			comp_value_words(vals, sizeof(vals), o);
+			snprintf(pats, sizeof(pats), "%s%s%s", o->lname,
+				 o->alt != NULL ? " " : "",
+				 o->alt != NULL ? o->alt : "");
+			fp_outl("    case %s", pats);
+			fp_outl("        for v in %s", vals);
+			comp_line("            printf '%s=%s\\n' $opt $v");
+			comp_line("        end");
+		}
+}
+
+static void emit_bash(const char* prog) {
+	char fn[64];
+	char command_list[2048];
+	char global[COMP_WORDS_MAX];
+	snprintf(fn, sizeof(fn), "_%s", prog);
+	comp_cmd_names(command_list, sizeof(command_list));
+	global[0] = '\0';
+	comp_opt_words(global, sizeof(global), global_opts);
+
+	fp_outl("# bash completion for %s.", prog);
+	comp_line("# Generated from the tables in src/cli/cli.c; do not edit.");
+	comp_line("");
+	fp_outl("%s() {", fn);
+	comp_line("    local cur cmd i opt vals words kinds kind");
+	comp_line("    cur=\"${COMP_WORDS[COMP_CWORD]}\"");
+
+	if (strcmp(prog, "flatpkgd") == 0) {
+		comp_line("    if [ \"$COMP_CWORD\" -eq 1 ]; then");
+		fp_outl("        COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))",
+			FLATPKG_SYSTEM_HELPER_ARG);
+		comp_line("    fi");
+		comp_line("    return 0");
+		comp_line("}");
+		comp_line("");
+		fp_outl("complete -F %s %s", fn, prog);
+		return;
+	}
+
+	comp_line("");
+	comp_line("    cmd=\"\"");
+	comp_line("    for ((i = 1; i < COMP_CWORD; i++)); do");
+	comp_line("        case \"${COMP_WORDS[i]}\" in");
+	comp_line("        --) break ;;");
+	comp_line("        -*) ;;");
+	for (const cli_cmd_t* c = commands; c->name; c++) {
+		if (c->alias != NULL)
+			fp_outl("        %s|%s) cmd=\"${COMP_WORDS[i]}\"; break ;;",
+				c->name, c->alias);
+		else
+			fp_outl("        %s) cmd=\"${COMP_WORDS[i]}\"; break ;;",
+				c->name);
+	}
+	comp_line("        esac");
+	comp_line("    done");
+	comp_line("");
+	comp_line("    if [ -z \"$cmd\" ]; then");
+	comp_line("        if [[ \"$cur\" == -* ]]; then");
+	fp_outl("            COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))",
+		global);
+	comp_line("        else");
+	fp_outl("            COMPREPLY=($(compgen -W \"%s\" -- \"$cur\"))",
+		command_list);
+	comp_line("        fi");
+	comp_line("        return 0");
+	comp_line("    fi");
+	comp_line("");
+	comp_line("    case \"$cur\" in");
+	comp_line("    --*=*)");
+	comp_line("        opt=\"${cur%%=*}\"");
+	comp_line("        vals=\"\"");
+	if (comp_bash_values()) {
+		comp_line("        if [ -n \"$vals\" ]; then");
+		comp_line("            COMPREPLY=($(compgen -W \"$vals\" -P \"$opt=\" -- \"${cur#*=}\"))");
+		comp_line("            return 0");
+		comp_line("        fi");
+	}
+	comp_line("        ;;");
+	comp_line("    esac");
+	comp_line("");
+	comp_line("    case \"$cmd\" in");
+	comp_line("    run)");
+	comp_line("        if [[ \"$cur\" != -* ]]; then");
+	comp_line("            local npos=0");
+	comp_line("            for ((i = 2; i < COMP_CWORD; i++)); do");
+	comp_line("                case \"${COMP_WORDS[i]}\" in -*) ;; *) npos=$((npos + 1)) ;; esac");
+	comp_line("            done");
+	comp_line("            if [ \"$npos\" -ge 1 ]; then");
+	comp_line("                COMPREPLY=($(compgen -f -- \"$cur\"))");
+	comp_line("                return 0");
+	comp_line("            fi");
+	comp_line("        fi");
+	comp_line("        ;;");
+	comp_line("    esac");
+	comp_line("");
+	comp_line("    case \"$cmd\" in");
+	for (const cli_cmd_t* c = commands; c->name; c++) {
+		char words[COMP_WORDS_MAX];
+		char kinds[128];
+		comp_cmd_words(c, words, sizeof(words));
+		comp_cmd_kinds(c, kinds, sizeof(kinds));
+		if (c->alias != NULL)
+			fp_outl("    %s|%s) words=\"%s\"; kinds=\"%s\" ;;",
+				c->name, c->alias, words, kinds);
+		else
+			fp_outl("    %s) words=\"%s\"; kinds=\"%s\" ;;",
+				c->name, words, kinds);
+	}
+	fp_outl("    *) words=\"%s\"; kinds=\"\" ;;", global);
+	comp_line("    esac");
+	comp_line("");
+	comp_line("    case \"$kinds\" in");
+	comp_line("    files) COMPREPLY=($(compgen -f -- \"$cur\")); return 0 ;;");
+	comp_line("    \"\") ;;");
+	comp_line("    *) for kind in $kinds; do words=\"$words $(flatpkg complete \"$kind\" 2>/dev/null)\"; done ;;");
+	comp_line("    esac");
+	comp_line("    COMPREPLY=($(compgen -W \"$words\" -- \"$cur\"))");
+	comp_line("    return 0");
+	comp_line("}");
+	comp_line("");
+	fp_outl("complete -F %s %s", fn, prog);
+}
+
+static void emit_zsh(const char* prog) {
+	char fn[64];
+	char command_list[2048];
+	char global[COMP_WORDS_MAX];
+	snprintf(fn, sizeof(fn), "_%s", prog);
+	comp_cmd_names(command_list, sizeof(command_list));
+	global[0] = '\0';
+	comp_opt_words(global, sizeof(global), global_opts);
+
+	fp_outl("#compdef %s", prog);
+	fp_outl("# zsh completion for %s.", prog);
+	comp_line("# Generated from the tables in src/cli/cli.c; do not edit.");
+	comp_line("");
+	if (strcmp(prog, "flatpkgd") == 0) {
+		fp_outl("%s() {", fn);
+		comp_line("    local -a commands");
+		fp_outl("    commands=(%s)", FLATPKG_SYSTEM_HELPER_ARG);
+		comp_line("    _describe -t commands 'command' commands");
+		comp_line("}");
+		comp_line("");
+		fp_outl("%s \"$@\"", fn);
+		return;
+	}
+
+	fp_outl("%s_kind() {", fn);
+	comp_line("    local -a items");
+	comp_line("    items=(${(f)\"$(flatpkg complete $1 2>/dev/null)\"})");
+	comp_line("    (( ${#items} )) && _describe -t $1 $1 items");
+	comp_line("}");
+	comp_line("");
+	fp_outl("%s() {", fn);
+	comp_line("    local curcontext=\"$curcontext\" state cmd opt kind");
+	comp_line("    local -a commands words vals kinds");
+	comp_line("    typeset -A opt_args");
+	comp_line("");
+	comp_line("    _arguments -C \\");
+	comp_line("        '1: :->command' \\");
+	comp_line("        '*::argument:->args'");
+	comp_line("");
+	comp_line("    case $state in");
+	comp_line("    command)");
+	fp_outl("        commands=(%s)", command_list);
+	comp_line("        _describe -t commands 'command' commands");
+	comp_line("        ;;");
+	comp_line("    args)");
+	comp_line("        cmd=\"\"");
+	comp_line("        for w in $words; do");
+	comp_line("            if (( ${commands[(Ie)$w]} )); then cmd=$w; break; fi");
+	comp_line("        done");
+	comp_line("        if [[ $words[CURRENT] == --*=* ]]; then");
+	comp_line("            opt=${words[CURRENT]%%=*}");
+	comp_line("            vals=()");
+	comp_zsh_values();
+	comp_line("            if (( ${#vals} )); then");
+	comp_line("                compadd -P \"$opt=\" -a vals");
+	comp_line("                return");
+	comp_line("            fi");
+	comp_line("        fi");
+	comp_line("        case $cmd in");
+	for (const cli_cmd_t* c = commands; c->name; c++) {
+		char words[COMP_WORDS_MAX];
+		char kinds[128];
+		comp_cmd_words(c, words, sizeof(words));
+		comp_cmd_kinds(c, kinds, sizeof(kinds));
+		if (c->alias != NULL)
+			fp_outl("        %s|%s) words=(%s); kinds=(%s) ;;",
+				c->name, c->alias, words, kinds);
+		else
+			fp_outl("        %s) words=(%s); kinds=(%s) ;;",
+				c->name, words, kinds);
+	}
+	fp_outl("        *) words=(%s); kinds=() ;;", global);
+	comp_line("        esac");
+	comp_line("        (( ${#words} )) && _describe -t options 'option' words");
+	comp_line("        for kind in $kinds; do");
+	comp_line("            case $kind in");
+	comp_line("            files) _files ;;");
+	fp_outl("            *) %s_kind $kind ;;", fn);
+	comp_line("            esac");
+	comp_line("        done");
+	comp_line("        ;;");
+	comp_line("    esac");
+	comp_line("}");
+	comp_line("");
+	fp_outl("%s \"$@\"", fn);
+}
+
+static void emit_fish(const char* prog) {
+	char fn[64];
+	char command_list[2048];
+	char global[COMP_WORDS_MAX];
+	snprintf(fn, sizeof(fn), "__%s", prog);
+	comp_cmd_names(command_list, sizeof(command_list));
+	global[0] = '\0';
+	comp_opt_words(global, sizeof(global), global_opts);
+
+	fp_outl("# fish completion for %s.", prog);
+	comp_line("# Generated from the tables in src/cli/cli.c; do not edit.");
+	comp_line("");
+
+	if (strcmp(prog, "flatpkgd") == 0) {
+		fp_outl("function %s_commands", fn);
+		fp_outl("    printf '%%s\\n' %s", FLATPKG_SYSTEM_HELPER_ARG);
+		comp_line("end");
+		comp_line("");
+		fp_outl("complete -c %s -f -n \"not __fish_seen_subcommand_from (%s_commands)\" -a \"(%s_commands)\"",
+			prog, fn, fn);
+		return;
+	}
+
+	fp_outl("function %s_commands", fn);
+	fp_outl("    printf '%%s\\n' %s", command_list);
+	comp_line("end");
+	comp_line("");
+	fp_outl("function %s_words", fn);
+	comp_line("    switch (commandline -opc)[2]");
+	for (const cli_cmd_t* c = commands; c->name; c++) {
+		char words[COMP_WORDS_MAX];
+		comp_cmd_words(c, words, sizeof(words));
+		if (c->alias != NULL)
+			fp_outl("    case %s %s", c->name, c->alias);
+		else
+			fp_outl("    case %s", c->name);
+		fp_outl("        printf '%%s\\n' %s", words);
+	}
+	comp_line("    case '*'");
+	fp_outl("        printf '%%s\\n' %s", global);
+	comp_line("    end");
+	comp_line("end");
+	comp_line("");
+	fp_outl("function %s_operands", fn);
+	comp_line("    set -l kinds");
+	comp_line("    switch (commandline -opc)[2]");
+	for (const cli_cmd_t* c = commands; c->name; c++) {
+		char kinds[128];
+		comp_cmd_kinds(c, kinds, sizeof(kinds));
+		if (kinds[0] == '\0') continue;
+		if (c->alias != NULL)
+			fp_outl("    case %s %s", c->name, c->alias);
+		else
+			fp_outl("    case %s", c->name);
+		fp_outl("        set kinds %s", kinds);
+	}
+	comp_line("    end");
+	comp_line("    for kind in $kinds");
+	fp_outl("        flatpkg complete $kind 2>/dev/null");
+	comp_line("    end");
+	comp_line("end");
+	comp_line("");
+	fp_outl("function %s_opt_values", fn);
+	comp_line("    set -l ct (commandline -ct)");
+	comp_line("    string match -q -- '--*=*' $ct; or return");
+	comp_line("    set -l opt (string split -m1 = -- $ct)[1]");
+	comp_line("    switch $opt");
+	comp_fish_values();
+	comp_line("    end");
+	comp_line("end");
+	comp_line("");
+	fp_outl("for prog in %s", prog);
+	fp_outl("    complete -c $prog -f -n \"not __fish_seen_subcommand_from (%s_commands)\" -a \"(%s_commands)\"",
+		fn, fn);
+	fp_outl("    for cmd in (%s_commands)", fn);
+	fp_outl("        complete -c $prog -f -n \"__fish_seen_subcommand_from $cmd\" -a \"(%s_words)\"",
+		fn);
+	fp_outl("        complete -c $prog -f -n \"__fish_seen_subcommand_from $cmd\" -a \"(%s_operands)\"",
+		fn);
+	comp_line("    end");
+	fp_outl("    complete -c $prog -f -a \"(%s_opt_values)\"", fn);
+	comp_line("end");
+}
+
+int cli_complete_shell(const char* shell, const char* prog) {
+	assert(shell != NULL);
+	if (prog == NULL) prog = "flatpkg";
+	if (strcmp(prog, "flatpkg") != 0 && strcmp(prog, "flatpak") != 0 &&
+	    strcmp(prog, "flatpkgd") != 0)
+		return -1;
+	if (strcmp(shell, "bash") == 0)
+		emit_bash(prog);
+	else if (strcmp(shell, "zsh") == 0)
+		emit_zsh(prog);
+	else if (strcmp(shell, "fish") == 0)
+		emit_fish(prog);
+	else
+		return -1;
+	return 0;
 }
 
 static void man_opt_head(const cli_opt_t* o) {

@@ -14,6 +14,8 @@
 #include "fplog.h"
 
 #define FLATPKG_VERSION "0.1.0"
+// flatpkgd's one service-entry word, shared with its completion script.
+#define FLATPKG_SYSTEM_HELPER_ARG "system-helper"
 
 // A compile-time setting; nothing at run time can move it for root.
 #ifndef FLATPKG_STORE_DIR

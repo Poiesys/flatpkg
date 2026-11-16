@@ -40,11 +40,15 @@ scripts/org.freedesktop.Flatpak.SystemHelper.conf|$PREFIX/etc/dbus-1/system.d/or
 scripts/flatpkg-helper.conf|$PREFIX/etc/flatpkg/helper.conf
 scripts/flatpkg.sh|$PREFIX/etc/profile.d/flatpkg.sh
 scripts/99-flatpkg.conf|$PREFIX/lib/environment.d/99-flatpkg.conf
-completions/flatpkg.bash|$PREFIX/share/bash-completion/completions/flatpkg
-completions/flatpkg.bash|$PREFIX/share/bash-completion/completions/flatpak
-completions/_flatpkg|$PREFIX/share/zsh/site-functions/_flatpkg
-completions/flatpkg.fish|$PREFIX/share/fish/vendor_completions.d/flatpkg.fish
-completions/flatpkg.fish|$PREFIX/share/fish/vendor_completions.d/flatpak.fish"
+build/completions/bash/flatpkg|$PREFIX/share/bash-completion/completions/flatpkg
+build/completions/bash/flatpak|$PREFIX/share/bash-completion/completions/flatpak
+build/completions/bash/flatpkgd|$PREFIX/share/bash-completion/completions/flatpkgd
+build/completions/zsh/_flatpkg|$PREFIX/share/zsh/site-functions/_flatpkg
+build/completions/zsh/_flatpak|$PREFIX/share/zsh/site-functions/_flatpak
+build/completions/zsh/_flatpkgd|$PREFIX/share/zsh/site-functions/_flatpkgd
+build/completions/fish/flatpkg.fish|$PREFIX/share/fish/vendor_completions.d/flatpkg.fish
+build/completions/fish/flatpak.fish|$PREFIX/share/fish/vendor_completions.d/flatpak.fish
+build/completions/fish/flatpkgd.fish|$PREFIX/share/fish/vendor_completions.d/flatpkgd.fish"
 
 checked=0
 stale=""
