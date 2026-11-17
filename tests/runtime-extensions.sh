@@ -23,10 +23,12 @@ note() {
 	fail=1
 }
 
-# The runtime declares one extension group; the extension is a runtime ref of
-# its own, which is how flatpak publishes GL, Locale and friends.
-mkdir -p "$T/app/files" "$T/rt/files" "$T/ext/files"
-printf '[Application]\nname=org.example.App\ncommand=/bin/true\nruntime=org.example.Platform/x86_64/stable\n' \
+# The app's own Locale extension is published on the APP's branch; the
+# runtime's extensions (GL) on the runtime's.  The runtime is on 26.08 and
+# the app on stable, so a plan that puts the Locale on 26.08 pulls a ref the
+# remote does not have - the first-install failure this guards.
+mkdir -p "$T/app/files" "$T/rt/files" "$T/ext/files" "$T/loc/files"
+printf '[Application]\nname=org.example.App\ncommand=/bin/true\nruntime=org.example.Platform/x86_64/26.08\n\n[Extension org.example.App.Locale]\ndirectory=share/runtime/locale\n' \
 	>"$T/app/metadata"
 echo app >"$T/app/files/app.txt"
 printf '[Runtime]\nname=org.example.Platform\n\n[Extension org.example.GL]\ndirectory=GL\n' \
@@ -34,13 +36,17 @@ printf '[Runtime]\nname=org.example.Platform\n\n[Extension org.example.GL]\ndire
 echo runtime >"$T/rt/files/runtime.txt"
 printf '[Runtime]\nname=org.example.GL\n' >"$T/ext/metadata"
 echo gl >"$T/ext/files/gl.txt"
+printf '[Runtime]\nname=org.example.App.Locale\n' >"$T/loc/metadata"
+echo locale >"$T/loc/files/locale.txt"
 ostree --repo="$T/repo" init --mode=archive >/dev/null
 ostree --repo="$T/repo" commit -b app/org.example.App/x86_64/stable \
 	--tree="dir=$T/app" -s app >/dev/null 2>&1
-ostree --repo="$T/repo" commit -b runtime/org.example.Platform/x86_64/stable \
+ostree --repo="$T/repo" commit -b runtime/org.example.Platform/x86_64/26.08 \
 	--tree="dir=$T/rt" -s runtime >/dev/null 2>&1
-ostree --repo="$T/repo" commit -b runtime/org.example.GL/x86_64/stable \
+ostree --repo="$T/repo" commit -b runtime/org.example.GL/x86_64/26.08 \
 	--tree="dir=$T/ext" -s gl >/dev/null 2>&1
+ostree --repo="$T/repo" commit -b runtime/org.example.App.Locale/x86_64/stable \
+	--tree="dir=$T/loc" -s locale >/dev/null 2>&1
 ostree --repo="$T/repo" summary -u >/dev/null
 
 scratchd_start
@@ -51,7 +57,8 @@ run() {
 	"$SD_BIN" "$@" </dev/null
 }
 
-ext="$SD_STORE/extension/org.example.GL/x86_64/stable"
+ext="$SD_STORE/extension/org.example.GL/x86_64/26.08"
+loc="$SD_STORE/extension/org.example.App.Locale/x86_64/stable"
 
 run remote-add --if-not-exists local "file://$T/repo" >/dev/null 2>&1 ||
 	note "remote-add of a local repository failed"
@@ -59,6 +66,8 @@ run install -y local org.example.App >/dev/null 2>&1 ||
 	note "install from the local remote failed"
 [ -d "$ext" ] ||
 	note "the runtime's extension was never installed"
+[ -d "$loc" ] ||
+	note "the app's own Locale extension was not installed on the app branch"
 
 # Now the runtime stays and the extension is gone: a plain install of the app
 # has to notice, because nothing else plans a runtime the store already has.
@@ -69,6 +78,7 @@ run install -y local org.example.App >/dev/null 2>&1 || true
 	note "installing the app did not heal the missing runtime extension"
 
 [ "$fail" -eq 0 ] &&
-	echo "PASS: a runtime's extensions are installed with it, and an install"
-echo "      of an app heals them when only the runtime is still there"
+	echo "PASS: a runtime's extensions are installed on the runtime branch, the"
+echo "      app's own Locale on the app branch, and an install of an app heals"
+echo "      a missing runtime extension"
 exit "$fail"

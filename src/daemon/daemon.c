@@ -164,6 +164,9 @@ int daemon_main(void) {
 	}
 	store_repair_ownership();
 	ostree_summary_cache_own();
+	// A missing world is the installed set; persist that once as root so a
+	// read-only client does not have to write the store to see it.
+	(void)world_seed();
 
 	for (;;) {
 		struct pollfd pfd[1 + BUS_MAX_PEERS];

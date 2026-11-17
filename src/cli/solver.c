@@ -173,6 +173,26 @@ char* world_to_text(const flatpkg_dep_array_t* world) {
 	return buf;
 }
 
+// The installed set as a world, in memory: a missing worldfile is the
+// installed set, and the first writer (the daemon's world_add, or the
+// client's state write) persists it.  A reader must not write the store.
+static int world_seed_memory(flatpkg_dep_array_t* out) {
+	char** ids = NULL;
+	size_t n = 0;
+
+	if (store_list(&ids, &n) != 0) return -1;
+	for (size_t i = 0; i < n; i++) {
+		flatpkg_dep_t dep = {0};
+
+		dep.kind = FLATPKG_DEP_KIND_APP;
+		dep.name = ids[i];
+		world_dep_add(out, &dep);
+	}
+	for (size_t i = 0; i < n; i++) free(ids[i]);
+	free(ids);
+	return 0;
+}
+
 // Load the worldfile; a line the parser drops warns, because the solver
 // must not silently keep or remove something the caller did not write.
 int world_load(flatpkg_dep_array_t* out) {
@@ -186,24 +206,15 @@ int world_load(flatpkg_dep_array_t* out) {
 		f = fopen(path, "r");
 	}
 	if (!f) {
-		// Missing is empty: seed once, then read what appeared.  A file
-		// that still will not open is an error - solving against an
-		// empty world would plan to remove everything it references.
+		// A missing file is the installed set.  A file that cannot be
+		// opened is an error: solving against an empty world would plan
+		// to remove everything it references.
 		if (errno != ENOENT) {
 			fpkg_errorf("cannot open %s: %s", path,
 				    strerror(errno));
 			return -1;
 		}
-		if (world_seed() != 0) return -1;
-		f = fopen(path, "r");
-		if (!f) {
-			if (errno != ENOENT) {
-				fpkg_errorf("cannot open %s: %s", path,
-					    strerror(errno));
-				return -1;
-			}
-			return 0;
-		}
+		return world_seed_memory(out);
 	}
 	char line[1024];
 	unsigned long lineno = 0;
@@ -559,6 +570,16 @@ static bool installed_has(char** installed, size_t n, const char* type,
 	return false;
 }
 
+// An extension group in an app's metadata is either the app's own (its
+// Locale, its Debug: the id starts with the app's) or one of its runtime's.
+static bool app_own_extension(const char* app_id, const char* ext_id) {
+	size_t n;
+
+	if (app_id == NULL || ext_id == NULL) return false;
+	n = strlen(app_id);
+	return strncmp(ext_id, app_id, n) == 0 && ext_id[n] == '.';
+}
+
 int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 		 flatpkg_changeset_t* cs_out, const solver_incoming_t* incoming,
 		 size_t nincoming) {
@@ -710,15 +731,18 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 		const char* ibranch =
 			inc->ref.branch ? inc->ref.branch : "stable";
 
-		// An extension is versioned by the runtime it extends, not by the
-		// app's branch: an app on branch master extends 24.08, and flathub
-		// publishes gamescope for 22.08..24.08, never for master.
+		// An extension of the app's runtime (GL, codecs, gamescope) is
+		// versioned by the runtime, not by the app's branch: an app on
+		// branch master extends 24.08, and flathub publishes gamescope
+		// for 22.08..24.08, never for master.  The app's own extensions
+		// (its Locale, its Debug) are published on the app's branch.
 		const char* ebranch = ibranch;
+		const char* rbranch = ibranch;
 		fpkg_ref_t rt;
 		bool have_rt = inc->meta.runtime_ref && *inc->meta.runtime_ref &&
 			       ref_parse(inc->meta.runtime_ref, &rt) == 0;
 		if (have_rt) {
-			const char* rbranch = rt.branch ? rt.branch : "stable";
+			rbranch = rt.branch ? rt.branch : "stable";
 			ebranch = rbranch;
 			if (!installed_has(installed, ninst, "runtime", rt.id,
 					   rt.branch)) {
@@ -733,9 +757,13 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 		for (size_t g = 0; g < inc->meta.next_groups; g++) {
 			const fp_ext_group_t* grp = &inc->meta.ext_groups[g];
 			if (!grp->id || !*grp->id) continue;
+			const char* gbranch = app_own_extension(
+						      inc->ref.id, grp->id)
+						  ? ibranch
+						  : ebranch;
 			const char* branches[16];
 			size_t nb = ostree_group_install_branches(
-				grp, iarch, ebranch, branches, 16);
+				grp, iarch, gbranch, branches, 16);
 			for (size_t b = 0; b < nb; b++) {
 				char eref[512];
 				snprintf(eref, sizeof(eref),
