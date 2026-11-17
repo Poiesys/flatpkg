@@ -763,6 +763,15 @@ static void child_set_environment(sandbox_t* sb, const fp_metadata_t* meta,
 	setenv("TMPDIR", "/var/tmp", 1);
 	child_set_socket_env(sb, plan);
 	child_set_metadata_env(meta, plan);
+	if (metadata_wants_user_flatpak(meta)) {
+		// The app asked for a user installation; share the real one
+		// with libflatpak instead of the private app-data copy.
+		char userdir[PATH_MAX];
+
+		snprintf(userdir, sizeof(userdir), "%s/.local/share/flatpak",
+			 plan->home_dir);
+		setenv("FLATPAK_USER_DIR", userdir, 1);
+	}
 }
 
 static void child_exec(const fp_metadata_t* meta, const sandbox_plan_t* plan,

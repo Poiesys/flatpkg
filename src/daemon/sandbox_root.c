@@ -3060,6 +3060,47 @@ static int stage_home(sandbox_t* sb, const sandbox_plan_t* plan) {
 	return 0;
 }
 
+// An app declaring xdg-data/flatpak gets the real user installation, not a
+// private copy under its data dir: libflatpak then manages the same
+// ~/.local/share/flatpak as `flatpkg --user`.  Create it as the caller (never
+// through a root path) and refuse an installation another uid owns.
+static int stage_user_store(sandbox_t* sb, const sandbox_plan_t* plan,
+			    const fp_metadata_t* meta) {
+	char host[PATH_MAX], target[PATH_MAX];
+	struct stat st;
+
+	if (!metadata_wants_user_flatpak(meta)) return 0;
+	snprintf(host, sizeof(host), "%s/.local/share/flatpak", plan->home_dir);
+	if (stat(host, &st) != 0) {
+		if (mkdir_as_caller(plan, host, 0755) != 0) {
+			fpkg_warnf("cannot create the user installation %s: %s",
+				   host, strerror(errno));
+			return 0;
+		}
+		if (stat(host, &st) != 0) {
+			fpkg_warnf("cannot stat the user installation %s: %s",
+				   host, strerror(errno));
+			return 0;
+		}
+	}
+	if (!S_ISDIR(st.st_mode) || st.st_uid != plan->uid) {
+		fpkg_warnf("the user installation %s is not %s's directory",
+			   host, plan->user_name);
+		return 0;
+	}
+	snprintf(target, sizeof(target), "%s%s/.local/share/flatpak",
+		 sb->jailroot, plan->home_dir);
+	if (mkdir_p(target, 0755) != 0) {
+		fpkg_warnf("mkdir %s: %s", target, strerror(errno));
+		return 0;
+	}
+	if (m_nullfs(sb, host, target, false) != 0) {
+		fpkg_warnf("cannot mount the user installation at %s", target);
+		return 0;
+	}
+	return 0;
+}
+
 // FreeBSD cannot narrow a mount with a later one: nullfs refuses a target that
 // already resolves to the same lower vnode, so the narrower grant would be
 // dropped and the wider mode would rule the child.  The wider grant is left
@@ -4073,6 +4114,7 @@ int sandbox_build_root(sandbox_t* sb, const sandbox_plan_t* plan,
 	if (stage_host_mounts(sb, plan) != 0) return -1;
 	if (stage_home(sb, plan) != 0) return -1;
 	if (stage_grants(sb, plan) != 0) return -1;
+	if (stage_user_store(sb, plan, meta) != 0) return -1;
 	if (stage_sockets(sb, plan) != 0) return -1;
 	if (stage_flatpak_info(sb) != 0) return -1;
 	if (stage_proc_sys(sb) != 0) return -1;

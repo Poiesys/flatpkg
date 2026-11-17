@@ -225,6 +225,9 @@ typedef struct {
 } fp_metadata_t;
 
 int fp_metadata_parse(const char* path, fp_metadata_t* out);
+// xdg-data/flatpak: the app manages a user installation.  Its
+// FLATPAK_USER_DIR is the real ~/.local/share/flatpak, not the private one.
+bool metadata_wants_user_flatpak(const fp_metadata_t* meta);
 int fp_metadata_parse_any(const char* path, fp_metadata_t* out);
 void fp_metadata_free(fp_metadata_t* m);
 

@@ -871,6 +871,18 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 	return 0;
 }
 
+bool metadata_wants_user_flatpak(const fp_metadata_t* meta) {
+	assert(meta != NULL);
+	for (size_t i = 0; i < meta->filesystems.count; i++) {
+		const char* f = meta->filesystems.items[i];
+
+		if (strncmp(f, "xdg-data/flatpak", 16) == 0 &&
+		    (f[16] == '\0' || f[16] == ':'))
+			return true;
+	}
+	return false;
+}
+
 void permissions_free_plan(sandbox_plan_t* plan) {
 	assert(plan != NULL);
 	for (size_t i = 0; i < plan->ngrants; i++) {
