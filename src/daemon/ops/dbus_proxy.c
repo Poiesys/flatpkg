@@ -430,6 +430,10 @@ int dbus_start_proxies(sandbox_t* sb, const sandbox_plan_t* plan) {
 				   "uses the raw socket bind (set "
 				   "FLATPAK_DBUSPROXY "
 				   "to enable filtering)");
+		else
+			fpkg_warnf("xdg-dbus-proxy not found; the app gets "
+				   "no session bus (install "
+				   "devel/xdg-dbus-proxy)");
 		return 0;
 	}
 

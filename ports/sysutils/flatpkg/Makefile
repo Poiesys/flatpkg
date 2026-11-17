@@ -15,7 +15,8 @@ LIB_DEPENDS=	libglib-2.0.so:devel/glib20 \
 # The ostree CLI drives the store, so it is a runtime tool.  The libostree
 # port ships in this repository's ports/ overlay: a merged tree gets the
 # dependency, a stock one is pointed at it by pkg-message.
-RUN_DEPENDS=	${LOCALBASE}/bin/dbus-daemon:devel/dbus
+RUN_DEPENDS=	${LOCALBASE}/bin/dbus-daemon:devel/dbus \
+		${LOCALBASE}/bin/xdg-dbus-proxy:devel/xdg-dbus-proxy
 .if exists(${PORTSDIR}/sysutils/libostree)
 RUN_DEPENDS+=	${LOCALBASE}/bin/ostree:sysutils/libostree
 .endif
