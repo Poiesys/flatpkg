@@ -2,6 +2,7 @@
 #define FPKG_MODULE "daemon"
 #include "fpkglog.h"
 #include "typed_worker.h"
+#include "repo.h"
 #include "bus.h"
 
 #include <grp.h>
@@ -213,7 +214,8 @@ int daemon_main(bool user) {
 	}
 	// One daemon owns the run dir now; a tree no jail refers to is a leak.
 	if (!g_user) sandbox_gc_leaks();
-	fpkg_infof("flatpkg daemon listening on %s", g_socket);
+	fpkg_infof("flatpkg daemon listening on %s (libostree %s)", g_socket,
+		   fp_repo_version());
 
 	if (mkdir_p(g_store, 0775) != 0) {
 		fpkg_errorf("mkdir %s: %s", g_store, strerror(errno));

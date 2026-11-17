@@ -703,8 +703,6 @@ static int dispatch_local(const cli_req_t* r) {
 		return cmd_repair(r->g.simulate);
 	case CMD_OVERRIDE:
 		return cmd_override(r);
-	case CMD_REMOTE_LIST:
-		return cmd_remote_list();
 	case CMD_COMPLETE:
 		return cmd_complete(op[0], r->nops > 1 ? op[1] : NULL);
 	default:

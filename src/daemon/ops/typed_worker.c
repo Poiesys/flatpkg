@@ -21,6 +21,7 @@
 #include "evui.h"
 #include "protocol.h"
 #include "typed_worker.h"
+#include "../repo.h"
 #include "../bus.h"
 
 typedef struct {
@@ -968,6 +969,44 @@ static void prefetch_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	op_finish(c, rc, "prefetch failed");
 }
 
+static void remote_list_request(wctx_t* c, uint32_t id) {
+	op_start(c, id, 13, "remote-list");
+	int rc = cmd_remote_list();
+	op_finish(c, rc, "remote-list failed");
+}
+
+static void local_ref_info_request(wctx_t* c, uint32_t id,
+				    const fp_req_t* r) {
+	const char* remote = nz(r->u.local_ref_info.remote);
+	const char* ref = nz(r->u.local_ref_info.ref);
+	char commit[65];
+	char* metadata = NULL;
+	char* error = NULL;
+	fp_event_t ev;
+
+	if (remote == NULL || !remote_name_valid(remote) || ref == NULL ||
+	    *ref == '\0') {
+		ack_err(c, id, FP_E_INVALID, "invalid local ref request");
+		return;
+	}
+	if (fp_repo_local_ref_info(store_root(), remote, ref, commit,
+				   &metadata, &error) != 0) {
+		ack_err(c, id, FP_E_INVALID,
+			error != NULL ? error : "local ref lookup failed");
+		free(error);
+		return;
+	}
+	op_start(c, id, 11, "local-ref-info");
+	memset(&ev, 0, sizeof(ev));
+	ev.type = FP_EV_META;
+	ev.u.meta.ref = (char*)ref;
+	ev.u.meta.commit = commit;
+	ev.u.meta.metadata = metadata;
+	send_event(c, &ev);
+	op_finish(c, 0, "local-ref-info failed");
+	free(metadata);
+}
+
 // A client name belongs to the uid that first declared it: the namespace is
 // the caller's own string, and another group member's state is not theirs to
 // read or to overwrite.  flatpkg's own name is the installation's, shared by
@@ -1287,6 +1326,12 @@ static void handle(wctx_t* c, uint32_t id, fp_req_t* r) {
 		return;
 	case FP_REQ_APPSTREAM:
 		appstream_request(c, id, r);
+		return;
+	case FP_REQ_LOCAL_REF_INFO:
+		local_ref_info_request(c, id, r);
+		return;
+	case FP_REQ_REMOTE_LIST:
+		remote_list_request(c, id);
 		return;
 	case FP_REQ_INSTALL_BUNDLE:
 	case FP_REQ_STDIO:

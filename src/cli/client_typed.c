@@ -278,6 +278,9 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned,
 		out->u.remote_add.from = (char*)(from != NULL ? from : "");
 		return n > 0;
 	}
+	case CMD_REMOTE_LIST:
+		out->type = FP_REQ_REMOTE_LIST;
+		return true;
 	case CMD_REMOTE_DELETE:
 		out->type = FP_REQ_REMOTE_DELETE;
 		out->u.remote_delete.name = (char*)(n > 0 ? op[0] : "");
@@ -599,6 +602,11 @@ static int start_user_daemon(const char* path) {
 	return -1;
 }
 
+static int typed_unreachable(const typed_ctx_t* c, int err) {
+	return daemon_unreachable_path(c->user ? c->user_socket : FPKG_SOCKET,
+				       err);
+}
+
 static int typed_connect(typed_ctx_t* c) {
 	const char* path = c->user ? c->user_socket : FPKG_SOCKET;
 	bool started = false;
@@ -637,7 +645,7 @@ static int typed_handshake(typed_ctx_t* c) {
 	hello.u.hello.client = "flatpkg";
 	e = send_req(c->fd, 1, &hello);
 	if (e != 0 || read_ack(c->fd, NULL) != 0)
-		return daemon_unreachable(e ? e : EIO);
+		return typed_unreachable(c, e ? e : EIO);
 	send_env(c->fd, 2);
 	if ((c->plan_install || c->plan_remove || c->plan_upgrade) &&
 	    state_declare(c->fd, 8, "world") != 0) {
@@ -669,7 +677,7 @@ static int typed_send_stdio(typed_ctx_t* c) {
 	if (e == FP_P_OK) e = fp_frame_send(c->fd, nvl);
 	nvlist_destroy(nvl);
 	if (e != FP_P_OK || read_ack(c->fd, NULL) != 0)
-		return daemon_unreachable(EIO);
+		return typed_unreachable(c, EIO);
 	return 0;
 }
 
@@ -874,9 +882,9 @@ static int typed_send_request(typed_ctx_t* c) {
 	} else {
 		e = send_req(c->fd, c->req_id, &c->typed);
 	}
-	if (e != 0) return daemon_unreachable(e);
+	if (e != 0) return typed_unreachable(c, e);
 	int rc = read_ack(c->fd, &op_id);
-	if (rc != 0) return rc < 0 ? daemon_unreachable(EIO) : rc;
+	if (rc != 0) return rc < 0 ? typed_unreachable(c, EIO) : rc;
 	return 0;
 }
 

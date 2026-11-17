@@ -60,6 +60,23 @@ run --user complete apps 2>/dev/null | grep -qx org.example.UserOnly ||
 	note "the installed app is not in the user store"
 [ -d "$T/home/.local/share/flatpak/app/org.example.UserOnly" ] ||
 	note "the app was not deployed into the user store"
+
+# The user daemon must be able to store a remote's GPG key in its own store:
+# the keys directory and the key belong to the user, not to root.  A dummy
+# key is enough; the key file is written before ostree rejects the key.
+printf '[Flatpak Repo]\nUrl=file://%s\nGPGKey=%s\n' "$T/repo" \
+	"$(printf test | base64)" > "$T/bad.flatpakrepo"
+run --user remote-add --from="$T/bad.flatpakrepo" badkey >/dev/null 2>&1 || true
+key="$T/home/.local/share/flatpak/keys/badkey.gpg"
+[ -f "$key" ] || note "the user daemon did not store the remote key"
+if [ -f "$key" ]; then
+	[ "$(stat -f '%Su' "$key")" = "$(id -un)" ] ||
+		note "the remote key is not owned by the user"
+	[ "$(stat -f '%Lp' "$key")" = 600 ] ||
+		note "the remote key is not 0600"
+	[ "$(stat -f '%Su' "$T/home/.local/share/flatpak/keys")" = \
+		"$(id -un)" ] || note "the user keys directory is not the user's"
+fi
 [ -e /var/db/flatpkg/app/org.example.UserOnly ] &&
 	note "the user installation wrote the system store"
 

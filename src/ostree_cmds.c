@@ -54,8 +54,15 @@ static int write_key_file(const char* name, const char* armored) {
 		errno = ENOTDIR;
 		return -1;
 	}
-	if (st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-		if (fchmod(dfd, 0755) != 0 || fchown(dfd, 0, 0) != 0) {
+	// The keys directory belongs to whoever owns the store: root for the
+	// system installation, the caller for a --user daemon.  Compare the
+	// owner, not the process's gid: a --user daemon's worker may carry a
+	// root real gid from the daemon setup, and forcing that gid onto a
+	// user-owned directory is EPERM.  Keep the directory's gid.
+	if (st.st_uid != getuid() ||
+	    (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+		if (fchmod(dfd, 0755) != 0 ||
+		    fchown(dfd, getuid(), st.st_gid) != 0) {
 			e = errno;
 			close(dfd);
 			errno = e;

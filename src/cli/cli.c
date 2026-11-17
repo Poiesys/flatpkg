@@ -662,7 +662,7 @@ static const cli_cmd_t commands[] = {
 	 "Change the URL, the GPG settings or the imported keys of an "
 	 "existing remote.", remote_modify_opts, 1, 1, 0},
 	{CMD_REMOTE_LIST, "remote-list", "remotes", G_REMOTE,
-	 "List configured remotes", NULL, NULL, no_opts, 0, 0, CLI_CMD_LOCAL},
+	 "List configured remotes", NULL, NULL, no_opts, 0, 0, 0},
 	{CMD_REMOTE_DELETE, "remote-delete", NULL, G_REMOTE,
 	 "Remove a remote repository", "NAME", NULL, no_opts, 1, 1, 0},
 

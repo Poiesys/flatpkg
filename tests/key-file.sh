@@ -3,7 +3,8 @@
 # is written through live in directories a group member may be able to write:
 # the writer opens the directory, never follows a symlink in place of the key,
 # replaces rather than truncates it, and creates it 0600.  The keys directory
-# itself is root's and 0755.
+# belongs to the store's owner: 0:0 for the system installation, the caller for
+# a --user daemon.  A fixed 0:0 made the user daemon's first remote-add EPERM.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SRC="$ROOT/src/shared/util.c"
@@ -87,10 +88,12 @@ check() {
 		bug "the key is not written through the opened directory"
 	grep -q 'fchmod(dfd, 0755)' "$key" ||
 		bug "the keys directory is not made 0755"
-	grep -q 'fchown(dfd, 0, 0)' "$key" ||
-		bug "the keys directory is not made root's"
-	grep -q 'st.st_uid != 0' "$key" ||
-		bug "the keys directory's owner is not checked"
+	grep -q 'fchown(dfd, getuid(), st.st_gid)' "$key" ||
+		bug "the keys directory is not made the store owner's"
+	grep -q 'st.st_uid != getuid()' "$key" ||
+		bug "the keys directory's uid is not checked"
+	grep -q 'st.st_gid != getgid()' "$key" &&
+		bug "the keys directory's gid is forced to the worker's gid"
 
 	grep -q 'O_CREAT | O_EXCL | O_NOFOLLOW' "$secret" ||
 		bug "a key is created without O_EXCL and O_NOFOLLOW"
@@ -110,6 +113,17 @@ if cmp -s "$T/key.inc" "$T/plant-key.inc"; then
 	exit 1
 fi
 prove "a key written by the generic writer" check "$T/plant-key.inc" \
+	"$T/secret.inc"
+
+# The owner is the store's, not a fixed root: a user daemon must be able to
+# create the directory it owns.
+sed 's/fchown(dfd, getuid(), st.st_gid)/fchown(dfd, 0, 0)/' \
+	"$T/key.inc" > "$T/plant-owner.inc"
+if cmp -s "$T/key.inc" "$T/plant-owner.inc"; then
+	echo "FAIL: the owner plant was not applied"
+	exit 1
+fi
+prove "a keys directory forced to root" check "$T/plant-owner.inc" \
 	"$T/secret.inc"
 
 # O_EXCL is what makes the create exhaustive rather than in place.

@@ -284,6 +284,13 @@ int fp_req_encode(nvlist_t** out, uint32_t id, const fp_req_t* r) {
 			e = add_strlist(nvl, "refs", r->u.prefetch.refs,
 					r->u.prefetch.nrefs);
 		break;
+	case FP_REQ_LOCAL_REF_INFO:
+		e = add_str(nvl, "remote", r->u.local_ref_info.remote);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "ref", r->u.local_ref_info.ref);
+		break;
+	case FP_REQ_REMOTE_LIST:
+		break;
 	case FP_REQ_ENTER:
 		e = add_str(nvl, "instance", r->u.enter.instance);
 		if (e == FP_P_OK)
@@ -565,6 +572,12 @@ void fp_req_free(fp_req_t* r) {
 	case FP_REQ_PREFETCH:
 		free(r->u.prefetch.remote);
 		fp_strlist_free(r->u.prefetch.refs, r->u.prefetch.nrefs);
+		break;
+	case FP_REQ_LOCAL_REF_INFO:
+		free(r->u.local_ref_info.remote);
+		free(r->u.local_ref_info.ref);
+		break;
+	case FP_REQ_REMOTE_LIST:
 		break;
 	case FP_REQ_APPLY:
 		free(r->u.apply.remote);
@@ -950,6 +963,16 @@ int fp_req_decode(const nvlist_t* nvl, uint32_t* id_out, fp_req_t* out) {
 		    (out->u.prefetch.nrefs == 0 ||
 		     out->u.prefetch.nrefs > FP_APPLY_MAX))
 			err = FP_P_ERR_MALFORMED;
+		break;
+	case FP_REQ_LOCAL_REF_INFO:
+		out->u.local_ref_info.remote = dup_str(nvl, "remote", &err);
+		out->u.local_ref_info.ref = dup_str(nvl, "ref", &err);
+		if (err == FP_P_OK &&
+		    (out->u.local_ref_info.remote == NULL ||
+		     out->u.local_ref_info.ref == NULL))
+			err = FP_P_ERR_MALFORMED;
+		break;
+	case FP_REQ_REMOTE_LIST:
 		break;
 	case FP_REQ_ENTER:
 		out->u.enter.instance = dup_str(nvl, "instance", &err);

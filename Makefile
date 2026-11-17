@@ -21,6 +21,9 @@ LDLIBS+=        -lnv
 LDLIBS+=        -L/usr/local/lib -ldbus-1 -lutil -lz
 GLIB_CFLAGS?=   -I/usr/local/include/glib-2.0 -I/usr/local/lib/glib-2.0/include
 GLIB_LIBS?=     -L/usr/local/lib -lgio-2.0 -lgobject-2.0 -lglib-2.0 -lintl
+# libostree is a daemon-only dependency: the CLI must not link it.
+OSTREE_CFLAGS?= -I/usr/local/include/ostree-1
+OSTREE_LIBS?=   -L/usr/local/lib -lostree-1
 CFLAGS+=        $(GLIB_CFLAGS)
 LDLIBS+=        $(GLIB_LIBS)
 LDLIBS+=        -pthread
@@ -128,13 +131,18 @@ LEGACY_OBJS=    $(OBJDIR)/ostree.o \
 DAEMON_OPS_OBJS=$(OBJDIR)/daemon/ops/dbus_proxy.o \
 		$(OBJDIR)/daemon/ops/instance_ctl.o
 
+# libostree lives in the daemon only.  repo.c is the one TU that includes
+# <ostree.h>; the CLI's link and libflatpkg_shared.so must not grow it.
+DAEMON_OSTREE_OBJS=$(OBJDIR)/daemon/repo.o
+
 # Policy the daemon runs in process (the solver and upgrade planner).  It is
 # the one CLI-side object set the daemon links, together with the logger and
 # env accessor the primitives call.
 POLICY_OBJS=    $(OBJDIR)/cli/solver.o
 
 DAEMON_LINK=    $(DAEMON_OBJS) $(LEGACY_OBJS) $(DAEMON_OPS_OBJS) \
-		$(POLICY_OBJS) $(OBJDIR)/daemon/ops/evui.o
+		$(DAEMON_OSTREE_OBJS) $(POLICY_OBJS) \
+		$(OBJDIR)/daemon/ops/evui.o
 
 # The CLI links no daemon object: `flatpkg daemon` is gone, and the system
 # helper is flatpkgd's entry point.
@@ -158,7 +166,7 @@ $(BIN_CLI): $(CLI_LINK) $(SHLIB) Makefile
 
 $(BIN_DAEMON): $(ENTRY_DAEMON) $(DAEMON_LINK) $(SHLIB) Makefile
 	$(CC) $(CFLAGS) -o $@ $(ENTRY_DAEMON) $(DAEMON_LINK) \
-	    -L$(BUILD) -lflatpkg_shared $(RPATH) $(LDLIBS)
+	    -L$(BUILD) -lflatpkg_shared $(RPATH) $(OSTREE_LIBS) $(LDLIBS)
 
 $(OBJDIR)/cli/entry.o: src/cli/entry.c
 	@mkdir -p $(OBJDIR)/cli
@@ -403,6 +411,11 @@ sinclude $(OBJDIR)/shared/protocol.d
 sinclude $(OBJDIR)/shared/instance.d
 sinclude $(OBJDIR)/shared/modules.d
 sinclude $(OBJDIR)/shared/util.d
+$(OBJDIR)/daemon/repo.o: src/daemon/repo.c src/daemon/repo.h
+	@mkdir -p $(OBJDIR)/daemon
+	$(CC) $(CFLAGS) $(OSTREE_CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/repo.c
+
+sinclude $(OBJDIR)/daemon/repo.d
 sinclude $(OBJDIR)/ostree.d
 sinclude $(OBJDIR)/ostree_plan.d
 sinclude $(OBJDIR)/ostree_cmds.d

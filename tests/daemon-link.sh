@@ -31,7 +31,7 @@ bad=$(printf '%s\n' $link |
 # And the replacement is there, with the two entry points that make the
 # binary a daemon rather than a client.
 for want in build/obj/daemon/ops/evui.o build/obj/daemon/daemon.o \
-    build/obj/daemon/ops/typed_worker.o; do
+    build/obj/daemon/ops/typed_worker.o build/obj/daemon/repo.o; do
 	printf '%s\n' $link | grep -qx "$want" ||
 		note "the daemon does not link $want"
 done
@@ -93,6 +93,20 @@ for plant in build/obj/daemon/sandbox_root.o \
 		grep -qE '/daemon/(daemon|bus|extensions|sandbox|sandbox_root|sandbox_exec|systemhelper|ops/(dbus_proxy|instance_ctl))\.o$' ||
 		note "the daemon-object pattern does not recognise $plant"
 done
+
+# libostree belongs to the daemon alone: the CLI and the shared library load
+# late enough that a stray -lflatpkg_shared dependency would put it in the
+# unprivileged process too.
+if readelf -d "$ROOT/build/flatpkg" 2>/dev/null | grep -q 'libostree-1.so'; then
+	note "the CLI links libostree"
+fi
+if ! readelf -d "$ROOT/build/flatpkgd" 2>/dev/null | grep -q 'libostree-1.so'; then
+	note "the daemon does not link libostree"
+fi
+if readelf -d "$ROOT/build/libflatpkg_shared.so" 2>/dev/null |
+    grep -q 'libostree-1.so'; then
+	note "libflatpkg_shared.so links libostree"
+fi
 
 if [ "$fail" -ne 0 ]; then exit 1; fi
 echo "PASS: flatpkgd links the daemon, not the CLI: no cli.o, tb_*.o,"
