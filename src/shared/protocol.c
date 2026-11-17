@@ -288,8 +288,18 @@ int fp_req_encode(nvlist_t** out, uint32_t id, const fp_req_t* r) {
 		e = add_str(nvl, "remote", r->u.local_ref_info.remote);
 		if (e == FP_P_OK)
 			e = add_str(nvl, "ref", r->u.local_ref_info.ref);
+		if (e == FP_P_OK)
+			e = add_str(nvl, "commit", r->u.local_ref_info.commit);
+		if (e == FP_P_OK) {
+			nvlist_add_number(nvl, "flags",
+					  r->u.local_ref_info.flags);
+			if (nvlist_error(nvl) != 0) e = FP_P_ERR_NOMEM;
+		}
 		break;
 	case FP_REQ_REMOTE_LIST:
+		break;
+	case FP_REQ_SEARCH:
+		e = add_str(nvl, "text", r->u.search.text);
 		break;
 	case FP_REQ_ENTER:
 		e = add_str(nvl, "instance", r->u.enter.instance);
@@ -576,8 +586,12 @@ void fp_req_free(fp_req_t* r) {
 	case FP_REQ_LOCAL_REF_INFO:
 		free(r->u.local_ref_info.remote);
 		free(r->u.local_ref_info.ref);
+		free(r->u.local_ref_info.commit);
 		break;
 	case FP_REQ_REMOTE_LIST:
+		break;
+	case FP_REQ_SEARCH:
+		free(r->u.search.text);
 		break;
 	case FP_REQ_APPLY:
 		free(r->u.apply.remote);
@@ -967,12 +981,20 @@ int fp_req_decode(const nvlist_t* nvl, uint32_t* id_out, fp_req_t* out) {
 	case FP_REQ_LOCAL_REF_INFO:
 		out->u.local_ref_info.remote = dup_str(nvl, "remote", &err);
 		out->u.local_ref_info.ref = dup_str(nvl, "ref", &err);
+		out->u.local_ref_info.commit = dup_str(nvl, "commit", &err);
+		out->u.local_ref_info.flags = need_u32(nvl, "flags", &err);
 		if (err == FP_P_OK &&
 		    (out->u.local_ref_info.remote == NULL ||
-		     out->u.local_ref_info.ref == NULL))
+		     out->u.local_ref_info.ref == NULL ||
+		     out->u.local_ref_info.commit == NULL))
 			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_REQ_REMOTE_LIST:
+		break;
+	case FP_REQ_SEARCH:
+		out->u.search.text = dup_str(nvl, "text", &err);
+		if (err == FP_P_OK && out->u.search.text == NULL)
+			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_REQ_ENTER:
 		out->u.enter.instance = dup_str(nvl, "instance", &err);

@@ -14,7 +14,7 @@
 // An unknown event type cannot be skipped, only refused, so a new type or a
 // new framing is a new version and the mismatch fails at HELLO, not
 // mid-operation.
-#define FP_PROTO_VERSION 12u
+#define FP_PROTO_VERSION 14u
 // The whole packed frame, including libnv's own header.
 #define FP_PROTO_MAX_PAYLOAD (1u << 20)
 #define FP_PROTO_MAX_STR (64u << 10)
@@ -71,6 +71,9 @@ typedef enum {
 	FP_REQ_REMOTE_MODIFY = 27, // {name, changes}: a remote's settings
 	FP_REQ_LOCAL_REF_INFO = 28, // {remote, ref}: a file:// remote's commit
 	FP_REQ_REMOTE_LIST = 30,    // {}: the configured remotes
+	FP_REQ_SEARCH = 31,	    // {text}: refs matching text
+// FP_REQ_LOCAL_REF_INFO flags
+#define FP_REF_RUNTIME 1u
 } fp_req_type_t;
 
 // FP_REQ_CLIENT_STATE flags.  Without WRITE the request is a read.
@@ -229,7 +232,12 @@ typedef struct {
 		struct {
 			char* remote;
 			char* ref;
+			char* commit;
+			uint32_t flags;
 		} local_ref_info;
+		struct {
+			char* text;
+		} search;
 		struct {
 			uint32_t flags;
 			char* remote;

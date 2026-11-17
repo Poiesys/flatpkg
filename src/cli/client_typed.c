@@ -278,6 +278,28 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned,
 		out->u.remote_add.from = (char*)(from != NULL ? from : "");
 		return n > 0;
 	}
+	case CMD_REMOTE_INFO: {
+		const char* remote = n > 0 ? op[0] : "";
+		const char* request = n > 1 ? op[1] : "";
+		char want[600];
+
+		snprintf(want, sizeof(want), "%s%s%s", request,
+			 req->arch != NULL && *req->arch != '\0' ? "/" : "",
+			 req->arch != NULL ? req->arch : "");
+		out->type = FP_REQ_LOCAL_REF_INFO;
+		out->u.local_ref_info.remote = (char*)remote;
+		*owned = xstrdup(want);
+		out->u.local_ref_info.ref = *owned;
+		out->u.local_ref_info.commit =
+			(char*)(req->commit != NULL ? req->commit : "");
+		out->u.local_ref_info.flags =
+			req->runtime ? FP_REF_RUNTIME : 0;
+		return n >= 2;
+	}
+	case CMD_SEARCH:
+		out->type = FP_REQ_SEARCH;
+		out->u.search.text = (char*)(n > 0 ? op[0] : "");
+		return n > 0;
 	case CMD_REMOTE_LIST:
 		out->type = FP_REQ_REMOTE_LIST;
 		return true;
@@ -892,6 +914,7 @@ static int typed_render(typed_ctx_t* c) {
 	int exit_code = 1;
 	bool finished = false;
 	bool said_error = false;
+	bool print_error = false;
 	fp_bar_t bar;
 	bool have_bar = false;
 	int e;
@@ -942,6 +965,17 @@ static int typed_render(typed_ctx_t* c) {
 			}
 			fp_bar_update(&bar, ev.u.progress.current);
 			break;
+		case FP_EV_META:
+			if (c->typed.type == FP_REQ_LOCAL_REF_INFO) {
+				if (cmd_remote_info_print(
+					    ev.u.meta.ref, ev.u.meta.commit,
+					    ev.u.meta.metadata, c->req.show_ref,
+					    c->req.show_commit,
+					    c->req.show_metadata,
+					    c->req.show_parent) != 0)
+					print_error = true;
+			}
+			break;
 		case FP_EV_OP_FINISHED:
 			if (have_bar) fp_bar_dismiss(&bar);
 			have_bar = false;
@@ -962,6 +996,7 @@ static int typed_render(typed_ctx_t* c) {
 		fpkg_errorf("flatpkgd closed the connection before the "
 			    "operation finished");
 	}
+	if (print_error && exit_code == 0) exit_code = 1;
 	return exit_code;
 }
 

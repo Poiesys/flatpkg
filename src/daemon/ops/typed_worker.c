@@ -969,6 +969,12 @@ static void prefetch_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	op_finish(c, rc, "prefetch failed");
 }
 
+static void search_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
+	op_start(c, id, 14, "search");
+	int rc = cmd_search(nz(r->u.search.text));
+	op_finish(c, rc, "search failed");
+}
+
 static void remote_list_request(wctx_t* c, uint32_t id) {
 	op_start(c, id, 13, "remote-list");
 	int rc = cmd_remote_list();
@@ -979,7 +985,10 @@ static void local_ref_info_request(wctx_t* c, uint32_t id,
 				    const fp_req_t* r) {
 	const char* remote = nz(r->u.local_ref_info.remote);
 	const char* ref = nz(r->u.local_ref_info.ref);
-	char commit[65];
+	const char* commit = nz(r->u.local_ref_info.commit);
+	bool runtime =
+		(r->u.local_ref_info.flags & FP_REF_RUNTIME) != 0;
+	char out_ref[512], out_commit[65];
 	char* metadata = NULL;
 	char* error = NULL;
 	fp_event_t ev;
@@ -990,7 +999,8 @@ static void local_ref_info_request(wctx_t* c, uint32_t id,
 		return;
 	}
 	if (fp_repo_local_ref_info(store_root(), remote, ref, commit,
-				   &metadata, &error) != 0) {
+				   runtime, out_ref, out_commit, &metadata,
+				   &error) != 0) {
 		ack_err(c, id, FP_E_INVALID,
 			error != NULL ? error : "local ref lookup failed");
 		free(error);
@@ -999,8 +1009,8 @@ static void local_ref_info_request(wctx_t* c, uint32_t id,
 	op_start(c, id, 11, "local-ref-info");
 	memset(&ev, 0, sizeof(ev));
 	ev.type = FP_EV_META;
-	ev.u.meta.ref = (char*)ref;
-	ev.u.meta.commit = commit;
+	ev.u.meta.ref = out_ref;
+	ev.u.meta.commit = out_commit;
 	ev.u.meta.metadata = metadata;
 	send_event(c, &ev);
 	op_finish(c, 0, "local-ref-info failed");
@@ -1332,6 +1342,9 @@ static void handle(wctx_t* c, uint32_t id, fp_req_t* r) {
 		return;
 	case FP_REQ_REMOTE_LIST:
 		remote_list_request(c, id);
+		return;
+	case FP_REQ_SEARCH:
+		search_request(c, id, r);
 		return;
 	case FP_REQ_INSTALL_BUNDLE:
 	case FP_REQ_STDIO:

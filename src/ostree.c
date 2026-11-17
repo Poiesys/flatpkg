@@ -275,6 +275,18 @@ char* remote_setting(const char* remote, const char* key) {
 	fclose(f);
 	return val;
 }
+bool ostree_remote_is_local(const char* remote) {
+	char* url;
+	bool local;
+
+	if (remote == NULL || *remote == '\0') return false;
+	url = remote_setting(remote, "url");
+	local = url != NULL &&
+		(g_str_has_prefix(url, "file://") || url[0] == '/');
+	free(url);
+	return local;
+}
+
 char** list_remotes(size_t* n_out) {
 	*n_out = 0;
 	char config[PATH_MAX];

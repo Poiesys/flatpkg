@@ -613,7 +613,7 @@ static const cli_cmd_t commands[] = {
 	 "Search configured remotes for applications", "TEXT",
 	 "A TEXT that starts with '-' is searched for as it stands, not read "
 	 "as an option.",
-	 no_opts, 1, 1, CLI_CMD_LITERAL | CLI_CMD_LOCAL},
+	 no_opts, 1, 1, CLI_CMD_LITERAL | 0},
 	{CMD_LIST_COMMITS, "list-commits", NULL, G_QUERY,
 	 "List deploys kept for rollback", "REF", NULL, no_opts, 1, 1,
 	 CLI_CMD_LOCAL},
@@ -708,6 +708,11 @@ bool cli_req_is_local(const cli_req_t* r) {
 	// Writing or resetting a system override is the store's business.
 	// Showing one is a read of a file the group can read.
 	if (cli_req_cmd(r) == CMD_OVERRIDE && !r->over_user && !r->over_show)
+		return false;
+	// A file:// remote's refs are not in the store's summary cache; the
+	// daemon reads the remote repo and answers with its commit/metadata.
+	if (cli_req_cmd(r) == CMD_REMOTE_INFO && r->nops > 0 &&
+	    ostree_remote_is_local(r->ops[0]))
 		return false;
 	return true;
 }

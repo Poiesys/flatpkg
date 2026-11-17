@@ -691,8 +691,6 @@ static int dispatch_local(const cli_req_t* r) {
 		return cmd_remote_info(op[0], op[1], r->arch, r->commit,
 				       r->runtime, r->show_ref, r->show_commit,
 				       r->show_metadata, r->show_parent);
-	case CMD_SEARCH:
-		return cmd_search(op[0]);
 	case CMD_LIST_COMMITS:
 		return cmd_list_commits(op[0]);
 	case CMD_HISTORY:

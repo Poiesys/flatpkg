@@ -649,6 +649,44 @@ static void meta_line(const char* body, const char* key, char* out,
 	}
 }
 
+int cmd_remote_info_print(const char* ref, const char* commit,
+			  const char* body, bool show_ref, bool show_commit,
+			  bool show_metadata, bool show_parent) {
+	if (show_ref) fp_outl("%s", ref);
+	if (show_commit) {
+		if (commit == NULL) {
+			fpkg_errorf("no commit for %s", ref);
+			return 1;
+		}
+		fp_outl("%s", commit);
+	}
+	if (show_metadata) {
+		if (body != NULL) fp_out_raw(body, strlen(body));
+	}
+	if (show_ref || show_commit || show_metadata) return 0;
+
+	fpkg_ref_t r;
+	char version[128] = "", runtime_id[256] = "";
+	if (ref_parse(ref, &r) != 0) {
+		fpkg_errorf("the remote returned an unreadable ref '%s'", ref);
+		return 1;
+	}
+	if (body != NULL) {
+		meta_line(body, "version", version, sizeof(version));
+		meta_line(body, "runtime", runtime_id, sizeof(runtime_id));
+	}
+	fp_outl("Ref: %s", ref);
+	fp_outl("ID: %s", r.id);
+	fp_outl("Arch: %s", r.arch != NULL ? r.arch : "-");
+	fp_outl("Branch: %s", r.branch != NULL ? r.branch : "-");
+	if (version[0] != '\0') fp_outl("Version: %s", version);
+	fp_outl("Commit: %s", commit != NULL ? commit : "-");
+	if (show_parent) fp_outl("Parent: %s", "-");
+	if (runtime_id[0] != '\0') fp_outl("Runtime: %s", runtime_id);
+	ref_free(&r);
+	return 0;
+}
+
 int cmd_remote_info(const char* remote, const char* request, const char* arch,
 		    const char* commit, bool runtime, bool show_ref,
 		    bool show_commit, bool show_metadata, bool show_parent) {
@@ -670,54 +708,12 @@ int cmd_remote_info(const char* remote, const char* request, const char* arch,
 	char* csum = commit != NULL && *commit != '\0'
 			     ? xstrdup(commit)
 			     : summary_ref_commit(remote, ref);
-	char* body = NULL;
-
-	if (show_ref) fp_outl("%s", ref);
-	if (show_commit) {
-		if (csum == NULL) {
-			fpkg_errorf("no commit for %s in remote %s", ref,
-				    remote);
-			return 1;
-		}
-		fp_outl("%s", csum);
-	}
-	if (show_metadata) {
-		body = summary_ref_metadata_text(remote, ref);
-		if (body != NULL) fp_out_raw(body, strlen(body));
-		free(body);
-	}
-	if (show_ref || show_commit || show_metadata) {
-		free(csum);
-		return 0;
-	}
-
-	// The friendly block, in flatpak's order and spelling: `info` prints
-	// the same fields for a deploy this store holds.
-	fpkg_ref_t r;
-	char version[128] = "", runtime_id[256] = "";
-	if (ref_parse(ref, &r) != 0) {
-		fpkg_errorf("the remote returned an unreadable ref '%s'", ref);
-		free(csum);
-		return 1;
-	}
-	body = summary_ref_metadata_text(remote, ref);
-	if (body != NULL) {
-		meta_line(body, "version", version, sizeof(version));
-		meta_line(body, "runtime", runtime_id, sizeof(runtime_id));
-		free(body);
-	}
-	fp_outl("Ref: %s", ref);
-	fp_outl("ID: %s", r.id);
-	fp_outl("Arch: %s", r.arch != NULL ? r.arch : "-");
-	fp_outl("Branch: %s", r.branch != NULL ? r.branch : "-");
-	if (version[0] != '\0') fp_outl("Version: %s", version);
-	fp_outl("Commit: %s", csum != NULL ? csum : "-");
-	if (show_parent)
-		fp_outl("Parent: %s", "-");
-	if (runtime_id[0] != '\0') fp_outl("Runtime: %s", runtime_id);
-	ref_free(&r);
+	char* body = summary_ref_metadata_text(remote, ref);
+	int rc = cmd_remote_info_print(ref, csum, body, show_ref, show_commit,
+				       show_metadata, show_parent);
+	free(body);
 	free(csum);
-	return 0;
+	return rc;
 }
 
 // A word naming a file on the caller's side: the daemon must never open one,

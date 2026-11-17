@@ -585,12 +585,18 @@ int cmd_remote_delete(const char* name);
 // imported, and the worker never opens a caller-named path.
 int cmd_remote_modify(const char* name, const char* changes,
 		      const char* gpg_data);
+// Render the remote-info machine/friendly block from data already fetched.
+int cmd_remote_info_print(const char* ref, const char* commit,
+			  const char* body, bool show_ref, bool show_commit,
+			  bool show_metadata, bool show_parent);
 int cmd_remote_info(const char* remote, const char* request, const char* arch,
 		    const char* commit, bool runtime, bool show_ref,
 		    bool show_commit, bool show_metadata, bool show_parent);
 // The GL drivers flatpak would consider active on this host, one per line.
 void cmd_gl_drivers(void);
 char** ostree_remote_names(size_t* n_out);
+// True when a configured remote's URL is a local path or file:// URL.
+bool ostree_remote_is_local(const char* remote);
 
 typedef enum {
 	FLATPKG_DEP_ANY = 0,
