@@ -418,24 +418,15 @@ clean:
 	rm -rf $(BUILD)
 
 # The port has no upstream tag to fetch: package this checkout instead.
-# Fixed owner and mtime plus gzip -n make the tarball reproducible, so
-# distinfo only changes when a tracked file does.
+# scripts/gen-dist.sh stages the tree to fix ownership and mtime (bsdtar on
+# DragonFlyBSD has no --mtime) and rewrites distinfo when it writes the
+# tarball the port fetches.  A tarball written elsewhere leaves distinfo
+# alone, so the distinfo guard still checks what is committed.
 VERSION=        0.1.0
-DISTNAME=       flatpkg-$(VERSION)
 DISTDIR?=       ports/dist
 
 dist:
-	@mkdir -p $(DISTDIR)
-	@tmp=$$(mktemp); git ls-files | sort -u | grep -v '^ports/' | \
-	    while IFS= read -r f; do [ -f "$$f" ] && printf '%s\n' "$$f"; done \
-	        > $$tmp; \
-	    tar --format=ustar --uid 0 --gid 0 --uname root --gname wheel \
-	        --mtime '2020-01-01 00:00:00' \
-	        -s ',^,$(DISTNAME)/,' -cf - -T $$tmp | \
-	        gzip -9n > $(DISTDIR)/$(DISTNAME).tar.gz; \
-	    rm -f $$tmp
-	@echo "wrote $(DISTDIR)/$(DISTNAME).tar.gz"
-	@sha256 -q $(DISTDIR)/$(DISTNAME).tar.gz
+	@sh scripts/gen-dist.sh $(VERSION) $(DISTDIR)
 
 $(MANPAGE): $(BIN_CLI) man/flatpkg.8.in scripts/gen-man.sh
 	sh scripts/gen-man.sh $(BIN_CLI) man/flatpkg.8.in > $@

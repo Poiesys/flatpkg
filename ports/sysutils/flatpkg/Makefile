@@ -28,8 +28,9 @@ USES=		gmake
 SHEBANG_FILES=	scripts/*.sh
 
 # There is no upstream tag to fetch.  Run `make dist` at the repository
-# root to package this checkout as ports/dist/flatpkg-0.1.0.tar.gz; the
-# path is relative to this port, so an overlay ports tree works too.
+# root to package this checkout as ports/dist/flatpkg-0.1.0.tar.gz and
+# refresh this file's distinfo; the path is relative to this port, so an
+# overlay ports tree works too.
 MASTER_SITES=	file://${.CURDIR}/../../dist/
 DISTFILES=	${PORTNAME}-${DISTVERSION}${EXTRACT_SUFX}
 

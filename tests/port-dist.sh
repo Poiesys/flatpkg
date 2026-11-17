@@ -10,10 +10,13 @@ trap 'rm -rf "$tmp"' EXIT
 fail=0
 note() { echo "FAIL: $*"; fail=1; }
 
+info_before=$(cksum "$PORT/distinfo")
 make -s -C "$ROOT" dist DISTDIR="$tmp" >/dev/null ||
 	{ echo "FAIL: make dist failed"; exit 1; }
 tar="$tmp/flatpkg-0.1.0.tar.gz"
 [ -f "$tar" ] || { echo "FAIL: make dist wrote no tarball"; exit 1; }
+[ "$info_before" = "$(cksum "$PORT/distinfo")" ] ||
+	note "a make dist into another DISTDIR rewrote the checked-in distinfo"
 
 want_sha=$(awk '/^SHA256 / { print $4 }' "$PORT/distinfo")
 want_size=$(awk '/^SIZE / { print $4 }' "$PORT/distinfo")
@@ -22,9 +25,9 @@ got_size=$(stat -f '%z' "$tar")
 [ -n "$want_sha" ] || note "distinfo has no SHA256 line"
 [ -n "$want_size" ] || note "distinfo has no SIZE line"
 [ "$want_sha" = "$got_sha" ] ||
-	note "distinfo SHA256 is stale: run make dist and update it"
+	note "distinfo SHA256 is stale: run make dist in the checkout"
 [ "$want_size" = "$got_size" ] ||
-	note "distinfo SIZE is stale: run make dist and update it"
+	note "distinfo SIZE is stale: run make dist in the checkout"
 
 bad_root=$(tar -tf "$tar" | grep -v '^flatpkg-0.1.0/' | head -1)
 [ -z "$bad_root" ] ||
