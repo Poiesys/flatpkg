@@ -1946,17 +1946,40 @@ static bool xauth_read_file(const char* path, unsigned char** out,
 	return true;
 }
 
+static bool write_all(int fd, const void* p, size_t n) {
+	const unsigned char* b = p;
+
+	while (n > 0) {
+		ssize_t w = write(fd, b, n);
+
+		if (w < 0) {
+			if (errno == EINTR) continue;
+			return false;
+		}
+		if (w == 0) return false;
+		b += w;
+		n -= (size_t)w;
+	}
+	return true;
+}
+
 static bool xauth_write_filtered(const char* root, const char* app_id,
 				 const char* home, uid_t uid, gid_t gid) {
 	assert(root != NULL);
 	assert(app_id != NULL);
-	if (home == NULL || *home == '\0') return false;
+	if (home == NULL || *home == '\0') {
+		fpkg_warnf("xauth: no home directory for the caller");
+		return false;
+	}
 	char src[PATH_MAX];
 	snprintf(src, sizeof(src), "%s/.Xauthority", home);
 
 	unsigned char* buf = NULL;
 	size_t len = 0;
-	if (!xauth_read_file(src, &buf, &len)) return false;
+	if (!xauth_read_file(src, &buf, &len)) {
+		fpkg_warnf("xauth: cannot read %s: %s", src, strerror(errno));
+		return false;
+	}
 
 	char hostname[256] = {0};
 	if (gethostname(hostname, sizeof(hostname) - 1) != 0)
@@ -1972,7 +1995,8 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 
 	struct xauth_rec {
 		size_t start, len;
-		bool keep;
+		size_t addr_pos, addr_len;
+		bool keep, rewrite;
 	};
 	struct xauth_rec* recs = NULL;
 	size_t nrecs = 0, cap_recs = 16;
@@ -2002,6 +2026,7 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 		}
 		off += 2;
 		char addr[256] = {0};
+		size_t addr_pos = 0, addr_len = 0;
 		int field;
 		for (field = 0; field < 4; field++) {
 			if (off + 2 > len) {
@@ -2015,6 +2040,8 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 				break;
 			}
 			if (field == 0) {
+				addr_pos = off;
+				addr_len = flen;
 				size_t c = flen < sizeof(addr) - 1
 						   ? flen
 						   : sizeof(addr) - 1;
@@ -2029,10 +2056,14 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 			if (strcmp(addr, accept[i]) == 0) keep = true;
 		recs[nrecs].start = start;
 		recs[nrecs].len = off - start;
+		recs[nrecs].addr_pos = addr_pos;
+		recs[nrecs].addr_len = addr_len;
 		recs[nrecs].keep = keep;
+		recs[nrecs].rewrite = keep && strcmp(addr, app_id) != 0;
 		nrecs++;
 	}
 	if (malformed) {
+		fpkg_warnf("xauth: %s is malformed", src);
 		free(buf);
 		free(recs);
 		return false;
@@ -2041,6 +2072,8 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 	char rundir[PATH_MAX], dst[PATH_MAX], tmp[PATH_MAX];
 	snprintf(rundir, sizeof(rundir), "%s/run/flatpak", root);
 	if (mkdir_p(rundir, 0755) != 0) {
+		fpkg_warnf("xauth: cannot create %s: %s", rundir,
+			   strerror(errno));
 		free(buf);
 		free(recs);
 		return false;
@@ -2049,6 +2082,7 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 	snprintf(tmp, sizeof(tmp), "%s.tmp", dst);
 	int out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0600);
 	if (out < 0) {
+		fpkg_warnf("xauth: cannot open %s: %s", tmp, strerror(errno));
 		free(buf);
 		free(recs);
 		return false;
@@ -2056,10 +2090,30 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 	bool wrote = false;
 	for (size_t i = 0; i < nrecs; i++) {
 		if (!recs[i].keep) continue;
-		if (write(out, buf + recs[i].start, recs[i].len) !=
-		    (ssize_t)recs[i].len) {
-			wrote = false;
-			break;
+		if (!recs[i].rewrite) {
+			if (!write_all(out, buf + recs[i].start,
+				       recs[i].len)) {
+				wrote = false;
+				break;
+			}
+		} else {
+			// The jail's hostname is the app id, so the record's
+			// hostname address has to become the app id or Xlib
+			// will not match it.
+			size_t alen = strlen(app_id);
+			unsigned char hdr[2] = {(unsigned char)(alen >> 8),
+						(unsigned char)(alen & 0xff)};
+			size_t rest = recs[i].addr_pos + recs[i].addr_len;
+			size_t rest_len = recs[i].start + recs[i].len - rest;
+
+			if (alen > 0xffff ||
+			    !write_all(out, buf + recs[i].start, 2) ||
+			    !write_all(out, hdr, 2) ||
+			    !write_all(out, app_id, alen) ||
+			    !write_all(out, buf + rest, rest_len)) {
+				wrote = false;
+				break;
+			}
 		}
 		wrote = true;
 	}
@@ -2070,10 +2124,13 @@ static bool xauth_write_filtered(const char* root, const char* app_id,
 	if (wrote && fchown(out, uid, gid) != 0) wrote = false;
 	close(out);
 	if (!wrote) {
+		fpkg_warnf("xauth: no usable record in %s", src);
 		(void)unlink(tmp);
 		return false;
 	}
 	if (rename(tmp, dst) != 0) {
+		fpkg_warnf("xauth: cannot rename %s: %s", tmp,
+			   strerror(errno));
 		(void)unlink(tmp);
 		return false;
 	}
