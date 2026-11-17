@@ -10,16 +10,15 @@ LICENSE=	BSD3CLAUSE
 # base system, so there is no port to depend on.  glib and dbus are what the
 # portal and the desktop helpers link against.
 LIB_DEPENDS=	libglib-2.0.so:devel/glib20 \
-		libdbus-1.so:devel/dbus
+		libdbus-1.so:devel/dbus \
+		libostree-1.so:sysutils/libostree
 
-# The ostree CLI drives the store, so it is a runtime tool.  The libostree
-# port ships in this repository's ports/ overlay: a merged tree gets the
-# dependency, a stock one is pointed at it by pkg-message.
+# libostree is linked into the daemon; its package also ships the `ostree`
+# tool the daemon used to exec.  The libostree port ships in this repository's
+# ports/ overlay: a merged tree gets the dependency, a stock one is pointed at
+# it by pkg-message.
 RUN_DEPENDS=	${LOCALBASE}/bin/dbus-daemon:devel/dbus \
 		${LOCALBASE}/bin/xdg-dbus-proxy:devel/xdg-dbus-proxy
-.if exists(${PORTSDIR}/sysutils/libostree)
-RUN_DEPENDS+=	${LOCALBASE}/bin/ostree:sysutils/libostree
-.endif
 
 # The seven LD_PRELOAD shims are Linux ELFs, so they must be cross-compiled.
 # The port runs `make`, not `zig build`: `USES=zig` would take over do-build
