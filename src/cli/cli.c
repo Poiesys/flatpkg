@@ -174,10 +174,10 @@ static const cli_opt_t global_opts[] = {
 	 "Print the changeset without applying it", NULL, NULL, NULL, 0},
 	VALUE(OPT_LOGFMT, NULL, 'l', "FILE", "Append logfmt records to FILE"),
 	VALUE(OPT_INSTALLATION, "--installation", 'u', "NAME",
-	      "Select the installation; flatpkg has one, so only 'default' "
-	      "resolves"),
-	FLAG(OPT_USER, "--user", 0, STUB),
-	FLAG(OPT_SYSTEM, "--system", 0, STUB),
+	      "Select the installation: 'default' (system) or 'user'"),
+	FLAG(OPT_USER, "--user", 0,
+	     "Use the user installation in ~/.local/share/flatpak"),
+	FLAG(OPT_SYSTEM, "--system", 0, "Use the system installation"),
 	NO_OPT};
 
 // Commands that still cannot honour a dry run: they have no plan to show,
@@ -1557,6 +1557,8 @@ static void apply_global(cli_globals_t* g, cli_opt_id_t id, const char* val) {
 		g->installation = val;
 		break;
 	case OPT_USER:
+		g->installation = "user";
+		break;
 	case OPT_SYSTEM:
 		g->installation = "default";
 		break;
@@ -2160,11 +2162,37 @@ int cli_parse(int argc, char* const* argv, cli_req_t* r) {
 	const cli_cmd_t* c = r->cmd;
 
 	if (!installation_ok(r->g.installation)) {
-		fpkg_errorf(
-			"installation '%s' does not exist (flatpkg has one: "
-			"'default')",
-			r->g.installation);
+		fpkg_errorf("installation '%s' does not exist (use "
+			    "'default' or 'user')",
+			    r->g.installation);
 		return 1;
+	}
+	r->user = r->g.installation != NULL &&
+		  strcmp(r->g.installation, "user") == 0;
+	if (r->user) {
+		char store[PATH_MAX];
+
+		if (geteuid() == 0) {
+			fpkg_errorf("the user installation cannot be used "
+				    "as root");
+			return 1;
+		}
+		if (user_store_path(store, sizeof(store)) != 0 ||
+		    setenv("FLATPKG_STORE", store, 1) != 0) {
+			fpkg_errorf("cannot locate the user installation");
+			return 1;
+		}
+		if (user_socket_path(r->user_socket,
+				     sizeof(r->user_socket)) != 0) {
+			fpkg_errorf("cannot locate the user daemon socket");
+			return 1;
+		}
+		if (r->cmd->id == CMD_RUN || r->cmd->id == CMD_ENTER) {
+			fpkg_errorf("the user installation cannot launch "
+				    "applications; use the system "
+				    "installation");
+			return 1;
+		}
 	}
 	if (r->g.simulate && refuses_simulate(r->name)) {
 		fpkg_errorf("--simulate is not implemented for `%s`; run it "

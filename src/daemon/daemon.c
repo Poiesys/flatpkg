@@ -24,6 +24,18 @@
 
 #define FPKG_RUNDIR "/var/run/flatpkg"
 
+// The root daemon serves the system installation; --user serves one user's
+// store and socket and runs with that user's privileges.
+static bool g_user;
+static const char* g_socket = FPKG_SOCKET;
+static const char* g_store = FLATPKG_STORE_DIR;
+static char g_user_socket_path[PATH_MAX];
+static char g_user_store_path[PATH_MAX];
+
+bool daemon_is_user(void) { return g_user; }
+
+const char* daemon_store(void) { return g_store; }
+
 static int group_allowed(uid_t uid) {
 	if (uid == 0) return 1;
 	struct passwd* pw = getpwuid(uid);
@@ -48,7 +60,7 @@ static bool control_socket_live(void) {
 	if (fd < 0) return false;
 	memset(&sa, 0, sizeof(sa));
 	sa.sun_family = AF_UNIX;
-	if (strlcpy(sa.sun_path, FPKG_SOCKET, sizeof(sa.sun_path)) <
+	if (strlcpy(sa.sun_path, g_socket, sizeof(sa.sun_path)) <
 		    sizeof(sa.sun_path) &&
 	    connect(fd, (struct sockaddr*)&sa, sizeof(sa)) == 0)
 		live = true;
@@ -90,8 +102,28 @@ static void worker(int conn, int bus, uid_t uid, gid_t gid) {
 	typed_worker(conn, bus, uid, gid);
 }
 
-int daemon_main(void) {
-	if (geteuid() != 0) {
+int daemon_main(bool user) {
+	if (user) {
+		if (geteuid() == 0) {
+			fpkg_errorf("--user must run as the unprivileged "
+				    "user, not root");
+			return 1;
+		}
+		if (user_socket_path(g_user_socket_path,
+				     sizeof(g_user_socket_path)) != 0 ||
+		    user_store_path(g_user_store_path,
+				    sizeof(g_user_store_path)) != 0) {
+			fpkg_errorf("cannot locate the user installation");
+			return 1;
+		}
+		g_socket = g_user_socket_path;
+		g_store = g_user_store_path;
+		if (setenv("FLATPKG_STORE", g_store, 1) != 0) {
+			fpkg_errorf("cannot set the user store");
+			return 1;
+		}
+		g_user = true;
+	} else if (geteuid() != 0) {
 		fpkg_errorf("daemon must run as root");
 		return 1;
 	}
@@ -101,18 +133,41 @@ int daemon_main(void) {
 
 	// Re-install base devfs rulesets (1000-1003) at every start: they live
 	// in-kernel only and are wiped on reboot.
-	install_devfs_base_rulesets();
+	if (!g_user) install_devfs_base_rulesets();
 
-	// Only the flatpkg group may look in or write here: a world-writable
-	// run directory lets anyone unlink the control socket.
-	if (mkdir_p(FPKG_RUNDIR, 0770) != 0) {
-		fpkg_errorf("mkdir %s: %s", FPKG_RUNDIR, strerror(errno));
-		return 1;
-	}
-	(void)chmod(FPKG_RUNDIR, 0770);
-	{
-		struct group* g = getgrnam("flatpkg");
-		if (g) (void)chown(FPKG_RUNDIR, 0, g->gr_gid);
+	if (g_user) {
+		// $XDG_RUNTIME_DIR/flatpkg is the user daemon's run directory;
+		// only this user may look in or unlink the socket.
+		char dir[PATH_MAX];
+		char* slash;
+
+		snprintf(dir, sizeof(dir), "%s", g_socket);
+		slash = strrchr(dir, '/');
+		if (slash == NULL) {
+			fpkg_errorf("user socket has no directory: %s",
+				    g_socket);
+			return 1;
+		}
+		*slash = '\0';
+		if (mkdir_p(dir, 0700) != 0) {
+			fpkg_errorf("mkdir %s: %s", dir, strerror(errno));
+			return 1;
+		}
+		(void)chmod(dir, 0700);
+	} else {
+		// Only the flatpkg group may look in or write here: a
+		// world-writable run directory lets anyone unlink the control
+		// socket.
+		if (mkdir_p(FPKG_RUNDIR, 0770) != 0) {
+			fpkg_errorf("mkdir %s: %s", FPKG_RUNDIR,
+				    strerror(errno));
+			return 1;
+		}
+		(void)chmod(FPKG_RUNDIR, 0770);
+		{
+			struct group* g = getgrnam("flatpkg");
+			if (g) (void)chown(FPKG_RUNDIR, 0, g->gr_gid);
+		}
 	}
 	for (int attempt = 0; attempt < 100; attempt++) {
 		if (!control_socket_live()) break;
@@ -120,17 +175,17 @@ int daemon_main(void) {
 			fpkg_errorf("another flatpkg daemon is already "
 				    "running (socket %s is live); refusing to "
 				    "start a second instance",
-				    FPKG_SOCKET);
+				    g_socket);
 			return 1;
 		}
 		usleep(100000);
 	}
-	if (access(FPKG_SOCKET, F_OK) == 0) unlink(FPKG_SOCKET);
+	if (access(g_socket, F_OK) == 0) unlink(g_socket);
 
 	struct sockaddr_un sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sun_family = AF_UNIX;
-	if (strlcpy(sa.sun_path, FPKG_SOCKET, sizeof(sa.sun_path)) >=
+	if (strlcpy(sa.sun_path, g_socket, sizeof(sa.sun_path)) >=
 	    sizeof(sa.sun_path)) {
 		fpkg_errorf("socket path too long");
 		return 1;
@@ -141,30 +196,34 @@ int daemon_main(void) {
 		return 1;
 	}
 	if (bind(lfd, (struct sockaddr*)&sa, sizeof(sa)) != 0) {
-		fpkg_errorf("bind %s: %s", FPKG_SOCKET, strerror(errno));
+		fpkg_errorf("bind %s: %s", g_socket, strerror(errno));
 		return 1;
 	}
-	if (chmod(FPKG_SOCKET, 0660) != 0) {
-		fpkg_errorf("chmod %s: %s", FPKG_SOCKET, strerror(errno));
+	if (chmod(g_socket, g_user ? 0600 : 0660) != 0) {
+		fpkg_errorf("chmod %s: %s", g_socket, strerror(errno));
 		return 1;
 	}
-	struct group* g = getgrnam("flatpkg");
-	if (g) (void)chown(FPKG_SOCKET, 0, g->gr_gid);
+	if (!g_user) {
+		struct group* g = getgrnam("flatpkg");
+		if (g) (void)chown(g_socket, 0, g->gr_gid);
+	}
 	if (listen(lfd, 16) != 0) {
 		fpkg_errorf("listen: %s", strerror(errno));
 		return 1;
 	}
 	// One daemon owns the run dir now; a tree no jail refers to is a leak.
-	sandbox_gc_leaks();
-	fpkg_infof("flatpkg daemon listening on %s", FPKG_SOCKET);
+	if (!g_user) sandbox_gc_leaks();
+	fpkg_infof("flatpkg daemon listening on %s", g_socket);
 
-	if (mkdir_p(FLATPKG_STORE_DIR, 0775) != 0) {
-		fpkg_errorf("mkdir %s: %s", FLATPKG_STORE_DIR, strerror(errno));
+	if (mkdir_p(g_store, 0775) != 0) {
+		fpkg_errorf("mkdir %s: %s", g_store, strerror(errno));
 		return 1;
 	}
-	store_repair_ownership();
-	ostree_summary_cache_own();
-	// A missing world is the installed set; persist that once as root so a
+	if (!g_user) {
+		store_repair_ownership();
+		ostree_summary_cache_own();
+	}
+	// A missing world is the installed set; persist that once so a
 	// read-only client does not have to write the store to see it.
 	(void)world_seed();
 
@@ -196,13 +255,19 @@ int daemon_main(void) {
 			close(conn);
 			continue;
 		}
-		if (!group_allowed(uid)) {
-			fpkg_errorf("denied uid=%u: not a member of the "
-				    "flatpkg group",
-				    (unsigned)uid);
+		bool allowed = g_user
+				       ? (uid == geteuid() && gid == getegid())
+				       : group_allowed(uid);
+		if (!allowed) {
+			fpkg_errorf("denied uid=%u=%u: not the owner of "
+				    "this user installation",
+				    (unsigned)uid, (unsigned)geteuid());
 			typed_refuse(conn,
-				     "you have to be in the 'flatpkg' group to "
-				     "do this action");
+				     g_user ? "this user daemon serves only "
+					      "its owner"
+					    : "you have to be in the "
+					      "'flatpkg' group to do this "
+					      "action");
 			close(conn);
 			continue;
 		}

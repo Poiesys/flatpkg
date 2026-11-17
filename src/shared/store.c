@@ -50,6 +50,38 @@ const char* store_root(void) {
 	return FLATPKG_STORE_DIR;
 }
 
+int user_store_path(char* out, size_t outlen) {
+	const char* store = cli_getenv("FLATPKG_STORE");
+	const char* home;
+
+	assert(out != NULL);
+	assert(outlen > 0);
+	if (store != NULL && *store != '\0' && geteuid() != 0) {
+		snprintf(out, outlen, "%s", store);
+		return 0;
+	}
+	home = cli_getenv("HOME");
+	if (home != NULL && *home != '\0') {
+		snprintf(out, outlen, "%s/.local/share/flatpak", home);
+		return 0;
+	}
+	return -1;
+}
+
+int user_socket_path(char* out, size_t outlen) {
+	const char* run = cli_getenv("XDG_RUNTIME_DIR");
+
+	assert(out != NULL);
+	assert(outlen > 0);
+	if (run != NULL && run[0] == '/') {
+		snprintf(out, outlen, "%s/flatpkg/control.sock", run);
+		return 0;
+	}
+	snprintf(out, outlen, "/tmp/flatpkg-%u/control.sock",
+		 (unsigned)getuid());
+	return 0;
+}
+
 void store_pointer_path(char* out, size_t outlen, const char* id) {
 	assert(out != NULL);
 	assert(outlen > 0);

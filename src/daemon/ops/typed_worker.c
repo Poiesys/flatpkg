@@ -1389,6 +1389,15 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 
 	// A fresh environment: the caller's comes over the wire, allowlisted.
 	clearenv();
+	if (daemon_is_user()) {
+		// The worker cleared the environment that held the user store;
+		// put it back, or every store call would target the system one.
+		if (setenv("FLATPKG_STORE", daemon_store(), 1) != 0) {
+			fpkg_errorf("cannot set the user store: %s",
+				    strerror(errno));
+			return;
+		}
+	}
 	setenv("PATH",
 	       "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 	       1);
@@ -1540,6 +1549,17 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 					  "install from the bundle failed");
 			}
 			nvlist_destroy(nvl);
+			fp_req_free(&req);
+			if (c.dead) break;
+			continue;
+		}
+		if (daemon_is_user() &&
+		    (req.type == FP_REQ_RUN || req.type == FP_REQ_ENTER ||
+		     req.type == FP_REQ_STDIO)) {
+			nvlist_destroy(nvl);
+			ack_err(&c, id, FP_E_DENIED,
+				"the user installation cannot launch "
+				"applications");
 			fp_req_free(&req);
 			if (c.dead) break;
 			continue;

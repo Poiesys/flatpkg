@@ -106,27 +106,33 @@ void ignore_sigpipe(void) {
 
 // Say why the daemon cannot be used and return its exit status. The log line is
 // width-cut, so reason, socket and hint are separate short lines.
-int daemon_unreachable(int err) {
+int daemon_unreachable_path(const char* path, int err) {
+	const char* p = path != NULL && *path != '\0' ? path : FPKG_SOCKET;
+
 	switch (err) {
 	case ENOENT:
 		fpkg_errorf("flatpkgd is not running");
-		fpkg_infof("no control socket at %s", FPKG_SOCKET);
+		fpkg_infof("no control socket at %s", p);
 		fpkg_infof("start it with: service flatpkgd start");
 		break;
 	case ECONNREFUSED:
 		fpkg_errorf("flatpkgd is not accepting connections");
-		fpkg_infof("stale socket (nothing listens): %s", FPKG_SOCKET);
+		fpkg_infof("stale socket (nothing listens): %s", p);
 		fpkg_infof("start it with: service flatpkgd start");
 		break;
 	case EACCES:
 	case EPERM:
 		fpkg_errorf("not permitted to use the flatpkgd socket");
-		fpkg_infof("socket: %s", FPKG_SOCKET);
+		fpkg_infof("socket: %s", p);
 		break;
 	default:
 		fpkg_errorf("cannot talk to flatpkgd: %s", strerror(err));
-		fpkg_infof("socket: %s", FPKG_SOCKET);
+		fpkg_infof("socket: %s", p);
 		break;
 	}
 	return FPKG_EXIT_UNAVAILABLE;
+}
+
+int daemon_unreachable(int err) {
+	return daemon_unreachable_path(FPKG_SOCKET, err);
 }

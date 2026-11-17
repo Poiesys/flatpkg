@@ -67,7 +67,7 @@ check() {
 	# write is a control socket anybody can unlink.
 	grep -q 'mkdir_p(FPKG_RUNDIR, 0770)' "$main" ||
 		bug "the run directory is not the flatpkg group's alone"
-	grep -q 'chmod(FPKG_SOCKET, 0660)' "$main" ||
+	grep -q 'chmod(g_socket, g_user ? 0600 : 0660)' "$main" ||
 		bug "the control socket is world-writable"
 
 	# An event is rendered by clients this worker does not own.
@@ -137,7 +137,7 @@ sed 's/mkdir_p(FPKG_RUNDIR, 0770)/mkdir_p(FPKG_RUNDIR, 0775)/' "$T/main.inc" \
 prove "a group-writable run directory" \
 	check "$T/send.inc" "$T/plant-rundir.inc" "$T/hello.inc" "$T/worker.c"
 
-sed 's/chmod(FPKG_SOCKET, 0660)/chmod(FPKG_SOCKET, 0666)/' "$T/main.inc" \
+sed 's/g_user ? 0600 : 0660/g_user ? 0666 : 0666/' "$T/main.inc" \
 	> "$T/plant-socket.inc"
 prove "a world-writable control socket" \
 	check "$T/send.inc" "$T/plant-socket.inc" "$T/hello.inc" "$T/worker.c"

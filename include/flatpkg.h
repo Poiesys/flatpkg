@@ -463,6 +463,12 @@ int dbus_start_proxies(sandbox_t* sb, const sandbox_plan_t* plan);
 void dbus_stop_proxies(sandbox_t* sb);
 
 const char* store_root(void);
+// The user installation: $XDG_DATA_HOME/flatpak or ~/.local/share/flatpak.
+// A non-root caller's FLATPKG_STORE wins, so tests can point it elsewhere.
+int user_store_path(char* out, size_t outlen);
+// The per-user daemon's control socket under XDG_RUNTIME_DIR (or a
+// per-uid /tmp directory when the session has none).
+int user_socket_path(char* out, size_t outlen);
 int store_import(const char* src_root, char*** imported_out, size_t* n_out);
 int store_list(char*** ids_out, size_t* n_out);
 void store_pointer_path(char* out, size_t outlen, const char* id);
@@ -747,12 +753,16 @@ int cmd_history(void);
 
 int cmd_repair(bool simulate);
 
-int daemon_main(void);
+int daemon_main(bool user);
 int cli_entry(int argc, char* argv[]);
 // The control socket: a compile-time setting, never the environment, because
 // where the root daemon listens is not its callers' choice.
 #ifndef FPKG_SOCKET
 #define FPKG_SOCKET "/var/run/flatpkg/control.sock"
+#endif
+// The daemon binary the client starts for a user installation.
+#ifndef FPKG_DAEMON_PATH
+#define FPKG_DAEMON_PATH "/usr/local/sbin/flatpkgd"
 #endif
 
 // EX_UNAVAILABLE: distinct from 1 so a script can tell "the daemon is down" from a failure.
@@ -769,6 +779,7 @@ void client_enter_raw_stdin(void);
 // bracketed paste, mouse/focus reporting and the keyboard encodings.
 void client_leave_raw_stdin(void);
 int daemon_unreachable(int err);
+int daemon_unreachable_path(const char* path, int err);
 int flatpkg_main(int argc, char* argv[]);
 
 int portal_main(void);

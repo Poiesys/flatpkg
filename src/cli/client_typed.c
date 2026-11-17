@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -526,6 +527,8 @@ typedef struct {
 	fpkg_plan_t plan;
 	fp_change_row_t plan_rows[FP_APPLY_MAX];
 	char* plan_world;
+	bool user;
+	char user_socket[PATH_MAX];
 } typed_ctx_t;
 
 static void typed_ctx_free(typed_ctx_t* c) {
@@ -537,22 +540,84 @@ static void typed_ctx_free(typed_ctx_t* c) {
 	free(c->owned);
 }
 
-static int typed_connect(typed_ctx_t* c) {
+static int connect_socket(typed_ctx_t* c, const char* path) {
 	struct sockaddr_un sa;
+	int fd;
 
-	ignore_sigpipe();
-	c->fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (c->fd < 0) return daemon_unreachable(errno);
+	fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0) return -1;
 	memset(&sa, 0, sizeof(sa));
 	sa.sun_family = AF_UNIX;
-	if (strlcpy(sa.sun_path, FPKG_SOCKET, sizeof(sa.sun_path)) >=
-	    sizeof(sa.sun_path))
-		return daemon_unreachable(ENAMETOOLONG);
-	if (connect(c->fd, (struct sockaddr*)&sa, sizeof(sa)) != 0) {
-		int err = errno;
-		return daemon_unreachable(err);
+	if (strlcpy(sa.sun_path, path, sizeof(sa.sun_path)) >=
+	    sizeof(sa.sun_path)) {
+		close(fd);
+		errno = ENAMETOOLONG;
+		return -1;
 	}
+	if (connect(fd, (struct sockaddr*)&sa, sizeof(sa)) != 0) {
+		int err = errno;
+
+		close(fd);
+		errno = err;
+		return -1;
+	}
+	c->fd = fd;
 	return 0;
+}
+
+// The user daemon is a service: the client detaches it, waits for the
+// intermediate child, then for the socket.  flatpkgd --user inherits
+// FLATPKG_STORE and XDG_RUNTIME_DIR from this process.
+static int start_user_daemon(const char* path) {
+	pid_t pid = fork();
+	int status;
+
+	if (pid < 0) return -1;
+	if (pid == 0) {
+		pid_t mid = fork();
+
+		if (mid < 0) _exit(1);
+		if (mid > 0) _exit(0);
+		(void)setsid();
+		int devnull = open("/dev/null", O_RDWR);
+		if (devnull >= 0) {
+			(void)dup2(devnull, STDIN_FILENO);
+			(void)dup2(devnull, STDOUT_FILENO);
+			(void)dup2(devnull, STDERR_FILENO);
+			if (devnull > 2) close(devnull);
+		}
+		execl(FPKG_DAEMON_PATH, "flatpkgd", "--user", (char*)NULL);
+		_exit(127);
+	}
+	while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+		;
+	if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) return -1;
+	for (int i = 0; i < 100; i++) {
+		if (access(path, F_OK) == 0) return 0;
+		usleep(50000);
+	}
+	return -1;
+}
+
+static int typed_connect(typed_ctx_t* c) {
+	const char* path = c->user ? c->user_socket : FPKG_SOCKET;
+	bool started = false;
+
+	ignore_sigpipe();
+	for (int attempt = 0; attempt < 100; attempt++) {
+		if (connect_socket(c, path) == 0) return 0;
+		int err = errno;
+
+		if (!c->user) return daemon_unreachable_path(path, err);
+		if ((err == ENOENT || err == ECONNREFUSED) && !started) {
+			started = true;
+			if (start_user_daemon(path) == 0) continue;
+		}
+		if (err != ENOENT && err != ECONNREFUSED)
+			return daemon_unreachable_path(path, err);
+		usleep(50000);
+	}
+	return daemon_unreachable_path(path, ENOENT);
 }
 
 static int typed_handshake(typed_ctx_t* c) {
@@ -916,6 +981,10 @@ int client_try_typed(int argc, char* argv[]) {
 	c.fd = -1;
 
 	if (cli_parse(argc, argv, &c.req) != CLI_PROCEED) goto out;
+	c.user = c.req.user;
+	if (c.user)
+		snprintf(c.user_socket, sizeof(c.user_socket), "%s",
+			 c.req.user_socket);
 	if (cli_req_is_local(&c.req)) goto out;
 	// A bundle simulation changes nothing, so it needs no daemon.
 	if (cli_req_cmd(&c.req) == CMD_INSTALL && c.req.from != NULL &&

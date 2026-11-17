@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <sys/param.h>
 
 #include "flatpkg.h"
 
@@ -71,6 +72,11 @@ typedef struct {
 	run_opts_t run;	    // run: the per-launch grants
 	fp_metadata_t over; // override: the changes asked for
 	bool over_user, over_show, over_reset;
+
+	// --user / --installation=user: a per-user daemon and store.  cli.c
+	// computes the socket; the client connects to it.
+	bool user;
+	char user_socket[PATH_MAX];
 } cli_req_t;
 
 // What cli_parse() returns when the command is to run; any other value is

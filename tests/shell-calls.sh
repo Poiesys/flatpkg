@@ -72,7 +72,8 @@ util.c:run_program:util.c:run_program:argv[0][0] != '/'
 instance_ctl.c:cmd_enter:instance_ctl.c:cmd_enter:/app/bin:/usr/bin
 sandbox_root.c:p11kit_ensure_server:sandbox_root.c:p11kit_ensure_server:/usr/local/bin/p11-kit
 ostree.c:run_direct_cb:ostree.c:tool_binary:/usr/local/bin/ostree
-ostree.c:run_capture:ostree.c:gpg_program:!gpg_program'
+ostree.c:run_capture:ostree.c:gpg_program:!gpg_program
+client_typed.c:start_user_daemon:client_typed.c:start_user_daemon:FPKG_DAEMON_PATH'
 
 exec_resolved=0
 exec_registered=0
