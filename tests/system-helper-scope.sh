@@ -111,6 +111,29 @@ echo "  $SH_OK of $SH_N handlers that reach the store ask before they do" \
 	"(two spellings: helper_call_ok() and authorize() directly);" \
 	"$SH_QUIET more touch no store at all"
 
+# ---- index summaries ----------------------------------------------------
+# libflatpak 1.18 passes a caller-owned temp file path with SUMMARY_IS_INDEX.
+# The helper must copy it into the repo, and must read it only as the
+# caller's regular file: a symlink or a root-owned target would turn a group
+# member into a root read.
+ur=$(printf '%s\n' "$sb" | sed -n '/^static void handle_update_remote(/,/^}/p')
+printf '%s' "$ur" | grep -q 'SUMMARY_IS_INDEX' ||
+	note "UpdateRemote no longer looks at the index-summary flag"
+printf '%s' "$ur" | grep -q 'install_index_summary' ||
+	note "UpdateRemote does not install an index summary"
+printf '%s' "$ur" | grep -q 'flatpkg reads classic OSTree summaries' &&
+	note "UpdateRemote still refuses every index summary"
+ix=$(printf '%s\n' "$sb" | sed -n '/^static void install_index_summary(/,/^}/p')
+printf '%s' "$ix" | grep -q 'read_owned_file' ||
+	note "the index summary is not read through the caller-owned reader"
+printf '%s' "$ix" | grep -q 'summary.idx' ||
+	note "the index summary is not written as summary.idx"
+ro=$(printf '%s\n' "$sb" | sed -n '/^static gboolean read_owned_file(/,/^}/p')
+printf '%s' "$ro" | grep -q 'O_NOFOLLOW' ||
+	note "the summary reader follows a symlink"
+printf '%s' "$ro" | grep -q 'st_uid != uid' ||
+	note "the summary reader does not require the caller's uid"
+
 # ---- 4. and the allow side, at runtime ---------------------------------
 # The group member's call must get PAST the gate, so the answer is the NEXT validation
 # and never "denied".  The repo path is "/n": a path that cannot exist.

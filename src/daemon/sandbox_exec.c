@@ -758,6 +758,9 @@ static void child_set_environment(sandbox_t* sb, const fp_metadata_t* meta,
 	child_set_base_env(sb, plan);
 	child_set_host_env(plan);
 	child_unset_inherited_env(sb, plan);
+	// The sandbox's /tmp is private; Flatpak points temp files at the
+	// shared /var/tmp so the system helper outside the jail can read them.
+	setenv("TMPDIR", "/var/tmp", 1);
 	child_set_socket_env(sb, plan);
 	child_set_metadata_env(meta, plan);
 }

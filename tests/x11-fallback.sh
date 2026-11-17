@@ -55,6 +55,8 @@ printf '%s\n' "$out" | grep -q '^DISPLAY=' ||
 	{ echo "FAIL: the sandbox has no DISPLAY"; exit 1; }
 printf '%s\n' "$out" | grep -q '^WAYLAND_DISPLAY=' &&
 	{ echo "FAIL: the sandbox was promised a Wayland display"; exit 1; }
+printf '%s\n' "$out" | grep -q '^TMPDIR=/var/tmp$' ||
+	{ echo "FAIL: the sandbox temp dir is not the shared /var/tmp"; exit 1; }
 # The host's own Xauthority is not in one place (Hyprland's Xwayland uses a
 # private one): check the staging only where the caller's ~/.Xauthority is
 # what the cookie came from.

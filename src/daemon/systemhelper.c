@@ -1,9 +1,13 @@
 #include <gio/gio.h>
 #include <glib.h>
 
+#include <errno.h>
+#include <fcntl.h>
 #include <grp.h>
 #include <pwd.h>
+#include <stdint.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -629,6 +633,148 @@ out:
 	g_variant_unref(gpg_v);
 }
 
+#define SUMMARY_INDEX_MAX (64u * 1024u * 1024u)
+
+// flatpak's index summary: the client writes it to a shared temp file and
+// passes the path.  It is the caller's file, so read it with no symlink and
+// no root-owned target: a group member must not turn this into a root read.
+static gboolean read_owned_file(const char* path, uid_t uid,
+				unsigned char** out, size_t* out_len,
+				GError** error) {
+	struct stat st;
+	int fd;
+
+	*out = NULL;
+	*out_len = 0;
+	if (path == NULL || path[0] != '/') {
+		g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
+			    "summary path is not absolute");
+		return FALSE;
+	}
+	fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+	if (fd < 0) {
+		g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
+			    "cannot open %s: %s", path, g_strerror(errno));
+		return FALSE;
+	}
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+	    st.st_uid != uid) {
+		g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_ACCESS_DENIED,
+			    "refusing %s: not a regular file owned by the caller",
+			    path);
+		close(fd);
+		return FALSE;
+	}
+	if (st.st_size < 0 || (uint64_t)st.st_size > SUMMARY_INDEX_MAX) {
+		g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
+			    "refusing %s: summary too large", path);
+		close(fd);
+		return FALSE;
+	}
+	size_t len = (size_t)st.st_size;
+	unsigned char* buf = g_malloc(len ? len : 1);
+	size_t got = 0;
+	while (got < len) {
+		ssize_t n = read(fd, buf + got, len - got);
+
+		if (n < 0) {
+			if (errno == EINTR) continue;
+			g_set_error(error, G_DBUS_ERROR,
+				    G_DBUS_ERROR_FAILED, "cannot read %s: %s",
+				    path, g_strerror(errno));
+			g_free(buf);
+			close(fd);
+			return FALSE;
+		}
+		if (n == 0) break;
+		got += (size_t)n;
+	}
+	close(fd);
+	*out = buf;
+	*out_len = got;
+	return TRUE;
+}
+
+static gboolean write_repo_metadata(const char* name, const void* data,
+				    size_t len, GError** error) {
+	char repo[PATH_MAX], path[PATH_MAX];
+	struct stat st;
+
+	snprintf(repo, sizeof(repo), "%s/repo", store_root());
+	if (stat(repo, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != 0 ||
+	    (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+		g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+			    "the store repo is not root-owned: %s", repo);
+		return FALSE;
+	}
+	snprintf(path, sizeof(path), "%s/%s", repo, name);
+	if (!g_file_set_contents(path, data, (gssize)len, error)) return FALSE;
+	if (chmod(path, 0644) != 0) {
+		g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+			    "cannot set the mode of %s: %s", path,
+			    g_strerror(errno));
+		return FALSE;
+	}
+	return TRUE;
+}
+
+static void install_index_summary(GDBusConnection* connection,
+				  const gchar* sender, const gchar* remote,
+				  const gchar* summary_path,
+				  const gchar* sig_path,
+				  GDBusMethodInvocation* invocation) {
+	unsigned char* summary = NULL;
+	unsigned char* sig = NULL;
+	size_t summary_len = 0, sig_len = 0;
+	uid_t uid = 0;
+	GError* error = NULL;
+
+	(void)remote;
+	if (!caller_uid(connection, sender, &uid, &error)) {
+		g_dbus_method_invocation_return_error(
+			invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
+			"cannot resolve caller: %s", error->message);
+		g_error_free(error);
+		return;
+	}
+	if (!read_owned_file(summary_path, uid, &summary, &summary_len,
+			     &error))
+		goto fail;
+	if (summary_len == 0) {
+		g_set_error(&error, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
+			    "the index summary is empty");
+		goto fail;
+	}
+	if (sig_path != NULL && *sig_path != '\0' &&
+	    !read_owned_file(sig_path, uid, &sig, &sig_len, &error))
+		goto fail;
+	if (!write_repo_metadata("summary.idx", summary, summary_len, &error))
+		goto fail;
+	if (sig != NULL) {
+		if (!write_repo_metadata("summary.idx.sig", sig, sig_len,
+					 &error))
+			goto fail;
+	} else {
+		char dst[PATH_MAX];
+
+		snprintf(dst, sizeof(dst), "%s/repo/summary.idx.sig",
+			 store_root());
+		(void)unlink(dst);
+	}
+	g_free(summary);
+	g_free(sig);
+	g_dbus_method_invocation_return_value(invocation, NULL);
+	return;
+
+fail:
+	g_free(summary);
+	g_free(sig);
+	g_dbus_method_invocation_return_error(
+		invocation, G_DBUS_ERROR, G_DBUS_ERROR_FAILED, "%s",
+		error ? error->message : "cannot install the summary index");
+	if (error != NULL) g_error_free(error);
+}
+
 static void handle_update_remote(GDBusConnection* connection,
 				 const gchar* sender, const gchar* object_path,
 				 const gchar* interface_name,
@@ -649,14 +795,6 @@ static void handle_update_remote(GDBusConnection* connection,
 			    FLATPAK_HELPER_UPDATE_REMOTE_FLAGS_ALL))
 		goto out;
 
-	if (flags & FLATPAK_HELPER_UPDATE_REMOTE_FLAGS_SUMMARY_IS_INDEX) {
-		g_dbus_method_invocation_return_error(
-			invocation, G_DBUS_ERROR, G_DBUS_ERROR_NOT_SUPPORTED,
-			"flatpkg reads classic OSTree summaries; an index "
-			"summary cannot be applied to remote '%s'",
-			remote);
-		goto out;
-	}
 	if (!valid_remote_name(remote)) {
 		g_dbus_method_invocation_return_error(
 			invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
@@ -670,6 +808,11 @@ static void handle_update_remote(GDBusConnection* connection,
 		g_dbus_method_invocation_return_error(
 			invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
 			"UpdateRemote needs a summary path");
+		goto out;
+	}
+	if (flags & FLATPAK_HELPER_UPDATE_REMOTE_FLAGS_SUMMARY_IS_INDEX) {
+		install_index_summary(connection, sender, remote,
+				      summary_path, sig_path, invocation);
 		goto out;
 	}
 
