@@ -600,7 +600,8 @@ static void child_unset_inherited_env(sandbox_t* sb,
 		       "/.madvise_shim.so",
 		       1);
 
-	if (plan->sock_wayland && cli_getenv("FLATPKG_NO_SHIMS") == NULL &&
+	if (sandbox_wayland_usable(plan) &&
+	    cli_getenv("FLATPKG_NO_SHIMS") == NULL &&
 	    access("/run/flatpak/dmabuf_devt_shim.so", R_OK) == 0) {
 		char map[512];
 		const char* cur = cli_getenv("LD_PRELOAD");
@@ -634,7 +635,7 @@ static void child_set_socket_env(sandbox_t* sb,
 				 const sandbox_plan_t* plan) {
 	char buf[4096];
 	bool x11 = plan->sock_x11 ||
-		   (plan->sock_fallback_x11 && !plan->sock_wayland);
+		   (plan->sock_fallback_x11 && !sandbox_wayland_usable(plan));
 
 	if (!x11) unsetenv("DISPLAY");
 	if (sb->xauth_written)
@@ -647,14 +648,11 @@ static void child_set_socket_env(sandbox_t* sb,
 			 sb->p11kit_socket_name);
 		setenv("P11_KIT_SERVER_ADDRESS", buf, 1);
 	}
-	if (plan->sock_wayland || plan->sock_inherit_wayland) {
-		if (sb->wayland_display[0] != '\0')
-			setenv("WAYLAND_DISPLAY", sb->wayland_display, 1);
-		else
-			setenv("WAYLAND_DISPLAY", "wayland-0", 1);
-	} else {
+	if (sandbox_wayland_usable(plan) &&
+	    sb->wayland_display[0] != '\0')
+		setenv("WAYLAND_DISPLAY", sb->wayland_display, 1);
+	else
 		unsetenv("WAYLAND_DISPLAY");
-	}
 	if (plan->sock_pulseaudio) {
 		if (sb->pulse_bound) {
 			setenv("PULSE_SERVER", "unix:/run/flatpak/pulse/native",

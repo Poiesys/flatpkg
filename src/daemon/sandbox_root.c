@@ -43,15 +43,40 @@
 static const char* usrmerged_dirs[] = {"bin",  "lib",	"lib64",
 				       "sbin", "lib32", NULL};
 
-// The host's Wayland display name: the caller's value when usable, else the
-// runtime dir's own wayland-<digits> socket (a leading '/' is a path).
-static void host_wayland_display(const sandbox_plan_t* plan, char* out,
+// The host's Wayland display name, when it has one: the caller's value or
+// the runtime dir's own wayland-<digits> socket (a leading '/' is a path).
+static bool host_wayland_display(const sandbox_plan_t* plan, char* out,
 				 size_t n) {
 	assert(out != NULL);
 	assert(n > 0);
 	char* nm = fp_wayland_display_name(plan ? plan->xdg_runtime_dir : NULL);
-	snprintf(out, n, "%s", nm ? nm : "wayland-0");
+	if (nm == NULL) {
+		out[0] = '\0';
+		return false;
+	}
+	snprintf(out, n, "%s", nm);
 	free(nm);
+	return true;
+}
+
+bool sandbox_wayland_usable(const sandbox_plan_t* plan) {
+	if (plan == NULL) return false;
+	if (plan->sock_inherit_wayland) return true;
+	if (!plan->sock_wayland) return false;
+	char* nm = fp_wayland_display_name(plan->xdg_runtime_dir);
+	if (nm == NULL) return false;
+	// A set WAYLAND_DISPLAY is not proof: verify the socket exists.
+	bool ok = true;
+	if (plan->xdg_runtime_dir != NULL && plan->xdg_runtime_dir[0] != '\0' &&
+	    nm[0] != '/') {
+		char path[PATH_MAX];
+		struct stat st;
+
+		snprintf(path, sizeof(path), "%s/%s", plan->xdg_runtime_dir, nm);
+		ok = stat(path, &st) == 0 && S_ISSOCK(st.st_mode);
+	}
+	free(nm);
+	return ok;
 }
 
 // Copy `from` into a new `to` owned by uid:gid.  O_EXCL makes "the caller
@@ -3202,7 +3227,7 @@ static int stage_x11(sandbox_t* sb, const sandbox_plan_t* plan) {
 		return -1;
 	}
 	bool x11 = plan->sock_x11 ||
-		   (plan->sock_fallback_x11 && !plan->sock_wayland);
+		   (plan->sock_fallback_x11 && !sandbox_wayland_usable(plan));
 	if (tmp_is_exported(plan)) {
 		if (m_tmpfs(sb, x11dir) != 0) return -1;
 	}
@@ -3224,14 +3249,12 @@ static bool plan_uses_xdg_runtime(const sandbox_plan_t* plan) {
 
 static void stage_xdg_socket_links(sandbox_t* sb, const sandbox_plan_t* plan,
 				   const char* runuser, bool hostxdg_bound) {
-	if (hostxdg_bound &&
-	    (plan->sock_wayland || plan->sock_inherit_wayland)) {
+	if (hostxdg_bound && sandbox_wayland_usable(plan)) {
 		char base[256];
 		char sock[PATH_MAX], link[PATH_MAX];
 
-		host_wayland_display(plan, base, sizeof(base));
-		snprintf(sb->wayland_display, sizeof(sb->wayland_display), "%s",
-			 base);
+		if (!host_wayland_display(plan, base, sizeof(base)))
+			return;
 		snprintf(sock, sizeof(sock), "%s/%s", plan->xdg_runtime_dir,
 			 base);
 		if (access(sock, R_OK) == 0) {
@@ -3239,6 +3262,8 @@ static void stage_xdg_socket_links(sandbox_t* sb, const sandbox_plan_t* plan,
 			(void)unlink(link);
 			snprintf(sock, sizeof(sock), "/run/host/xdg/%s", base);
 			make_symlink(sock, link);
+			snprintf(sb->wayland_display,
+				 sizeof(sb->wayland_display), "%s", base);
 		}
 	}
 	if (hostxdg_bound && plan->sock_session_bus) {
@@ -3624,7 +3649,7 @@ static int stage_drm(sandbox_t* sb, const sandbox_plan_t* plan) {
 			       "renderD128", driver, slot, "pci", vendor, devid,
 			       subvendor, subdevid);
 
-		if (plan->sock_wayland) {
+		if (sandbox_wayland_usable(plan)) {
 			const char* shim =
 				"/usr/local/lib/flatpkg/dmabuf_devt_shim.so";
 

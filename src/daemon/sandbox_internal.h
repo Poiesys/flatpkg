@@ -18,6 +18,9 @@ int m_special(sandbox_t* sb, const char* fstype, const char* to);
 int m_special_opts(sandbox_t* sb, const char* fstype, const char* to,
 		   const char* opts);
 void stage_dev_shm(sandbox_t* sb, const sandbox_plan_t* plan);
+// The app's wayland grant is permission, not a display: an X11 session has
+// none, and then fallback-x11 is the channel that can run.
+bool sandbox_wayland_usable(const sandbox_plan_t* plan);
 
 struct drm_version_local {
 	int version_major, version_minor, version_patchlevel;
