@@ -773,6 +773,28 @@ static bool typed_plan_install(typed_ctx_t* c, int* status) {
 		*status = 1;
 		return false;
 	}
+	// The runtime and extension metadata is not in the app-ref prefetch;
+	// fetch every planned ref so the planner's metadata reads hit the cache
+	// instead of spawning ostree again.
+	if (c->plan.cs.count > 0) {
+		const char* planned[FP_APPLY_MAX];
+		size_t nplanned = 0;
+
+		for (size_t k = 0; k < c->plan.cs.count && k < FP_APPLY_MAX; k++) {
+			// The solver writes extension rows as extension/<id>/...; the
+			// remote publishes them under the runtime prefix, so they are
+			// not directly fetchable and are left to the planner.
+			if (strncmp(c->plan.cs.items[k].ref, "extension/", 10) ==
+			    0)
+				continue;
+			planned[nplanned++] = c->plan.cs.items[k].ref;
+		}
+		if (prefetch_meta(c->fd, planned, nplanned) != 0) {
+			ostree_plan_meta_reset();
+			*status = 1;
+			return false;
+		}
+	}
 	c->have_plan = true;
 	if (c->req.g.simulate) {
 		fpkg_infof("(simulate: no changes made)");
