@@ -371,6 +371,19 @@ int sandbox_create_jail(sandbox_t* sb, const fp_metadata_t* meta,
 			ADDP("allow.mlock", "1");
 	}
 
+	// The app runs as the caller; the owner must be able to signal/kill
+	// their own process from the host, which FreeBSD otherwise refuses
+	// across the jail.  Not every release has the knob, so ask first.
+	{
+		int present;
+		size_t len = sizeof(present);
+
+		if (sysctlbyname("security.jail.param.allow."
+				 "unprivileged_parent_tampering",
+				 &present, &len, NULL, 0) == 0)
+			ADDP("allow.unprivileged_parent_tampering", "1");
+	}
+
 	// Who the jail belongs to, held by the kernel with the jail and so not
 	// something a user can edit as they could their own runtime dir.  enter
 	// and kill act only for this uid, or root; no owner means root only.
