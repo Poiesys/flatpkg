@@ -955,6 +955,8 @@ static int read_remote_metadata(const char* commit, fp_metadata_t* out) {
 	free(body);
 	return rc;
 }
+static const char* plan_meta_text(const char* ref);
+
 static int summary_ref_metadata(const char* remote, const char* refstr,
 				fp_metadata_t* out) {
 	char* body = summary_ref_metadata_text(remote, refstr);
@@ -967,7 +969,10 @@ static int summary_ref_metadata(const char* remote, const char* refstr,
 // the commit instead.
 static int remote_ref_metadata(const char* remote, const char* refstr,
 			       fp_metadata_t* out) {
+	const char* cached = plan_meta_text(refstr);
+
 	if (summary_ref_metadata(remote, refstr, out) == 0) return 0;
+	if (cached != NULL) return parse_metadata_text(cached, out);
 	if (tool_pull_metadata(remote, refstr) != 0) return -1;
 	tool_ctx_t tc;
 	tool_ctx_init(&tc);
@@ -1469,8 +1474,20 @@ static int install_req_prepare(const char* request, flatpkg_dep_kind_t kind,
 					}
 				}
 			}
-			if (tool_pull_metadata(out->remote, refstr) != 0 ||
-			    read_remote_metadata(mcommit, &out->meta) != 0) {
+			const char* cached = plan_meta_text(refstr);
+			if (cached != NULL) {
+				if (parse_metadata_text(cached, &out->meta) !=
+				    0) {
+					fpkg_errorf("cannot read the metadata "
+						    "of %s",
+						    refstr);
+					fpkg_span_end(&phase_meta);
+					install_req_free(out);
+					return 1;
+				}
+			} else if (tool_pull_metadata(out->remote, refstr) != 0 ||
+				   read_remote_metadata(mcommit,
+							&out->meta) != 0) {
 				fpkg_errorf("cannot read the metadata of %s",
 					    refstr);
 				fpkg_span_end(&phase_meta);
