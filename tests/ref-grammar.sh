@@ -70,6 +70,7 @@ grep -q '^local' "$T/list" || note "the valid remote did not reach remote-list"
 # Source half, both directions: the grammar has one definition and the
 # destructive paths ask the containment question.
 strip_comments <"$ROOT/src/ostree.c" >"$T/ostree.c"
+strip_comments <"$ROOT/src/daemon/ostree_store.c" >"$T/ostree_store.c"
 for fn in 'int ref_parse\(' 'bool remote_name_valid\('; do
 	body=$(carve_function "^${fn}" "$T/ostree.c" || true)
 	[ -n "$body" ] || {
@@ -81,8 +82,8 @@ for fn in 'int ref_parse\(' 'bool remote_name_valid\('; do
 	*) note "$fn does not go through fpkg_component_ok" ;;
 	esac
 done
-for fn in uninstall_deploy deploy_checkout; do
-	body=$(carve_function "^.*${fn}\(" "$T/ostree.c" || true)
+for fn in uninstall_deploy; do
+	body=$(carve_function "^.*${fn}\(" "$T/ostree_store.c" || true)
 	[ -n "$body" ] || {
 		note "$fn could not be carved"
 		continue
@@ -92,6 +93,11 @@ for fn in uninstall_deploy deploy_checkout; do
 	*) note "$fn deletes or creates without store_path_contained" ;;
 	esac
 done
+body=$(carve_function "^int deploy_checkout\(" "$T/ostree.c" || true)
+case "$body" in
+*store_path_contained*) : ;;
+*) note "deploy_checkout deletes or creates without store_path_contained" ;;
+esac
 # mkdir_p follows a symlink that is already there, so the containment
 # question is asked of the nearest existing ancestor before it runs.
 body=$(carve_function "^int deploy_checkout\(" "$T/ostree.c" || true)

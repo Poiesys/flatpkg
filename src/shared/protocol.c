@@ -301,6 +301,9 @@ int fp_req_encode(nvlist_t** out, uint32_t id, const fp_req_t* r) {
 	case FP_REQ_SEARCH:
 		e = add_str(nvl, "text", r->u.search.text);
 		break;
+	case FP_REQ_LIST_COMMITS:
+		e = add_str(nvl, "ref", r->u.list_commits.ref);
+		break;
 	case FP_REQ_ENTER:
 		e = add_str(nvl, "instance", r->u.enter.instance);
 		if (e == FP_P_OK)
@@ -592,6 +595,9 @@ void fp_req_free(fp_req_t* r) {
 		break;
 	case FP_REQ_SEARCH:
 		free(r->u.search.text);
+		break;
+	case FP_REQ_LIST_COMMITS:
+		free(r->u.list_commits.ref);
 		break;
 	case FP_REQ_APPLY:
 		free(r->u.apply.remote);
@@ -994,6 +1000,11 @@ int fp_req_decode(const nvlist_t* nvl, uint32_t* id_out, fp_req_t* out) {
 	case FP_REQ_SEARCH:
 		out->u.search.text = dup_str(nvl, "text", &err);
 		if (err == FP_P_OK && out->u.search.text == NULL)
+			err = FP_P_ERR_MALFORMED;
+		break;
+	case FP_REQ_LIST_COMMITS:
+		out->u.list_commits.ref = dup_str(nvl, "ref", &err);
+		if (err == FP_P_OK && out->u.list_commits.ref == NULL)
 			err = FP_P_ERR_MALFORMED;
 		break;
 	case FP_REQ_ENTER:

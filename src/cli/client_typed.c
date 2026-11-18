@@ -296,6 +296,10 @@ static bool typed_request(const cli_req_t* req, fp_req_t* out, char** owned,
 			req->runtime ? FP_REF_RUNTIME : 0;
 		return n >= 2;
 	}
+	case CMD_LIST_COMMITS:
+		out->type = FP_REQ_LIST_COMMITS;
+		out->u.list_commits.ref = (char*)(n > 0 ? op[0] : "");
+		return n > 0;
 	case CMD_SEARCH:
 		out->type = FP_REQ_SEARCH;
 		out->u.search.text = (char*)(n > 0 ? op[0] : "");

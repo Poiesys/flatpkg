@@ -969,6 +969,19 @@ static void prefetch_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	op_finish(c, rc, "prefetch failed");
 }
 
+static void list_commits_request(wctx_t* c, uint32_t id,
+				  const fp_req_t* r) {
+	const char* ref = nz(r->u.list_commits.ref);
+
+	if (ref == NULL) {
+		ack_err(c, id, FP_E_INVALID, "missing ref");
+		return;
+	}
+	op_start(c, id, 15, "list-commits");
+	int rc = cmd_list_commits(ref);
+	op_finish(c, rc, "list-commits failed");
+}
+
 static void search_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	op_start(c, id, 14, "search");
 	int rc = cmd_search(nz(r->u.search.text));
@@ -1345,6 +1358,9 @@ static void handle(wctx_t* c, uint32_t id, fp_req_t* r) {
 		return;
 	case FP_REQ_SEARCH:
 		search_request(c, id, r);
+		return;
+	case FP_REQ_LIST_COMMITS:
+		list_commits_request(c, id, r);
 		return;
 	case FP_REQ_INSTALL_BUNDLE:
 	case FP_REQ_STDIO:

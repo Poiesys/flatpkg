@@ -103,6 +103,7 @@ static void build_corpus(void) {
 	     .u.local_ref_info = {"local", refs[0], "", FP_REF_RUNTIME}},
 	    {.type = FP_REQ_REMOTE_LIST},
 	    {.type = FP_REQ_SEARCH, .u.search = {"gedit"}},
+	    {.type = FP_REQ_LIST_COMMITS, .u.list_commits = {refs[0]}},
 	    {.type = FP_REQ_CLIENT_STATE,
 	     .u.client_state = {FP_CLIENT_STATE_WRITE, "world",
 				"app/org.example.App/x86_64/stable\n"}},

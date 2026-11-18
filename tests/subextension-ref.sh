@@ -59,7 +59,8 @@ cc -O0 -Wall -Wextra -I"$tmp" -o "$tmp/subext" "$HARNESS"
 
 # The backend is split across units; discover the one that defines it.
 OSTREE=
-for f in "$(dirname "$0")"/../src/ostree*.c; do
+for f in "$(dirname "$0")"/../src/ostree*.c \
+	 "$(dirname "$0")"/../src/daemon/ostree_store.c; do
 	if grep -q '^static void uninstall_deploy' "$f"; then
 		OSTREE=$f
 		break
@@ -145,7 +146,7 @@ echo "ok   every uninstall_deploy() call site passes a ref_kind the store has"
 # report the violation at the wrong line.  A call after a trailing /* ... */ is missed.
 code_grep() { grep -n "$@" | grep -vE '^[0-9]+:[[:space:]]*(\*|/\*|//)' || true; }
 
-OSTREE_UNITS=$(ls "$(dirname "$0")"/../src/ostree*.c)
+OSTREE_UNITS="$(ls "$(dirname "$0")"/../src/ostree*.c) $(dirname "$0")/../src/daemon/ostree_store.c"
 NDATA=$(code_grep 'write_deploy_data(' $OSTREE_UNITS | wc -l | tr -d ' ')
 passing_deploy=$(code_grep 'write_deploy_data(deploy' $OSTREE_UNITS)
 if [ -n "$passing_deploy" ]; then

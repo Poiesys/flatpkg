@@ -95,6 +95,7 @@ CLI_OBJS=       $(OBJDIR)/cli/dispatch.o \
 		$(OBJDIR)/cli/cli.o \
 		$(OBJDIR)/cli/client.o \
 		$(OBJDIR)/cli/client_typed.o \
+		$(OBJDIR)/cli/remote_info.o \
 		$(OBJDIR)/cli/solver.o \
 		$(OBJDIR)/cli/tb_core.o \
 		$(OBJDIR)/cli/tb_progress.o \
@@ -116,11 +117,15 @@ DAEMON_OBJS=    $(OBJDIR)/daemon/daemon.o \
 		$(OBJDIR)/daemon/ops/typed_worker.o \
 		$(OBJDIR)/daemon/ops/run.o
 
-# Legacy objects still in src/ root (need to be moved).  These are the ones
-# both binaries link: the OSTree backend and the store primitives.
-LEGACY_OBJS=    $(OBJDIR)/ostree.o \
-		$(OBJDIR)/ostree_plan.o \
-		$(OBJDIR)/ostree_cmds.o \
+# Planner/policy objects both binaries link.  They carry no libostree and no
+# daemon-only command layer: the CLI's planner and store readers use them.
+PLAN_OBJS=      $(OBJDIR)/ostree.o \
+		$(OBJDIR)/ostree_plan.o
+
+# The command/deploy layer, daemon only.  The CLI's one remote-info reader is
+# src/cli/remote_info.c; remote-list and search are daemon requests.
+DAEMON_STORE_OBJS=$(OBJDIR)/ostree_cmds.o \
+		$(OBJDIR)/daemon/ostree_store.o \
 		$(OBJDIR)/daemon/ops/store_write.o
 
 # Daemon-only ops.  They carry CLI-shaped entry points (cmd_enter, cmd_kill,
@@ -140,13 +145,18 @@ DAEMON_OSTREE_OBJS=$(OBJDIR)/daemon/repo.o
 # env accessor the primitives call.
 POLICY_OBJS=    $(OBJDIR)/cli/solver.o
 
-DAEMON_LINK=    $(DAEMON_OBJS) $(LEGACY_OBJS) $(DAEMON_OPS_OBJS) \
-		$(DAEMON_OSTREE_OBJS) $(POLICY_OBJS) \
+DAEMON_LINK=    $(DAEMON_OBJS) $(PLAN_OBJS) $(DAEMON_STORE_OBJS) \
+		$(DAEMON_OPS_OBJS) $(DAEMON_OSTREE_OBJS) $(POLICY_OBJS) \
 		$(OBJDIR)/daemon/ops/evui.o
 
 # The CLI links no daemon object: `flatpkg daemon` is gone, and the system
 # helper is flatpkgd's entry point.
-CLI_LINK=       $(ENTRY_CLI) $(CLI_OBJS) $(LEGACY_OBJS)
+# The planner still carries the daemon's install/apply helpers; the store
+# helpers they call are linked so a sanitizer build (which keeps sections the
+# normal --gc-sections build drops) resolves.  They are dead in the CLI.
+CLI_LINK=       $(ENTRY_CLI) $(CLI_OBJS) $(PLAN_OBJS) \
+		$(OBJDIR)/daemon/ostree_store.o \
+		$(OBJDIR)/daemon/ops/store_write.o
 
 # Shared library
 $(SHLIB): $(SHLIB_OBJS) Makefile
@@ -272,6 +282,14 @@ $(OBJDIR)/cli/upgrade.o: src/cli/upgrade.c
 $(OBJDIR)/cli/translations.o: src/cli/translations.c include/translations.h
 	@mkdir -p $(OBJDIR)/cli
 	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/cli/translations.c
+
+$(OBJDIR)/daemon/ostree_store.o: src/daemon/ostree_store.c src/ostree_internal.h
+	@mkdir -p $(OBJDIR)/daemon
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/ostree_store.c
+
+$(OBJDIR)/cli/remote_info.o: src/cli/remote_info.c src/ostree_internal.h
+	@mkdir -p $(OBJDIR)/cli
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/cli/remote_info.c
 
 $(OBJDIR)/ostree.o: src/ostree.c src/ostree_internal.h
 	@mkdir -p $(OBJDIR)
@@ -419,6 +437,8 @@ sinclude $(OBJDIR)/daemon/repo.d
 sinclude $(OBJDIR)/ostree.d
 sinclude $(OBJDIR)/ostree_plan.d
 sinclude $(OBJDIR)/ostree_cmds.d
+sinclude $(OBJDIR)/daemon/ostree_store.d
+sinclude $(OBJDIR)/cli/remote_info.d
 sinclude $(OBJDIR)/cli/repair.d
 sinclude $(OBJDIR)/daemon/ops/dbus_proxy.d
 sinclude $(OBJDIR)/daemon/ops/typed_worker.d

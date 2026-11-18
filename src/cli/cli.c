@@ -616,7 +616,7 @@ static const cli_cmd_t commands[] = {
 	 no_opts, 1, 1, CLI_CMD_LITERAL | 0},
 	{CMD_LIST_COMMITS, "list-commits", NULL, G_QUERY,
 	 "List deploys kept for rollback", "REF", NULL, no_opts, 1, 1,
-	 CLI_CMD_LOCAL},
+	 0},
 	{CMD_HISTORY, "history", NULL, G_QUERY,
 	 "Show the install, upgrade and uninstall log", NULL, NULL, no_opts, 0,
 	 0, CLI_CMD_LOCAL},
