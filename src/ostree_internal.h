@@ -175,6 +175,15 @@ char* summary_ref_commit(const char* remote, const char* refstr);
 char* remote_for_ref(const char* prefer, const char* ref);
 int remote_info_ref(const char* remote, const char* request, bool runtime_only,
 		    char* out, size_t outlen);
+const char* ref_body(const char* ref);
+void prefetched_clear(void);
+void related_refs_for_metadata(const fp_metadata_t* meta,
+			       const char* parent_branch, const char* arch,
+			       char** srefs, size_t nsrefs,
+			       fpkg_ref_t** refs, size_t* nrefs);
+int ostree_install_extension_ref(const char* ref);
+int update_deploy(const char* ref);
+
 int find_deploy_dir(const char* type, const fpkg_ref_t* r, char* out,
 			   size_t len);
 bool remote_name_valid(const char* name);

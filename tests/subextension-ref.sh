@@ -146,7 +146,7 @@ echo "ok   every uninstall_deploy() call site passes a ref_kind the store has"
 # report the violation at the wrong line.  A call after a trailing /* ... */ is missed.
 code_grep() { grep -n "$@" | grep -vE '^[0-9]+:[[:space:]]*(\*|/\*|//)' || true; }
 
-OSTREE_UNITS="$(ls "$(dirname "$0")"/../src/ostree*.c) $(dirname "$0")/../src/daemon/ostree_store.c"
+OSTREE_UNITS="$(ls "$(dirname "$0")"/../src/ostree*.c) $(dirname "$0")/../src/daemon/ostree_store.c $(dirname "$0")/../src/daemon/apply.c"
 NDATA=$(code_grep 'write_deploy_data(' $OSTREE_UNITS | wc -l | tr -d ' ')
 passing_deploy=$(code_grep 'write_deploy_data(deploy' $OSTREE_UNITS)
 if [ -n "$passing_deploy" ]; then

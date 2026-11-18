@@ -1084,7 +1084,7 @@ static bool prefetched_take(const char* refstr) {
 	}
 	return false;
 }
-static void prefetched_clear(void) {
+void prefetched_clear(void) {
 	for (size_t i = 0; i < g_nprefetched; i++) free(g_prefetched[i]);
 	free(g_prefetched);
 	g_prefetched = NULL;
@@ -1861,7 +1861,7 @@ char* summary_ref_metadata_text(const char* remote,
 // A plan row may name its own remote (`flathub:runtime/...`); the kind word is
 // whatever follows the colon.  Rows the planner built from metadata carry no
 // remote, so the executor asks for the body only.
-static const char* ref_body(const char* ref) {
+const char* ref_body(const char* ref) {
 	const char* colon = strchr(ref, ':');
 	const char* slash = strchr(ref, '/');
 
@@ -1914,207 +1914,6 @@ char* remote_for_ref(const char* prefer, const char* ref) {
 // Pull every ref the plan installs side by side, one bar each. The
 // installs that follow find them in the repo; whatever failed here is
 // retried there.
-static void prefetch_installs(const flatpkg_changeset_t* cs, const char* remote,
-			      flatpkg_txn_t* txn) {
-	assert(cs != NULL);
-	assert(remote != NULL);
-	pull_job_t* jobs = calloc(cs->count ? cs->count : 1, sizeof(*jobs));
-	if (!jobs) return;
-	size_t n = 0;
-	for (size_t i = 0; i < cs->count; i++) {
-		const flatpkg_change_t* c = &cs->items[i];
-		if (c->type != FP_CHANGE_INSTALL) continue;
-		char ctype[64], cid[256];
-		if (sscanf(ref_body(c->ref), "%63[^/]/%255s", ctype, cid) != 2)
-			continue;
-		fpkg_ref_t ir;
-		if (ref_parse(c->ref, &ir) != 0) continue;
-		if (!ir.arch) ir.arch = xstrdup(host_arch());
-		if (!ir.branch) ir.branch = xstrdup("stable");
-		char refstr[512];
-		ref_full(&ir, strcmp(ctype, "app") == 0 ? "app" : "runtime",
-			 refstr, sizeof(refstr));
-		char* rem = ir.remote ? xstrdup(ir.remote)
-				      : remote_for_ref(remote, c->ref);
-		pull_job_init(&jobs[n++], rem != NULL ? rem : remote, refstr);
-		free(rem);
-		ref_free(&ir);
-	}
-	if (n > 1 || (txn != NULL && n > 0)) {
-		(void)parallel_pull(jobs, n, txn);
-		for (size_t i = 0; i < n; i++)
-			if (jobs[i].rc == 0) prefetched_add(jobs[i].refstr);
-	} else if (n == 0 && txn != NULL) {
-		flatpkg_txn_pull_begin(txn, 0);
-		flatpkg_txn_pull_end(txn);
-	}
-	pull_jobs_free(jobs, n);
-	free(jobs);
-}
-// True when the plan already carries extension install rows: the
-// executor must then skip the post-install sweep, which would pull
-// everything a second time.
-static bool cs_ext_install_planned(const flatpkg_changeset_t* cs,
-				   const fpkg_ref_t* rt) {
-	assert(cs != NULL);
-	for (size_t i = 0; i < cs->count; i++)
-		if (cs->items[i].type == FP_CHANGE_INSTALL &&
-		    cs->items[i].ref &&
-		    strncmp(cs->items[i].ref, "extension/", 10) == 0)
-			return true;
-	return false;
-}
-// Apply a confirmed changeset: pull in parallel, then one transaction over
-// every row.  The install plan and the solver's commit both come through
-// here, so an install and an upgrade reach the store the same way.
-int changeset_apply(flatpkg_changeset_t* cs, const char* remote) {
-	assert(cs != NULL);
-
-	bool installs = false;
-	size_t nwork = 0;
-	for (size_t i = 0; i < cs->count; i++) {
-		if (cs->items[i].type == FP_CHANGE_INSTALL) installs = true;
-		if (cs->items[i].type != FP_CHANGE_KEEP &&
-		    cs->items[i].type != FP_CHANGE_NOOP)
-			nwork++;
-	}
-	char* fallback = (remote == NULL && installs) ? first_remote() : NULL;
-	const char* use_remote = remote != NULL ? remote : fallback;
-
-	flatpkg_txn_t txn;
-	flatpkg_txn_begin(&txn, nwork);
-	if (!txn.nested && use_remote != NULL)
-		prefetch_installs(cs, use_remote, &txn);
-
-	int rc = 0;
-	fpkg_span_t phase_apply = fpkg_span_begin("apply");
-	for (size_t i = 0; i < cs->count; i++) {
-		if (fpkg_cancel_requested()) {
-			fpkg_warnf("cancelled");
-			rc = -1;
-			break;
-		}
-		flatpkg_change_t* c = &cs->items[i];
-		if (c->type == FP_CHANGE_KEEP || c->type == FP_CHANGE_NOOP)
-			continue;
-		const char* verb = "installing";
-		if (c->type == FP_CHANGE_UPGRADE) verb = "upgrading";
-		else if (c->type == FP_CHANGE_DOWNGRADE)
-			verb = "downgrading";
-		else if (c->type == FP_CHANGE_REMOVE)
-			verb = "removing";
-		else if (c->type == FP_CHANGE_REINSTALL)
-			verb = "reinstalling";
-		flatpkg_txn_op(&txn, verb, c->ref);
-
-		if (c->type == FP_CHANGE_REMOVE) {
-			if (remove_deploy_ref(c->ref) != 0) {
-				fpkg_errorf("remove %s failed", c->ref);
-				rc = -1;
-			}
-			continue;
-		}
-		if (c->type == FP_CHANGE_UPGRADE ||
-		    c->type == FP_CHANGE_DOWNGRADE ||
-		    c->type == FP_CHANGE_REINSTALL) {
-			if (update_deploy(c->ref) != 0) {
-				fpkg_errorf("update %s failed", c->ref);
-				rc = -1;
-			} else {
-				const char* action =
-					c->type == FP_CHANGE_UPGRADE ? "upgrade"
-					: c->type == FP_CHANGE_DOWNGRADE
-						? "downgrade"
-						: "reinstall";
-				history_append(action, c->ref, c->old_version,
-					       c->new_version);
-			}
-			continue;
-		}
-		char ctype[64], cid[256];
-		if (sscanf(ref_body(c->ref), "%63[^/]/%255s", ctype, cid) != 2) {
-			fpkg_warnf("cannot parse ref '%s'", c->ref);
-			rc = -1;
-			continue;
-		}
-		if (strcmp(ctype, "extension") == 0) {
-			// The extension installer takes the remote from the ref, so
-			// the resolved one is spelled on when the row has none.
-			char eref[768];
-			char* erem = NULL;
-			if (ref_body(c->ref) == c->ref) {
-				erem = remote_for_ref(use_remote, c->ref);
-				snprintf(eref, sizeof(eref), "%s:%s",
-					 erem != NULL ? erem : "",
-					 c->ref);
-			} else {
-				snprintf(eref, sizeof(eref), "%s", c->ref);
-			}
-			int erc = ostree_install_extension_ref(eref);
-			free(erem);
-			if (erc != 0) {
-				fpkg_errorf("install %s failed", c->ref);
-				rc = -1;
-			} else {
-				history_append("install", c->ref, NULL,
-					       c->new_version);
-			}
-			continue;
-		}
-		int runtime_only = strcmp(ctype, "runtime") == 0;
-		fpkg_ref_t ir;
-		if (ref_parse(c->ref, &ir) != 0) {
-			fpkg_warnf("cannot parse ref '%s'", c->ref);
-			rc = -1;
-			continue;
-		}
-		if (!ir.arch) {
-			free(ir.arch);
-			ir.arch = xstrdup(host_arch());
-		}
-		if (!ir.branch) ir.branch = xstrdup("stable");
-		char* iremote =
-			ir.remote ? xstrdup(ir.remote)
-				  : remote_for_ref(use_remote, c->ref);
-		if (iremote == NULL) {
-			fpkg_errorf("no remote for %s", c->ref);
-			rc = -1;
-			ref_free(&ir);
-			continue;
-		}
-		install_one(&ir, runtime_only ? "runtime" : "app",
-			    runtime_only ? "runtime" : "app", iremote);
-		if (deploy_exists(runtime_only ? "runtime" : "app", ir.id)) {
-			fpkg_okf("installed %s %s", ctype, ir.id);
-			history_append("install", c->ref, NULL, c->new_version);
-			if (runtime_only && !cs_ext_install_planned(cs, &ir)) {
-				// Expansion turned the runtime's extensions into rows; fall back to
-				// the sweep only when it found none.
-				remote_refs_t* rr = remote_refs_cached(
-					iremote, "Looking up extensions");
-				if (rr && !rr->failed)
-					install_extensions(iremote, &ir,
-							   rr->refs, rr->n);
-				else
-					fpkg_warnf(
-						"cannot fetch refs for "
-						"'%s': extensions of %s were "
-						"not installed",
-						iremote, ir.id);
-			}
-		} else {
-			fpkg_errorf("install %s failed", c->ref);
-			rc = -1;
-		}
-		free(iremote);
-		ref_free(&ir);
-	}
-	fpkg_span_end(&phase_apply);
-	flatpkg_txn_end(&txn, rc);
-	prefetched_clear();
-	free(fallback);
-	return rc == 0 ? 0 : 1;
-}
 void fpkg_plan_free(fpkg_plan_t* plan) {
 	assert(plan != NULL);
 	changeset_free(&plan->cs);

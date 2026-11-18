@@ -126,6 +126,7 @@ PLAN_OBJS=      $(OBJDIR)/ostree.o \
 # src/cli/remote_info.c; remote-list and search are daemon requests.
 DAEMON_STORE_OBJS=$(OBJDIR)/ostree_cmds.o \
 		$(OBJDIR)/daemon/ostree_store.o \
+		$(OBJDIR)/daemon/apply.o \
 		$(OBJDIR)/daemon/ops/store_write.o
 
 # Daemon-only ops.  They carry CLI-shaped entry points (cmd_enter, cmd_kill,
@@ -154,9 +155,7 @@ DAEMON_LINK=    $(DAEMON_OBJS) $(PLAN_OBJS) $(DAEMON_STORE_OBJS) \
 # The planner still carries the daemon's install/apply helpers; the store
 # helpers they call are linked so a sanitizer build (which keeps sections the
 # normal --gc-sections build drops) resolves.  They are dead in the CLI.
-CLI_LINK=       $(ENTRY_CLI) $(CLI_OBJS) $(PLAN_OBJS) \
-		$(OBJDIR)/daemon/ostree_store.o \
-		$(OBJDIR)/daemon/ops/store_write.o
+CLI_LINK=       $(ENTRY_CLI) $(CLI_OBJS) $(PLAN_OBJS)
 
 # Shared library
 $(SHLIB): $(SHLIB_OBJS) Makefile
@@ -282,6 +281,10 @@ $(OBJDIR)/cli/upgrade.o: src/cli/upgrade.c
 $(OBJDIR)/cli/translations.o: src/cli/translations.c include/translations.h
 	@mkdir -p $(OBJDIR)/cli
 	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/cli/translations.c
+
+$(OBJDIR)/daemon/apply.o: src/daemon/apply.c src/ostree_internal.h include/flatpkg.h
+	@mkdir -p $(OBJDIR)/daemon
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/apply.c
 
 $(OBJDIR)/daemon/ostree_store.o: src/daemon/ostree_store.c src/ostree_internal.h
 	@mkdir -p $(OBJDIR)/daemon
@@ -437,6 +440,7 @@ sinclude $(OBJDIR)/daemon/repo.d
 sinclude $(OBJDIR)/ostree.d
 sinclude $(OBJDIR)/ostree_plan.d
 sinclude $(OBJDIR)/ostree_cmds.d
+sinclude $(OBJDIR)/daemon/apply.d
 sinclude $(OBJDIR)/daemon/ostree_store.d
 sinclude $(OBJDIR)/cli/remote_info.d
 sinclude $(OBJDIR)/cli/repair.d
