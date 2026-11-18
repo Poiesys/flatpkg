@@ -1099,7 +1099,9 @@ static void emit_zsh(const char* prog) {
 	comp_line("");
 	fp_outl("%s() {", fn);
 	comp_line("    local curcontext=\"$curcontext\" state cmd opt kind");
-	comp_line("    local -a commands words vals kinds");
+	// zsh's `words` is the special array _arguments reads; a local of that
+	// name shadows it and the completion never matches.
+	comp_line("    local -a commands opts vals kinds");
 	comp_line("    typeset -A opt_args");
 	comp_line("");
 	comp_line("    _arguments -C \\");
@@ -1132,15 +1134,15 @@ static void emit_zsh(const char* prog) {
 		comp_cmd_words(c, words, sizeof(words));
 		comp_cmd_kinds(c, kinds, sizeof(kinds));
 		if (c->alias != NULL)
-			fp_outl("        %s|%s) words=(%s); kinds=(%s) ;;",
+			fp_outl("        %s|%s) opts=(%s); kinds=(%s) ;;",
 				c->name, c->alias, words, kinds);
 		else
-			fp_outl("        %s) words=(%s); kinds=(%s) ;;",
+			fp_outl("        %s) opts=(%s); kinds=(%s) ;;",
 				c->name, words, kinds);
 	}
-	fp_outl("        *) words=(%s); kinds=() ;;", global);
+	fp_outl("        *) opts=(%s); kinds=() ;;", global);
 	comp_line("        esac");
-	comp_line("        (( ${#words} )) && _describe -t options 'option' words");
+	comp_line("        (( ${#opts} )) && _describe -t options 'option' opts");
 	comp_line("        for kind in $kinds; do");
 	comp_line("            case $kind in");
 	comp_line("            files) _files ;;");
