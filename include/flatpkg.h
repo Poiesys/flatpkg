@@ -753,6 +753,10 @@ void changeset_free(flatpkg_changeset_t* cs);
 // Record an explicit request with no work, so the table can name the ref.
 void changeset_add_noop(flatpkg_changeset_t* cs, const char* ref);
 void changeset_add_reinstall(flatpkg_changeset_t* cs, const char* ref);
+// One install row with the branch the caller named, for a ref the solver
+// does not own (a standalone extension).
+void changeset_add_install(flatpkg_changeset_t* cs, const char* ref,
+			   const char* branch);
 
 bool changeset_has_work(const flatpkg_changeset_t* cs);
 

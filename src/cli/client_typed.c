@@ -43,6 +43,21 @@ static bool ref_is_pinned(const char* s) {
 	return pinned;
 }
 
+// A flatpak Deploy names the kind in the ref (`app/...` or `runtime/...`),
+// while `flatpkg install` only has --runtime for a whole command.  A kind
+// prefix is the same statement, so read it instead of requiring the flag.
+static bool ref_names_runtime(const char* s) {
+	const char* body = s;
+	const char* colon;
+	const char* slash;
+
+	if (s == NULL) return false;
+	colon = strchr(s, ':');
+	slash = strchr(s, '/');
+	if (colon != NULL && (slash == NULL || colon < slash)) body = colon + 1;
+	return strncmp(body, "runtime/", 8) == 0;
+}
+
 // FLATPKG_FORWARD_FDS names descriptors to carry into the sandbox on those same
 // numbers. Mismatched numbers are refused, not dropped: silently losing one fails later.
 static int forward_targets(int* fds, size_t* nfds, char* list, size_t listsz) {
@@ -718,7 +733,8 @@ static int typed_resolve_refs(typed_ctx_t* c) {
 			continue;
 		}
 		c->ref_store[k] = ostree_resolve_install_request(
-			c->req.ops[k], c->req.runtime);
+			c->req.ops[k],
+			c->req.runtime || ref_names_runtime(c->req.ops[k]));
 		if (c->ref_store[k] == NULL) return 1;
 		c->refs[k] = c->ref_store[k];
 		c->nresolved = k + 1;
@@ -760,8 +776,9 @@ static bool typed_plan_install(typed_ctx_t* c, int* status) {
 	size_t n = c->req.nops;
 
 	for (size_t k = 0; k < n; k++) {
-		kinds[k] = c->req.runtime ? FLATPKG_DEP_KIND_RUNTIME
-					  : FLATPKG_DEP_KIND_APP;
+		kinds[k] = (c->req.runtime || ref_names_runtime(c->refs[k]))
+				   ? FLATPKG_DEP_KIND_RUNTIME
+				   : FLATPKG_DEP_KIND_APP;
 		commits[k] = c->req.commit;
 		if (kinds[k] == FLATPKG_DEP_KIND_APP)
 			prefetch_refs[nprefetch++] = c->refs[k];

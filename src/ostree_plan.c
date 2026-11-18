@@ -1250,6 +1250,28 @@ static int install_req_prepare(const char* request, flatpkg_dep_kind_t kind,
 		}
 	}
 
+	// An extension is published on the remote under the runtime prefix,
+	// so a flatpak Deploy for one arrives as runtime/<id>.  Its metadata
+	// is the only thing that says so: a runtime carries none of the
+	// [ExtensionOf] groups an extension does.
+	if (out->is_runtime) {
+		char refstr[512];
+		fp_metadata_t m;
+
+		ref_full(r, "runtime", refstr, sizeof(refstr));
+		if (summary_ref_metadata(out->remote, refstr, &m) == 0) {
+			bool is_ext = m.nextof_groups > 0;
+
+			fp_metadata_free(&m);
+			if (is_ext) {
+				out->is_runtime = false;
+				out->is_ext = true;
+				out->kind = FLATPKG_DEP_KIND_EXTENSION;
+				out->dep_type = "extension";
+			}
+		}
+	}
+
 	// flatpak install(1): a name or an id without a branch is looked up in
 	// the remote and a partial match confirmed before anything happens;
 	// a plan nested in another one has nothing to look up.
@@ -1390,13 +1412,45 @@ static bool changeset_has_ref_id(const flatpkg_changeset_t* cs, const char* id) 
 	}
 	return false;
 }
+// The solver may have planned a standalone extension away because no app
+// in the world declares it.  Installing it is the more specific request.
+static bool extension_row_installs(flatpkg_changeset_t* cs, const char* id,
+				   const char* branch) {
+	for (size_t i = 0; i < cs->count; i++) {
+		fpkg_ref_t r;
+
+		if (cs->items[i].type == FP_CHANGE_KEEP) continue;
+		if (ref_parse(cs->items[i].ref, &r) != 0) continue;
+		bool same = strcmp(r.id, id) == 0;
+		ref_free(&r);
+		if (!same) continue;
+		if (cs->items[i].type == FP_CHANGE_REMOVE) {
+			cs->items[i].type = FP_CHANGE_INSTALL;
+			free(cs->items[i].new_version);
+			cs->items[i].new_version = xstrdup(branch);
+		}
+		return true;
+	}
+	return false;
+}
+
 static void install_req_add_row(flatpkg_changeset_t* cs,
 				const install_req_t* q, bool reinstall) {
 	assert(cs != NULL);
 	assert(q != NULL);
-	if (changeset_has_ref_id(cs, q->ref.id)) return;
 	char nref[512];
 	ref_full(&q->ref, q->dep_type, nref, sizeof(nref));
+	if (q->is_ext) {
+		// An extension requested by itself (a flatpak Deploy) is not a
+		// world entry: the app or runtime that declares it owns it.
+		const char* branch =
+			q->ref.branch != NULL ? q->ref.branch : "stable";
+
+		if (!extension_row_installs(cs, q->ref.id, branch))
+			changeset_add_install(cs, nref, branch);
+		return;
+	}
+	if (changeset_has_ref_id(cs, q->ref.id)) return;
 	if (reinstall)
 		changeset_add_reinstall(cs, nref);
 	else
@@ -1464,6 +1518,10 @@ int ostree_plan_install(const char** requests, const char* const* commits,
 	if (world_load(&out->world) != 0) goto out;
 	for (size_t i = 0; i < n; i++) {
 		flatpkg_dep_t dep = {0};
+
+		// A standalone extension is installed as a row, not as a world
+		// entry: it belongs to the app or runtime that declares it.
+		if (reqs[i].is_ext) continue;
 		dep.kind = reqs[i].kind;
 		dep.name = reqs[i].ref.id;
 		world_dep_add(&out->world, &dep);

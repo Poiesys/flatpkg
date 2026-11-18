@@ -542,6 +542,13 @@ void changeset_add_reinstall(flatpkg_changeset_t* cs, const char* ref) {
 	changeset_add(cs, FP_CHANGE_REINSTALL, ref, NULL, NULL);
 }
 
+void changeset_add_install(flatpkg_changeset_t* cs, const char* ref,
+			   const char* branch) {
+	assert(cs != NULL);
+	assert(ref != NULL);
+	changeset_add(cs, FP_CHANGE_INSTALL, ref, NULL, branch);
+}
+
 static void changeset_add_once(flatpkg_changeset_t* cs,
 			       flatpkg_change_type_t type, const char* ref,
 			       const char* old_version,
