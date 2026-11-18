@@ -324,8 +324,10 @@ int instance_register(sandbox_t* sb, const fp_metadata_t* meta,
 	char inst_base[PATH_MAX];
 	if (sandbox_ensure_runtime_dir(plan) != 0)
 		fpkg_warnf("cannot provide a usable %s", plan->xdg_runtime_dir);
-	snprintf(inst_base, sizeof(inst_base), "%s/.flatpak",
-		 plan->xdg_runtime_dir);
+	// cmd_ps()/kill read instances_dir(): the caller's runtime dir.  The
+	// plan's dir is the sandbox view and can differ, which made a running
+	// app invisible to flatpkg ps.
+	snprintf(inst_base, sizeof(inst_base), "%s", instances_dir());
 	if (mkdir_p(inst_base, 0755) != 0) {
 		fpkg_warnf("cannot create %s: %s", inst_base, strerror(errno));
 		return 0;
