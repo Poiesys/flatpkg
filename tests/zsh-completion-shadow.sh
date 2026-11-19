@@ -19,12 +19,15 @@ trap 'rm -rf "$tmp"' EXIT
 if grep -qE '^[[:space:]]*local -a[[:space:]].*\bwords\b' "$tmp/_flatpak"; then
 	note "the completion declares a local 'words'"
 fi
-grep -qE 'local -a commands opts' "$tmp/_flatpak" ||
+grep -qE 'local -a opts' "$tmp/_flatpak" ||
 	note "the candidate array is not 'opts'"
 
-# zsh's special array is still read for the command line.
-grep -q 'for w in \$words' "$tmp/_flatpak" ||
-	note "the command scan no longer reads \$words"
+# zsh's special array is still read for the current word, and the
+# subcommand dispatch is by $line, not by shadowing a special.
+grep -q '\$words\[CURRENT\]' "$tmp/_flatpak" ||
+	note "the current word no longer reads \$words"
+grep -q 'case \$line\[1\] in' "$tmp/_flatpak" ||
+	note "the subcommand dispatch is not by \$line"
 grep -q '_describe -t options .option. opts' "$tmp/_flatpak" ||
 	note "_describe does not use the opts array"
 

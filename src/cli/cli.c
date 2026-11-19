@@ -1069,9 +1069,11 @@ static void emit_bash(const char* prog) {
 
 static void emit_zsh(const char* prog) {
 	char fn[64];
+	char cfn[72];
 	char command_list[2048];
 	char global[COMP_WORDS_MAX];
 	snprintf(fn, sizeof(fn), "_%s", prog);
+	snprintf(cfn, sizeof(cfn), "_%s_commands", prog);
 	comp_cmd_names(command_list, sizeof(command_list));
 	global[0] = '\0';
 	comp_opt_words(global, sizeof(global), global_opts);
@@ -1097,37 +1099,36 @@ static void emit_zsh(const char* prog) {
 	comp_line("    (( ${#items} )) && _describe -t $1 $1 items");
 	comp_line("}");
 	comp_line("");
-	fp_outl("%s() {", fn);
-	comp_line("    local curcontext=\"$curcontext\" state cmd opt kind");
-	// zsh's `words` is the special array _arguments reads; a local of that
-	// name shadows it and the completion never matches.
-	comp_line("    local -a commands opts vals kinds");
-	comp_line("    typeset -A opt_args");
+	fp_outl("%s() {", cfn);
+	comp_line("    local -a cmds");
+	fp_outl("    cmds=(%s)", command_list);
+	comp_line("    _describe -t commands 'command' cmds \"$@\"");
+	comp_line("}");
 	comp_line("");
-	comp_line("    _arguments -C \\");
-	comp_line("        '1: :->command' \\");
-	comp_line("        '*::argument:->args'");
+	comp_line("autoload -U is-at-least");
+	comp_line("");
+	fp_outl("%s() {", fn);
+	comp_line("    typeset -A opt_args");
+	comp_line("    typeset -a _arguments_options");
+	comp_line("    local ret=1");
+	comp_line("    local context curcontext=\"$curcontext\" state line");
+	comp_line("    local opt kind");
+	comp_line("    local -a opts vals kinds");
+	comp_line("");
+	comp_line("    if is-at-least 5.2; then");
+	comp_line("        _arguments_options=(-s -S -C)");
+	comp_line("    else");
+	comp_line("        _arguments_options=(-s -C)");
+	comp_line("    fi");
+	comp_line("");
+	comp_line("    _arguments \"${_arguments_options[@]}\" : \\");
+	fp_outl("        '1: :%s' \\", cfn);
+	fp_outl("        '*: :->%s' \\", prog);
+	comp_line("        && ret=0");
 	comp_line("");
 	comp_line("    case $state in");
-	comp_line("    command)");
-	fp_outl("        commands=(%s)", command_list);
-	comp_line("        _describe -t commands 'command' commands");
-	comp_line("        ;;");
-	comp_line("    args)");
-	comp_line("        cmd=\"\"");
-	comp_line("        for w in $words; do");
-	comp_line("            if (( ${commands[(Ie)$w]} )); then cmd=$w; break; fi");
-	comp_line("        done");
-	comp_line("        if [[ $words[CURRENT] == --*=* ]]; then");
-	comp_line("            opt=${words[CURRENT]%%=*}");
-	comp_line("            vals=()");
-	comp_zsh_values();
-	comp_line("            if (( ${#vals} )); then");
-	comp_line("                compadd -P \"$opt=\" -a vals");
-	comp_line("                return");
-	comp_line("            fi");
-	comp_line("        fi");
-	comp_line("        case $cmd in");
+	fp_outl("    %s)", prog);
+	comp_line("        case $line[1] in");
 	for (const cli_cmd_t* c = commands; c->name; c++) {
 		char words[COMP_WORDS_MAX];
 		char kinds[128];
@@ -1142,6 +1143,15 @@ static void emit_zsh(const char* prog) {
 	}
 	fp_outl("        *) opts=(%s); kinds=() ;;", global);
 	comp_line("        esac");
+	comp_line("        if [[ $words[CURRENT] == --*=* ]]; then");
+	comp_line("            opt=${words[CURRENT]%%=*}");
+	comp_line("            vals=()");
+	comp_zsh_values();
+	comp_line("            if (( ${#vals} )); then");
+	comp_line("                compadd -P \"$opt=\" -a vals");
+	comp_line("                return");
+	comp_line("            fi");
+	comp_line("        fi");
 	comp_line("        (( ${#opts} )) && _describe -t options 'option' opts");
 	comp_line("        for kind in $kinds; do");
 	comp_line("            case $kind in");
@@ -1151,9 +1161,14 @@ static void emit_zsh(const char* prog) {
 	comp_line("        done");
 	comp_line("        ;;");
 	comp_line("    esac");
+	comp_line("    return ret");
 	comp_line("}");
 	comp_line("");
-	fp_outl("%s \"$@\"", fn);
+	fp_outl("if [ \"$funcstack[1]\" = \"%s\" ]; then", fn);
+	fp_outl("    %s \"$@\"", fn);
+	comp_line("else");
+	fp_outl("    compdef %s %s", fn, prog);
+	comp_line("fi");
 }
 
 static void emit_fish(const char* prog) {
@@ -1240,21 +1255,28 @@ static void emit_fish(const char* prog) {
 	comp_line("end");
 }
 
+// One entry per supported shell: the dispatch is a table, so a new shell is
+// a function and a row.
+static const struct {
+	const char* name;
+	void (*emit)(const char* prog);
+} completion_shells[] = {{"bash", emit_bash},
+			 {"zsh", emit_zsh},
+			 {"fish", emit_fish},
+			 {NULL, NULL}};
+
 int cli_complete_shell(const char* shell, const char* prog) {
 	assert(shell != NULL);
 	if (prog == NULL) prog = "flatpkg";
 	if (strcmp(prog, "flatpkg") != 0 && strcmp(prog, "flatpak") != 0 &&
 	    strcmp(prog, "flatpkgd") != 0)
 		return -1;
-	if (strcmp(shell, "bash") == 0)
-		emit_bash(prog);
-	else if (strcmp(shell, "zsh") == 0)
-		emit_zsh(prog);
-	else if (strcmp(shell, "fish") == 0)
-		emit_fish(prog);
-	else
-		return -1;
-	return 0;
+	for (size_t i = 0; completion_shells[i].name != NULL; i++)
+		if (strcmp(shell, completion_shells[i].name) == 0) {
+			completion_shells[i].emit(prog);
+			return 0;
+		}
+	return -1;
 }
 
 static void man_opt_head(const cli_opt_t* o) {
