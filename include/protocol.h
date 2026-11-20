@@ -123,6 +123,10 @@ typedef struct {
 
 typedef struct {
 	uint32_t type;
+	// The store this request acts on; empty means the daemon's own.  A
+	// client asking for its user installation names it, so the root daemon
+	// can launch from that store.
+	char* store;
 	union {
 		struct {
 			uint32_t version;

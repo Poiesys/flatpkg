@@ -40,7 +40,21 @@ int flatpkg_client_path(const char* client, const char* file, char* out,
 	return n > 0 && (size_t)n < len ? 0 : -1;
 }
 
+static char g_store_override[PATH_MAX];
+
+// A request may name the installation it acts on (a user store the root
+// daemon launches from).  It applies to that request only; the worker clears
+// it when the request is done.
+void store_set_root(const char* root) {
+	if (root == NULL || *root == '\0') {
+		g_store_override[0] = '\0';
+		return;
+	}
+	snprintf(g_store_override, sizeof(g_store_override), "%s", root);
+}
+
 const char* store_root(void) {
+	if (g_store_override[0] != '\0') return g_store_override;
 	// $FLATPKG_STORE lets non-root invocations point at a private store for
 	// testing; ignored when root, so a setuid binary cannot be redirected.
 	if (geteuid() != 0) {

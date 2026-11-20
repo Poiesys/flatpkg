@@ -1627,6 +1627,7 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 			if (c.dead) break;
 			continue;
 		}
+		store_set_root(req.store);
 		if (daemon_is_user() &&
 		    (req.type == FP_REQ_RUN || req.type == FP_REQ_ENTER ||
 		     req.type == FP_REQ_STDIO)) {

@@ -474,6 +474,7 @@ int user_store_path(char* out, size_t outlen);
 int user_socket_path(char* out, size_t outlen);
 int store_import(const char* src_root, char*** imported_out, size_t* n_out);
 int store_list(char*** ids_out, size_t* n_out);
+void store_set_root(const char* root);
 void store_pointer_path(char* out, size_t outlen, const char* id);
 int store_pointer_export(const char* id, char* export_dir, size_t edirlen,
 			 char* arch, size_t archlen, char* branch,

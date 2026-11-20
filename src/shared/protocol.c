@@ -167,6 +167,13 @@ static int add_frame_fields(nvlist_t* nvl, uint8_t kind, uint32_t type,
 	return e;
 }
 
+// An empty store is omitted: the daemon's own installation is the default,
+// and every frame that predates the field still decodes.
+static int add_store(nvlist_t* nvl, const char* store) {
+	if (store == NULL || *store == '\0') return FP_P_OK;
+	return add_str(nvl, "store", store);
+}
+
 int fp_req_encode(nvlist_t** out, uint32_t id, const fp_req_t* r) {
 	nvlist_t* nvl = nvlist_create(0);
 	int e;
@@ -174,6 +181,7 @@ int fp_req_encode(nvlist_t** out, uint32_t id, const fp_req_t* r) {
 	*out = NULL;
 	if (nvl == NULL) return FP_P_ERR_NOMEM;
 	e = add_frame_fields(nvl, FP_FRAME_REQUEST, r->type, id);
+	if (e == FP_P_OK) e = add_store(nvl, r->store);
 	if (e != FP_P_OK) {
 		nvlist_destroy(nvl);
 		return e;
@@ -534,6 +542,7 @@ void fp_req_free(fp_req_t* r) {
 		free(r->u.rollback.commit);
 		break;
 	case FP_REQ_RUN:
+		free(r->store);
 		free(r->u.run.app_id);
 		fp_strlist_free(r->u.run.args, r->u.run.nargs);
 		free(r->u.run.command);
@@ -898,6 +907,10 @@ int fp_req_decode(const nvlist_t* nvl, uint32_t* id_out, fp_req_t* out) {
 	if (!frame_fields(nvl, FP_FRAME_REQUEST, &type, &id, &err)) return err;
 	if (id_out != NULL) *id_out = id;
 	out->type = type;
+	if (nvlist_exists_string(nvl, "store")) {
+		out->store = dup_str(nvl, "store", &err);
+		if (err != FP_P_OK) return err;
+	}
 	switch (type) {
 	case FP_REQ_HELLO:
 		out->u.hello.version = need_u32(nvl, "version", &err);

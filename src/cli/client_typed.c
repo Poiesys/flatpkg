@@ -572,7 +572,11 @@ typedef struct {
 	fp_change_row_t plan_rows[FP_APPLY_MAX];
 	char* plan_world;
 	bool user;
+	// A launch from the user installation goes to the root daemon, which
+	// can create a jail; it names the user store in the request.
+	bool launch_via_root;
 	char user_socket[PATH_MAX];
+	char store[PATH_MAX];
 } typed_ctx_t;
 
 static void typed_ctx_free(typed_ctx_t* c) {
@@ -644,12 +648,15 @@ static int start_user_daemon(const char* path) {
 }
 
 static int typed_unreachable(const typed_ctx_t* c, int err) {
-	return daemon_unreachable_path(c->user ? c->user_socket : FPKG_SOCKET,
+	return daemon_unreachable_path(c->user && !c->launch_via_root
+					  ? c->user_socket
+					  : FPKG_SOCKET,
 				       err);
 }
 
 static int typed_connect(typed_ctx_t* c) {
-	const char* path = c->user ? c->user_socket : FPKG_SOCKET;
+	const char* path = c->user && !c->launch_via_root ? c->user_socket
+							  : FPKG_SOCKET;
 	bool started = false;
 
 	ignore_sigpipe();
@@ -1071,6 +1078,32 @@ int client_try_typed(int argc, char* argv[]) {
 	if (c.user)
 		snprintf(c.user_socket, sizeof(c.user_socket), "%s",
 			 c.req.user_socket);
+	bool launch = cli_req_cmd(&c.req) == CMD_RUN ||
+		      cli_req_cmd(&c.req) == CMD_ENTER;
+
+	if (c.user) {
+		if (user_store_path(c.store, sizeof(c.store)) != 0)
+			c.store[0] = '\0';
+		c.launch_via_root = launch;
+	} else if (launch) {
+		// flatpak's default: the per-user installation first, then the
+		// system ones.  --system pins the system store.
+		if (c.req.g.installation == NULL) {
+			char ustore[PATH_MAX];
+
+			if (user_store_path(ustore, sizeof(ustore)) == 0 &&
+			    c.req.nops > 0) {
+				char probe[PATH_MAX];
+
+				snprintf(probe, sizeof(probe), "%s/app/%s",
+					 ustore, c.req.ops[0]);
+				if (access(probe, F_OK) == 0)
+					snprintf(c.store, sizeof(c.store),
+						 "%s", ustore);
+			}
+		}
+		c.launch_via_root = true;
+	}
 	if (cli_req_is_local(&c.req)) goto out;
 	// A bundle simulation changes nothing, so it needs no daemon.
 	if (cli_req_cmd(&c.req) == CMD_INSTALL && c.req.from != NULL &&
@@ -1107,6 +1140,8 @@ int client_try_typed(int argc, char* argv[]) {
 				    c.req.name);
 		rc = 1;
 		goto out;
+	} else if (c.store[0] != '\0') {
+		c.typed.store = c.store;
 	}
 
 	// A run may carry descriptors the caller wants inherited. The list is decided

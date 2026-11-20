@@ -2216,12 +2216,6 @@ int cli_parse(int argc, char* const* argv, cli_req_t* r) {
 			fpkg_errorf("cannot locate the user daemon socket");
 			return 1;
 		}
-		if (r->cmd->id == CMD_RUN || r->cmd->id == CMD_ENTER) {
-			fpkg_errorf("the user installation cannot launch "
-				    "applications; use the system "
-				    "installation");
-			return 1;
-		}
 	}
 	if (r->g.simulate && refuses_simulate(r->name)) {
 		fpkg_errorf("--simulate is not implemented for `%s`; run it "
