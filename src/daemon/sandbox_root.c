@@ -601,7 +601,12 @@ int do_nmount(const char* fstype, const char* from, const char* to,
 		char* save = NULL;
 		for (char* o = strtok_r(opts, ";", &save); o;
 		     o = strtok_r(NULL, ";", &save)) {
-			if (n + 2 >= (int)(sizeof(iov) / sizeof(iov[0]))) break;
+			// Dropping an option silently turns size= or ruleset=
+			// into a different mount; refuse instead.
+			if (n + 2 >= (int)(sizeof(iov) / sizeof(iov[0]))) {
+				fpkg_errorf("too many mount options for %s", to);
+				return -1;
+			}
 			nmount_opt(iov, &n, o);
 		}
 	}
