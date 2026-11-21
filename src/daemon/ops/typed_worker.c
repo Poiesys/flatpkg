@@ -994,6 +994,96 @@ static void remote_list_request(wctx_t* c, uint32_t id) {
 	op_finish(c, rc, "remote-list failed");
 }
 
+// Run fp_repo_local_ref_info() in a child that has dropped to the caller.
+// The result crosses a pipe: ref and commit are fixed-size strings, metadata
+// and error are NUL-terminated blobs the parent owns.
+static int local_ref_info_as_caller(wctx_t* c, const char* remote,
+				    const char* ref, const char* commit,
+				    bool runtime, char out_ref[512],
+				    char out_commit[65], char** out_metadata,
+				    char** out_error) {
+	int fds[2];
+	pid_t pid;
+
+	*out_metadata = NULL;
+	*out_error = NULL;
+	if (pipe(fds) != 0) return -1;
+	pid = fork();
+	if (pid < 0) {
+		close(fds[0]);
+		close(fds[1]);
+		return -1;
+	}
+	if (pid == 0) {
+		char r[512], cm[65];
+		char* md = NULL;
+		char* er = NULL;
+		struct passwd* pw = getpwuid(c->uid);
+
+		close(fds[0]);
+		if (pw != NULL) (void)initgroups(pw->pw_name, c->gid);
+		if (setgid(c->gid) != 0 || setuid(c->uid) != 0) _exit(127);
+		int rc = fp_repo_local_ref_info(store_root(), remote, ref, commit,
+						runtime, r, cm, &md, &er);
+		size_t mdlen = md != NULL ? strlen(md) : 0;
+		size_t erlen = er != NULL ? strlen(er) : 0;
+
+		(void)!write(fds[1], &rc, sizeof(rc));
+		(void)!write(fds[1], r, sizeof(r));
+		(void)!write(fds[1], cm, sizeof(cm));
+		(void)!write(fds[1], &mdlen, sizeof(mdlen));
+		(void)!write(fds[1], &erlen, sizeof(erlen));
+		if (mdlen > 0) (void)!write(fds[1], md, mdlen);
+		if (erlen > 0) (void)!write(fds[1], er, erlen);
+		free(md);
+		free(er);
+		close(fds[1]);
+		_exit(0);
+	}
+	close(fds[1]);
+	{
+		int rc = -1;
+		size_t mdlen = 0, erlen = 0;
+
+		if (read(fds[0], &rc, sizeof(rc)) != (ssize_t)sizeof(rc))
+			rc = -1;
+		(void)!read(fds[0], out_ref, 512);
+		(void)!read(fds[0], out_commit, 65);
+		(void)!read(fds[0], &mdlen, sizeof(mdlen));
+		(void)!read(fds[0], &erlen, sizeof(erlen));
+		if (mdlen > 0 && mdlen < 4 * 1024 * 1024) {
+			char* md = malloc(mdlen + 1);
+
+			if (md != NULL &&
+			    read(fds[0], md, mdlen) == (ssize_t)mdlen) {
+				md[mdlen] = '\0';
+				*out_metadata = md;
+			} else {
+				free(md);
+			}
+		}
+		if (erlen > 0 && erlen < 4096) {
+			char* er = malloc(erlen + 1);
+
+			if (er != NULL &&
+			    read(fds[0], er, erlen) == (ssize_t)erlen) {
+				er[erlen] = '\0';
+				*out_error = er;
+			} else {
+				free(er);
+			}
+		}
+		close(fds[0]);
+		waitpid(pid, NULL, 0);
+		if (rc != 0) {
+			if (*out_error == NULL)
+				*out_error = xstrdup("local ref lookup failed");
+			return -1;
+		}
+	}
+	return 0;
+}
+
 static void local_ref_info_request(wctx_t* c, uint32_t id,
 				    const fp_req_t* r) {
 	const char* remote = nz(r->u.local_ref_info.remote);
@@ -1011,9 +1101,10 @@ static void local_ref_info_request(wctx_t* c, uint32_t id,
 		ack_err(c, id, FP_E_INVALID, "invalid local ref request");
 		return;
 	}
-	if (fp_repo_local_ref_info(store_root(), remote, ref, commit,
-				   runtime, out_ref, out_commit, &metadata,
-				   &error) != 0) {
+	// The repository is named by the client through a file:// remote, and
+	// its metadata is hostile: read it as the caller, never as root.
+	if (local_ref_info_as_caller(c, remote, ref, commit, runtime, out_ref,
+				     out_commit, &metadata, &error) != 0) {
 		ack_err(c, id, FP_E_INVALID,
 			error != NULL ? error : "local ref lookup failed");
 		free(error);
