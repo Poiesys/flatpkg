@@ -379,6 +379,11 @@ void broker_handle(int fd) {
 		for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
 			if (ops[i].op == op && ops[i].fd != 0 &&
 			    (p->uid == 0 || ops[i].uid == p->uid)) {
+				// Ask the worker down its own socket rather than
+				// signalling a pid recorded earlier: the pid may
+				// be reused, and the worker knows its own cancel.
+				(void)send_msg(ops[i].fd, true, BUS_CANCELED,
+					       &op, sizeof(op), NULL, 0);
 				if (ops[i].pid > 0)
 					(void)kill(ops[i].pid, SIGUSR1);
 				cancelled = true;
