@@ -998,9 +998,17 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 
 		char** recorded = instance_load_run_environ(inst_dir);
 		if (recorded != NULL) {
-			for (char** e = recorded; *e != NULL; e++)
-				if (strchr(*e, '=') != NULL)
-					setenv(*e, strchr(*e, '=') + 1, 1);
+			for (char** e = recorded; *e != NULL; e++) {
+				char* eq = strchr(*e, '=');
+
+				// setenv() takes the name and the value separately; the
+				// whole KEY=VALUE string used to be the name, so every
+				// call failed with EINVAL.
+				if (eq == NULL) continue;
+				*eq = '\0';
+				(void)setenv(*e, eq + 1, 1);
+				*eq = '=';
+			}
 		} else {
 			fpkg_warnf(
 				"no run-environ snapshot for this"
