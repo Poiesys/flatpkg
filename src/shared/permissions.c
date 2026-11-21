@@ -743,6 +743,14 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 			plan->gid = getgid();
 		}
 	}
+	// The caller's identity is the peer's.  A plan for uid 0 in a worker
+	// that is itself root means the identity went missing, and the app
+	// would run as root: refuse rather than proceed.
+	if (plan->uid == 0 && getuid() != 0) {
+		fpkg_errorf(get_string("the caller's identity is missing; "
+				       "refusing to plan a root launch"));
+		return -1;
+	}
 	struct group* gr = getgrgid(plan->gid);
 	plan->group_name = xstrdup(gr ? gr->gr_name : "users");
 
