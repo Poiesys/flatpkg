@@ -588,6 +588,9 @@ int do_nmount(const char* fstype, const char* from, const char* to,
 		n++;
 	}
 	if (ro) flags |= MNT_RDONLY;
+	// A granted host tree can carry real setuid binaries; the sandbox never
+	// honours one, read-only or not.
+	flags |= MNT_NOSUID;
 	if (opts) {
 		char* save = NULL;
 		for (char* o = strtok_r(opts, ";", &save); o;

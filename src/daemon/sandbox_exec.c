@@ -355,6 +355,17 @@ static void child_drop_identity(const sandbox_plan_t* plan) {
 		dprintf(2, "flatpkg: setuid: %s\n", strerror(errno));
 		_exit(127);
 	}
+	// A setuid binary the app can reach (a granted host tree) must not
+	// escalate past the identity we just took.
+	{
+		int one = 1;
+
+		if (procctl(P_PID, getpid(), PROC_NO_NEW_PRIVS_CTL, &one) != 0) {
+			dprintf(2, "flatpkg: no-new-privs: %s\n",
+				strerror(errno));
+			_exit(127);
+		}
+	}
 
 	if (plan->die_with_parent) {
 		int signo = SIGTERM;

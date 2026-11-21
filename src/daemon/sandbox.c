@@ -357,10 +357,8 @@ int sandbox_create_jail(sandbox_t* sb, const fp_metadata_t* meta,
 
 	ADDP("persist", "1");
 
-	ADDP("allow.mount", "1");
-	ADDP("allow.mount.devfs", "1");
-	ADDP("allow.mount.procfs", "1");
-	ADDP("allow.mount.fdescfs", "1");
+	// The app runs unprivileged and never mounts anything; granting the
+	// mount permissions would only widen what a compromised app can do.
 
 	{
 		int present;
