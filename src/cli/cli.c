@@ -835,60 +835,83 @@ void cli_complete_values(const char* opt) {
 
 #define COMP_WORDS_MAX 8192
 
-static void comp_word(char* out, size_t n, const char* word) {
-	if (word == NULL || *word == '\0') return;
-	if (out[0] != '\0') strlcat(out, " ", n);
-	strlcat(out, word, n);
+// A completion list that does not fit is a broken script, so the generator
+// has to fail the build instead of silently dropping words.
+static void comp_no_fit(const char* what) {
+	fpkg_errorf("%s: the completion list does not fit its buffer", what);
+	exit(1);
 }
 
-static void comp_opt_words(char* out, size_t n, const cli_opt_t* tab) {
+static bool comp_word(char* out, size_t n, const char* word) {
+	size_t have, need;
+
+	if (word == NULL || *word == '\0') return true;
+	have = strlen(out);
+	need = have + (out[0] != '\0' ? 1 : 0) + strlen(word) + 1;
+	if (need > n) return false;
+	if (out[0] != '\0') strlcat(out, " ", n);
+	strlcat(out, word, n);
+	return true;
+}
+
+static bool comp_opt_words(char* out, size_t n, const cli_opt_t* tab) {
 	char word[128];
+	bool fits = true;
 	for (const cli_opt_t* o = tab; o->id != OPT_NONE; o++) {
 		if (!opt_visible(o)) continue;
 		if (o->sname != 0) {
 			snprintf(word, sizeof(word), "-%c", o->sname);
-			comp_word(out, n, word);
+			fits = comp_word(out, n, word) && fits;
 		}
 		if (o->lname != NULL) {
 			snprintf(word, sizeof(word), "%s%s", o->lname,
 				 o->arg != NULL ? "=" : "");
-			comp_word(out, n, word);
+			fits = comp_word(out, n, word) && fits;
 		}
 		if (o->alt != NULL) {
 			snprintf(word, sizeof(word), "%s%s", o->alt,
 				 o->arg != NULL ? "=" : "");
-			comp_word(out, n, word);
+			fits = comp_word(out, n, word) && fits;
 		}
 	}
+	return fits;
 }
 
-static void comp_cmd_words(const cli_cmd_t* c, char* out, size_t n) {
+static bool comp_cmd_words(const cli_cmd_t* c, char* out, size_t n) {
+	bool fits = true;
 	out[0] = '\0';
-	if (c != NULL) comp_opt_words(out, n, c->opts);
-	comp_opt_words(out, n, global_opts);
+	if (c != NULL) fits = comp_opt_words(out, n, c->opts) && fits;
+	fits = comp_opt_words(out, n, global_opts) && fits;
+	return fits;
 }
 
-static void comp_cmd_names(char* out, size_t n) {
+static bool comp_cmd_names(char* out, size_t n) {
+	bool fits = true;
 	out[0] = '\0';
 	for (const cli_cmd_t* c = commands; c->name; c++) {
-		comp_word(out, n, c->name);
-		if (c->alias != NULL) comp_word(out, n, c->alias);
+		fits = comp_word(out, n, c->name) && fits;
+		if (c->alias != NULL) fits = comp_word(out, n, c->alias) && fits;
 	}
+	return fits;
 }
 
-static void comp_cmd_kinds(const cli_cmd_t* c, char* out, size_t n) {
+static bool comp_cmd_kinds(const cli_cmd_t* c, char* out, size_t n) {
 	const char* first;
 	const char* second;
+	bool fits = true;
 	out[0] = '\0';
 	command_operands(c, &first, &second);
-	comp_word(out, n, first);
-	comp_word(out, n, second);
+	fits = comp_word(out, n, first) && fits;
+	fits = comp_word(out, n, second) && fits;
+	return fits;
 }
 
-static void comp_value_words(char* out, size_t n, const cli_opt_t* o) {
+static bool comp_value_words(char* out, size_t n, const cli_opt_t* o) {
+	bool fits = true;
 	out[0] = '\0';
 	for (const char* const* v = opt_values(o); v != NULL && *v != NULL; v++)
-		comp_word(out, n, *v);
+		fits = comp_word(out, n, *v) && fits;
+	return fits;
 }
 
 static void comp_line(const char* line) { fp_outl("%s", line); }
@@ -901,7 +924,8 @@ static bool comp_bash_values(void) {
 			    opt_values(o) == NULL)
 				continue;
 			char vals[1024];
-			comp_value_words(vals, sizeof(vals), o);
+			if (!comp_value_words(vals, sizeof(vals), o))
+				comp_no_fit("an option's values");
 			if (!any) {
 				comp_line("        case \"$opt\" in");
 				any = true;
@@ -923,7 +947,8 @@ static void comp_zsh_values(void) {
 			    opt_values(o) == NULL)
 				continue;
 			char vals[1024];
-			comp_value_words(vals, sizeof(vals), o);
+			if (!comp_value_words(vals, sizeof(vals), o))
+				comp_no_fit("an option's values");
 			if (!any) {
 				comp_line("            case $opt in");
 				any = true;
@@ -944,7 +969,8 @@ static void comp_fish_values(void) {
 				continue;
 			char vals[1024];
 			char pats[128];
-			comp_value_words(vals, sizeof(vals), o);
+			if (!comp_value_words(vals, sizeof(vals), o))
+				comp_no_fit("an option's values");
 			snprintf(pats, sizeof(pats), "%s%s%s", o->lname,
 				 o->alt != NULL ? " " : "",
 				 o->alt != NULL ? o->alt : "");
@@ -960,15 +986,17 @@ static void emit_bash(const char* prog) {
 	char command_list[2048];
 	char global[COMP_WORDS_MAX];
 	snprintf(fn, sizeof(fn), "_%s", prog);
-	comp_cmd_names(command_list, sizeof(command_list));
+	if (!comp_cmd_names(command_list, sizeof(command_list)))
+		comp_no_fit("bash commands");
 	global[0] = '\0';
-	comp_opt_words(global, sizeof(global), global_opts);
+	if (!comp_opt_words(global, sizeof(global), global_opts))
+		comp_no_fit("the global options");
 
 	fp_outl("# bash completion for %s.", prog);
 	comp_line("# Generated from the tables in src/cli/cli.c; do not edit.");
 	comp_line("");
 	fp_outl("%s() {", fn);
-	comp_line("    local cur cmd i opt vals words kinds kind");
+	comp_line("    local cur cmd i opt vals words kinds kind pre");
 	comp_line("    cur=\"${COMP_WORDS[COMP_CWORD]}\"");
 
 	if (strcmp(prog, "flatpkgd") == 0) {
@@ -1017,7 +1045,15 @@ static void emit_bash(const char* prog) {
 	comp_line("        vals=\"\"");
 	if (comp_bash_values()) {
 		comp_line("        if [ -n \"$vals\" ]; then");
-		comp_line("            COMPREPLY=($(compgen -W \"$vals\" -P \"$opt=\" -- \"${cur#*=}\"))");
+		// A plain prefix loop, not compgen -W: the values can come from
+		// the store, and compgen expands what it is given.  Globbing is
+		// off for the same reason.
+		comp_line("            set -f");
+		comp_line("            pre=\"${cur#*=}\"");
+		comp_line("            for v in $vals; do");
+		comp_line("                case \"$v\" in \"$pre\"*) COMPREPLY+=(\"$opt=$v\") ;; esac");
+		comp_line("            done");
+		comp_line("            set +f");
 		comp_line("            return 0");
 		comp_line("        fi");
 	}
@@ -1044,7 +1080,8 @@ static void emit_bash(const char* prog) {
 		char words[COMP_WORDS_MAX];
 		char kinds[128];
 		comp_cmd_words(c, words, sizeof(words));
-		comp_cmd_kinds(c, kinds, sizeof(kinds));
+		if (!comp_cmd_kinds(c, kinds, sizeof(kinds)))
+			comp_no_fit("a command's operand kinds");
 		if (c->alias != NULL)
 			fp_outl("    %s|%s) words=\"%s\"; kinds=\"%s\" ;;",
 				c->name, c->alias, words, kinds);
@@ -1074,9 +1111,11 @@ static void emit_zsh(const char* prog) {
 	char global[COMP_WORDS_MAX];
 	snprintf(fn, sizeof(fn), "_%s", prog);
 	snprintf(cfn, sizeof(cfn), "_%s_commands", prog);
-	comp_cmd_names(command_list, sizeof(command_list));
+	if (!comp_cmd_names(command_list, sizeof(command_list)))
+		comp_no_fit("zsh commands");
 	global[0] = '\0';
-	comp_opt_words(global, sizeof(global), global_opts);
+	if (!comp_opt_words(global, sizeof(global), global_opts))
+		comp_no_fit("the global options");
 
 	fp_outl("#compdef %s", prog);
 	fp_outl("# zsh completion for %s.", prog);
@@ -1133,7 +1172,8 @@ static void emit_zsh(const char* prog) {
 		char words[COMP_WORDS_MAX];
 		char kinds[128];
 		comp_cmd_words(c, words, sizeof(words));
-		comp_cmd_kinds(c, kinds, sizeof(kinds));
+		if (!comp_cmd_kinds(c, kinds, sizeof(kinds)))
+			comp_no_fit("a command's operand kinds");
 		if (c->alias != NULL)
 			fp_outl("        %s|%s) opts=(%s); kinds=(%s) ;;",
 				c->name, c->alias, words, kinds);
@@ -1176,9 +1216,11 @@ static void emit_fish(const char* prog) {
 	char command_list[2048];
 	char global[COMP_WORDS_MAX];
 	snprintf(fn, sizeof(fn), "__%s", prog);
-	comp_cmd_names(command_list, sizeof(command_list));
+	if (!comp_cmd_names(command_list, sizeof(command_list)))
+		comp_no_fit("fish commands");
 	global[0] = '\0';
-	comp_opt_words(global, sizeof(global), global_opts);
+	if (!comp_opt_words(global, sizeof(global), global_opts))
+		comp_no_fit("the global options");
 
 	fp_outl("# fish completion for %s.", prog);
 	comp_line("# Generated from the tables in src/cli/cli.c; do not edit.");
@@ -1219,7 +1261,8 @@ static void emit_fish(const char* prog) {
 	comp_line("    switch (commandline -opc)[2]");
 	for (const cli_cmd_t* c = commands; c->name; c++) {
 		char kinds[128];
-		comp_cmd_kinds(c, kinds, sizeof(kinds));
+		if (!comp_cmd_kinds(c, kinds, sizeof(kinds)))
+			comp_no_fit("a command's operand kinds");
 		if (kinds[0] == '\0') continue;
 		if (c->alias != NULL)
 			fp_outl("    case %s %s", c->name, c->alias);

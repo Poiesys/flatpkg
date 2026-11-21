@@ -164,9 +164,32 @@ if [ -n "$BASH_BIN" ]; then
 		sh "$tmp/flatpkgd.bash")
 	printf '%s\n' "$got" | grep -qx -- system-helper ||
 		fail "the bash flatpkgd script does not complete system-helper"
+
+	# Drive the script's own lookup rather than reading its text: every
+	# command has to come back from the completion function itself.
+	got=$("$BASH_BIN" -c 'source "$1"; COMP_WORDS=(flatpkg "");
+		COMP_CWORD=1; _flatpkg; printf "%s\n" "${COMPREPLY[@]}"' \
+		sh "$BASH")
+	for c in $("$FLATPKG" complete commands); do
+		printf '%s\n' "$got" | grep -qx -- "$c" ||
+			fail "the bash script completes no '$c' command"
+	done
+
+	# Store-derived values go through a plain prefix loop: compgen -W
+	# expands what it is given, and the values can come from the store.
+	grep -q 'compgen -W "\$vals"' "$BASH" &&
+		fail "the bash script hands store-derived values to compgen"
+	grep -q 'for v in \$vals' "$BASH" ||
+		fail "the bash script has no plain prefix loop for values"
 else
 	echo "note bash is not installed; the bash syntax and lookup checks did not run"
 fi
+# A completion list that does not fit has to fail the generator, not be cut
+# short, so every list builder is checked where it is used.
+fits=$(grep -c 'comp_no_fit("' "$DIR/../src/cli/cli.c" 2>/dev/null || true)
+[ "${fits:-0}" -ge 6 ] ||
+	fail "the generator does not fail when a completion list does not fit"
+
 if [ -n "$ZSH_BIN" ]; then
 	for f in "$ZSH" "$tmp/_flatpkgd"; do
 		"$ZSH_BIN" -n "$f" || fail "$(basename "$f") does not parse in zsh"
