@@ -661,7 +661,23 @@ static int typed_connect(typed_ctx_t* c) {
 
 	ignore_sigpipe();
 	for (int attempt = 0; attempt < 100; attempt++) {
-		if (connect_socket(c, path) == 0) return 0;
+		if (connect_socket(c, path) == 0) {
+			// The user daemon's socket can be answered by anyone who
+			// can create the directory; only this uid may serve it.
+			if (c->user && !c->launch_via_root) {
+				uid_t peer = (uid_t)-1;
+				gid_t pgid = (gid_t)-1;
+
+				if (getpeereid(c->fd, &peer, &pgid) != 0 ||
+				    peer != getuid()) {
+					close(c->fd);
+					c->fd = -1;
+					return daemon_unreachable_path(
+						path, EACCES);
+				}
+			}
+			return 0;
+		}
 		int err = errno;
 
 		if (!c->user) return daemon_unreachable_path(path, err);
