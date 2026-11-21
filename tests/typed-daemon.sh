@@ -61,7 +61,8 @@ if [ -n "${FLATPKG_TD_SANITIZER_LOGS:-}" ]; then
 	export UBSAN_OPTIONS="log_path=$FLATPKG_TD_SANITIZER_LOGS/ubsan-client"
 	export ASAN_OPTIONS="detect_leaks=0:log_path=$FLATPKG_TD_SANITIZER_LOGS/asan-client"
 fi
-mdo sh -c "$sanenv $wrap $tmp/build/flatpkgd > $tmp/daemon.log 2>&1 & echo \$! > $tmp/pid"
+mdo sh -c "LD_LIBRARY_PATH=$tmp/build:\${LD_LIBRARY_PATH:-} \
+	$sanenv $wrap $tmp/build/flatpkgd > $tmp/daemon.log 2>&1 & echo \$! > $tmp/pid"
 dpid=$(cat "$tmp/pid")
 n=0
 while [ ! -S "$tmp/s/control.sock" ] && [ "$n" -lt "$socket_wait" ]; do

@@ -1,11 +1,13 @@
 PREFIX?=        /usr/local
+
+.DELETE_ON_ERROR:
 # Where flatpkgd listens.  Compile-time only (see FPKG_SOCKET in flatpkg.h);
 # tests build a scratch client pointed somewhere else.
 SOCKET_PATH?=   /var/run/flatpkg/control.sock
 # Where the store lives.  Compile-time only, like SOCKET_PATH.
 FLATPKG_STORE_DIR?= /var/db/flatpkg
 CC?=            cc
-CFLAGS+=        -O2 -ffunction-sections -fdata-sections -Wall -Wextra -Wno-unused-parameter -Wformat-security -Werror -std=gnu11 -Iinclude
+CFLAGS+=        -O2 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -ffunction-sections -fdata-sections -Wall -Wextra -Wno-unused-parameter -Wformat-security -Werror -std=gnu11 -Iinclude
 # Extra flags for a sanitizer or coverage build: make SANFLAGS="-fsanitize=..."
 SANFLAGS?=
 CFLAGS+=        $(SANFLAGS)
@@ -168,14 +170,17 @@ $(SHLIB): $(SHLIB_OBJS) Makefile
 ENTRY_CLI=      $(OBJDIR)/cli/entry.o
 ENTRY_DAEMON=   $(OBJDIR)/daemon/main.o
 RPATH=          -Wl,-z,origin -Wl,-rpath,'$$ORIGIN:$(PREFIX)/lib' -Wl,--gc-sections
+# A privileged program gets one runpath, not $ORIGIN: it is installed, and a
+# runpath into its own directory is a search path an updater can plant in.
+DAEMON_RPATH=   -Wl,-rpath,'$(PREFIX)/lib' -Wl,--gc-sections
 
 $(BIN_CLI): $(CLI_LINK) $(SHLIB) Makefile
-	$(CC) $(CFLAGS) -o $@ $(CLI_LINK) \
+	$(CC) $(CFLAGS) -pie -o $@ $(CLI_LINK) \
 	    -L$(BUILD) -lflatpkg_shared $(RPATH) $(LDLIBS)
 
 $(BIN_DAEMON): $(ENTRY_DAEMON) $(DAEMON_LINK) $(SHLIB) Makefile
-	$(CC) $(CFLAGS) -o $@ $(ENTRY_DAEMON) $(DAEMON_LINK) \
-	    -L$(BUILD) -lflatpkg_shared $(RPATH) $(OSTREE_LIBS) $(LDLIBS)
+	$(CC) $(CFLAGS) -pie -o $@ $(ENTRY_DAEMON) $(DAEMON_LINK) \
+	    -L$(BUILD) -lflatpkg_shared $(DAEMON_RPATH) $(OSTREE_LIBS) $(LDLIBS)
 
 $(OBJDIR)/cli/entry.o: src/cli/entry.c
 	@mkdir -p $(OBJDIR)/cli

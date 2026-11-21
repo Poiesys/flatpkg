@@ -48,7 +48,10 @@ scratchd_start() {
 		exit 1
 	fi
 	SD_BIN="$SD_TMP/build/flatpkg"
-	mdo sh -c "$SD_TMP/build/flatpkgd > $SD_LOG 2>&1 & echo \$! > $SD_TMP/pid"
+	# The installed daemon carries a plain runpath (/usr/local/lib); a
+	# build-tree one finds its own shared library through the tree instead.
+	mdo sh -c "LD_LIBRARY_PATH=$SD_TMP/build:\${LD_LIBRARY_PATH:-} \
+		$SD_TMP/build/flatpkgd > $SD_LOG 2>&1 & echo \$! > $SD_TMP/pid"
 	SD_PID=$(cat "$SD_TMP/pid")
 	_sd_n=0
 	while [ ! -S "$SD_TMP/s/control.sock" ] && [ "$_sd_n" -lt 100 ]; do
