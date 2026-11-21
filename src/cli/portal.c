@@ -1843,19 +1843,45 @@ static void fc_reap(DBusConnection* conn) {
 			i++;
 			continue;
 		}
-		char buf[8192];
-		ssize_t n = 0;
+		// Read to EOF, not one 8 KiB chunk: a multi-file selection is a
+		// newline-separated list and a truncated tail is a broken path.
+		char* buf = NULL;
+		size_t blen = 0, bcap = 0;
 		int fd = fc_requests[i].fd;
 		if (fd >= 0) {
-			n = read(fd, buf, sizeof(buf) - 1);
+			char tmp[4096];
+
+			for (;;) {
+				ssize_t n = read(fd, tmp, sizeof(tmp));
+
+				if (n < 0) {
+					if (errno == EINTR) continue;
+					break;
+				}
+				if (n == 0) break;
+				if (blen + (size_t)n + 1 > 1024 * 1024)
+					break;
+				if (blen + (size_t)n + 1 > bcap) {
+					size_t nc = bcap != 0 ? bcap * 2 : 8192;
+					char* nb;
+
+					while (nc < blen + (size_t)n + 1)
+						nc *= 2;
+					nb = realloc(buf, nc);
+					if (nb == NULL) break;
+					buf = nb;
+					bcap = nc;
+				}
+				memcpy(buf + blen, tmp, (size_t)n);
+				blen += (size_t)n;
+			}
 			close(fd);
 			fc_requests[i].fd = -1;
 		}
-		if (n > 0) buf[n] = '\0';
-		else
-			buf[0] = '\0';
+		if (buf != NULL) buf[blen] = '\0';
 
-		if (WIFEXITED(st) && WEXITSTATUS(st) == 0 && buf[0])
+		if (WIFEXITED(st) && WEXITSTATUS(st) == 0 && buf != NULL &&
+		    buf[0] != '\0')
 			fc_emit_results(conn, fc_requests[i].path, buf,
 					fc_requests[i].multiple);
 		else if (WIFEXITED(st) && WEXITSTATUS(st) == 1)
@@ -1865,6 +1891,7 @@ static void fc_reap(DBusConnection* conn) {
 			fc_emit_response(conn, fc_requests[i].path,
 					 FC_RESPONSE_OTHER);
 
+		free(buf);
 		fc_free_request(&fc_requests[i]);
 		memmove(&fc_requests[i], &fc_requests[i + 1],
 			(fc_nrequests - i - 1) * sizeof(*fc_requests));
