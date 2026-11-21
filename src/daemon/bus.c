@@ -281,7 +281,13 @@ void broker_handle(int fd) {
 		if (h.len == 0 || h.len >= BUS_TOPIC_LEN) return;
 		memcpy(topic, payload, h.len);
 		topic[h.len] = '\0';
-		if (peer_subscribed(p, topic)) return;
+		if (peer_subscribed(p, topic)) {
+			// A duplicate subscribe still needs its ack, or the
+			// worker's pending_sub never completes.
+			(void)send_msg(fd, true, BUS_SUBSCRIBED, NULL, 0, NULL,
+				       0);
+			return;
+		}
 		if (p->ntopics >= BUS_MAX_TOPICS) {
 			reply(fd, BUS_SUB_DENIED);
 			return;
@@ -306,9 +312,16 @@ void broker_handle(int fd) {
 		if (h.len == 0 || h.len >= BUS_TOPIC_LEN) return;
 		memcpy(topic, payload, h.len);
 		topic[h.len] = '\0';
-		for (int i = 0; i < p->ntopics; i++)
-			if (strcmp(p->topics[i], topic) == 0)
-				p->topics[i][0] = '\0';
+		for (int i = 0; i < p->ntopics; i++) {
+			if (strcmp(p->topics[i], topic) != 0) continue;
+			// Free the slot instead of blanking it: blanking leaves
+			// ntopics counting it, so eight subscribes exhaust the
+			// connection forever.
+			memmove(&p->topics[i], &p->topics[i + 1],
+				(size_t)(p->ntopics - i - 1) * BUS_TOPIC_LEN);
+			p->ntopics--;
+			break;
+		}
 		return;
 	}
 	case BUS_PUBLISH: {
