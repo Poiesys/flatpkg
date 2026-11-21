@@ -43,6 +43,12 @@ int store_import(const char* src_root, char*** imported_out, size_t* n_out) {
 	struct dirent* ent;
 	while ((ent = readdir(apps))) {
 		if (ent->d_name[0] == '.') continue;
+		// The directory name becomes a store path and a line in the
+		// pointer file; only a real app id may do that.
+		if (!fpkg_component_ok(ent->d_name)) {
+			fpkg_warnf("skipping '%s': not an app id", ent->d_name);
+			continue;
+		}
 
 		char active[PATH_MAX];
 		if (find_active_dir(apps_root, ent->d_name, NULL, active,
@@ -133,10 +139,13 @@ int store_import(const char* src_root, char*** imported_out, size_t* n_out) {
 		char pointer_path[PATH_MAX];
 		snprintf(pointer_path, sizeof(pointer_path), "%s/pointer",
 			 store_app_dir);
-		FILE* pf = fopen(pointer_path, "w");
+		// An import never replaces an entry someone else made: the
+		// pointer decides what root mounts at launch time.
+		FILE* pf = fopen(pointer_path, "wx");
 		if (!pf) {
-			fpkg_errorf("fopen %s: %s", pointer_path,
-				    strerror(errno));
+			fpkg_warnf("skipping '%s': %s", ent->d_name,
+				   errno == EEXIST ? "already imported"
+						   : strerror(errno));
 			fp_metadata_free(&meta);
 			continue;
 		}
