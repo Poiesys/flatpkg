@@ -64,4 +64,14 @@ echo "      naming what was wrong, known entries and unimplemented-but-legal"
 echo "      keys set their flag and stay quiet, and \`if:\` conditionals are"
 echo "      consumed in both directions - including the negated"
 echo "      \`filesystem=\` token, in both of the paths that read it."
+
+# The plan builder must refuse a uid-0 plan whatever this process is: in the
+# root worker getuid() is 0, so a comparison against it passes and a missing
+# identity becomes a root launch.
+perm="$ROOT/src/shared/permissions.c"
+grep -q 'if (plan->uid == 0) {' "$perm" ||
+	{ echo "FAIL: a uid-0 plan is not refused outright"; exit 1; }
+grep -q 'plan->uid == 0 && getuid() != 0' "$perm" &&
+	{ echo "FAIL: the uid-0 refusal is compared against this process,"
+	  echo "      which is 0 in the root worker"; exit 1; }
 exit 0

@@ -743,10 +743,12 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 			plan->gid = getgid();
 		}
 	}
-	// The caller's identity is the peer's.  A plan for uid 0 in a worker
-	// that is itself root means the identity went missing, and the app
-	// would run as root: refuse rather than proceed.
-	if (plan->uid == 0 && getuid() != 0) {
+	// The caller's identity is the peer's.  A plan for uid 0 means the
+	// identity went missing (in the root worker getuid() is 0, so a check
+	// against this process would pass), and the app would run as root
+	// with the sandbox's grants.  flatpkg never launches an app as root,
+	// so refuse rather than proceed.
+	if (plan->uid == 0) {
 		fpkg_errorf(get_string("the caller's identity is missing; "
 				       "refusing to plan a root launch"));
 		return -1;
