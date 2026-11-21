@@ -97,12 +97,12 @@ static void write_byte(int fd) {
 // ---- live fan-out ----------------------------------------------------------
 
 static void test_live(void) {
-	int a[2], b[2], ready[2];
+	int a[2], b[2], ready[2], go[2];
 	pid_t pa, pb, broker;
 
 	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, a) != 0 ||
 	    socketpair(AF_UNIX, SOCK_DGRAM, 0, b) != 0 ||
-	    pipe(ready) != 0)
+	    pipe(ready) != 0 || pipe(go) != 0)
 		exit(2);
 
 	pb = fork();
@@ -111,20 +111,28 @@ static void test_live(void) {
 		close(a[0]);
 		close(a[1]);
 		close(b[0]);
+		close(go[0]);
 		close(ready[0]);
 		bus_worker_init(b[1]);
 		if (bus_subscribe("t") != 0) _exit(3);
 		if (wait_subscribed() != 0) _exit(3);
+		write_byte(go[1]);
 		write_byte(ready[1]);
 		_exit(expect_frames(2, want) == 0 ? 0 : 1);
 	}
 	pa = fork();
 	if (pa == 0) {
+		char c;
+
 		close(b[0]);
 		close(b[1]);
 		close(a[0]);
 		close(ready[0]);
+		close(ready[1]);
+		close(go[1]);
 		bus_worker_init(a[1]);
+		// Publish only once the subscriber is in, or the frames are lost.
+		if (read(go[0], &c, 1) != 1) _exit(3);
 		(void)bus_publish("t", "one", 3);
 		(void)bus_publish("t", "two", 3);
 		usleep(100000);
@@ -136,6 +144,8 @@ static void test_live(void) {
 		close(b[1]);
 		close(ready[0]);
 		close(ready[1]);
+		close(go[0]);
+		close(go[1]);
 		(void)broker_add(a[0], pa, 0);
 		(void)broker_add(b[0], pb, 0);
 		broker_loop();
@@ -145,11 +155,16 @@ static void test_live(void) {
 	close(b[0]);
 	close(b[1]);
 	close(ready[1]);
+	close(go[0]);
+	close(go[1]);
 	wait_byte(ready[0]);
 	int st;
 	waitpid(pb, &st, 0);
 	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) note("live fan-out");
 	waitpid(pa, &st, 0);
+	// broker_loop() is the daemon's loop, not a test fixture: stop it
+	// rather than wait for it to decide it is done.
+	(void)kill(broker, SIGKILL);
 	waitpid(broker, &st, 0);
 }
 
@@ -216,6 +231,9 @@ static void test_snapshot(void) {
 	waitpid(pb, &st, 0);
 	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) note("late-subscriber snapshot");
 	waitpid(pa, &st, 0);
+	// broker_loop() is the daemon's loop, not a test fixture: stop it
+	// rather than wait for it to decide it is done.
+	(void)kill(broker, SIGKILL);
 	waitpid(broker, &st, 0);
 	close(go[1]);
 }
@@ -273,6 +291,9 @@ static void test_cancel(void) {
 	waitpid(pa, &st, 0);
 	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) note("cancel did not reach the owner");
 	waitpid(pb, &st, 0);
+	// broker_loop() is the daemon's loop, not a test fixture: stop it
+	// rather than wait for it to decide it is done.
+	(void)kill(broker, SIGKILL);
 	waitpid(broker, &st, 0);
 }
 
@@ -336,6 +357,9 @@ static void test_authorization(void) {
 	waitpid(pb, &st, 0);
 	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0)
 		note("the refusals did not reach the requesting peer");
+	// broker_loop() is the daemon's loop, not a test fixture: stop it
+	// rather than wait for it to decide it is done.
+	(void)kill(broker, SIGKILL);
 	waitpid(broker, &st, 0);
 }
 
@@ -433,15 +457,183 @@ static void test_firehose_scope(void) {
 	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0)
 		note("another uid's op frame was delivered on the firehose");
 	waitpid(pub, &st, 0);
+	// broker_loop() is the daemon's loop, not a test fixture: stop it
+	// rather than wait for it to decide it is done.
+	(void)kill(broker, SIGKILL);
 	waitpid(broker, &st, 0);
 }
 
+
+// ---- instance scope -------------------------------------------------------
+// `instance/<app>` names someone's running app, so its live frames and its
+// snapshot reach the uid that published them (and root), nobody else.
+static void test_instance_scope(void) {
+	int p[2], same[2], other[2], late[2], out[2], ready[2], sig1[2], sig2[2];
+	pid_t pub, mine, theirs, later, lateother, broker;
+	static const char topic[] = "instance/org.example.App";
+
+	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, p) != 0 ||
+	    socketpair(AF_UNIX, SOCK_DGRAM, 0, same) != 0 ||
+	    socketpair(AF_UNIX, SOCK_DGRAM, 0, other) != 0 ||
+	    socketpair(AF_UNIX, SOCK_DGRAM, 0, late) != 0 ||
+	    socketpair(AF_UNIX, SOCK_DGRAM, 0, out) != 0 ||
+	    pipe(ready) != 0 || pipe(sig1) != 0 || pipe(sig2) != 0)
+		exit(2);
+
+	// A uid-2 subscriber that was there before the publish sees nothing.
+	theirs = fork();
+	if (theirs == 0) {
+		char buf[8];
+		size_t len;
+		uint32_t type;
+
+		close(p[0]); close(p[1]);
+		close(same[0]); close(same[1]);
+		close(other[0]);
+		close(late[0]); close(late[1]);
+		close(out[0]); close(out[1]);
+		close(ready[0]);
+		close(sig1[0]); close(sig1[1]);
+		close(sig2[0]); close(sig2[1]);
+		bus_worker_init(other[1]);
+		if (bus_subscribe(topic) != 0 || wait_subscribed() != 0)
+			_exit(3);
+		write_byte(ready[1]);
+		usleep(1500000);
+		// Another uid's app: a readable socket is a leaked frame.
+		_exit(bus_next(buf, sizeof(buf), &len, &type) == 0 ? 1 : 0);
+	}
+	// Same uid, arriving after the publish: the snapshot is replayed.
+	later = fork();
+	if (later == 0) {
+		char b;
+		close(p[0]); close(p[1]);
+		close(same[0]); close(same[1]);
+		close(other[0]); close(other[1]);
+		close(late[0]);
+		close(out[0]); close(out[1]);
+		close(ready[0]); close(ready[1]);
+		close(sig1[1]); close(sig2[0]); close(sig2[1]);
+		bus_worker_init(late[1]);
+		if (read(sig1[0], &b, 1) != 1) _exit(3);
+		if (bus_subscribe(topic) != 0) _exit(3);
+		_exit(wait_type(BUS_FORWARD) == 0 ? 0 : 1);
+	}
+	// Another uid, arriving after the publish: no replay.
+	lateother = fork();
+	if (lateother == 0) {
+		char b;
+		close(p[0]); close(p[1]);
+		close(same[0]); close(same[1]);
+		close(other[0]); close(other[1]);
+		close(late[0]); close(late[1]);
+		close(out[0]);
+		close(ready[0]); close(ready[1]);
+		close(sig1[0]); close(sig1[1]); close(sig2[1]);
+		bus_worker_init(out[1]);
+		if (read(sig2[0], &b, 1) != 1) _exit(3);
+		if (bus_subscribe(topic) != 0) _exit(3);
+		usleep(1200000);
+		_exit(wait_type(BUS_FORWARD) == 0 ? 1 : 0);
+	}
+	mine = fork();
+	if (mine == 0) {
+		close(p[0]); close(p[1]);
+		close(same[0]);
+		close(other[0]); close(other[1]);
+		close(late[0]); close(late[1]);
+		close(out[0]); close(out[1]);
+		close(ready[0]);
+		close(sig1[0]); close(sig1[1]);
+		close(sig2[0]); close(sig2[1]);
+		bus_worker_init(same[1]);
+		if (bus_subscribe(topic) != 0 || wait_subscribed() != 0)
+			_exit(3);
+		write_byte(ready[1]);
+		_exit(wait_type(BUS_FORWARD) == 0 ? 0 : 1);
+	}
+	pub = fork();
+	if (pub == 0) {
+		close(p[0]);
+		close(same[0]); close(same[1]);
+		close(other[0]); close(other[1]);
+		close(late[0]); close(late[1]);
+		close(out[0]); close(out[1]);
+		close(ready[0]); close(ready[1]);
+		close(sig1[0]); close(sig2[0]);
+		bus_worker_init(p[1]);
+		usleep(600000); // both pre-subscribers are in
+		(void)bus_publish(topic, "started", 7);
+		usleep(300000); // the broker has recorded the snapshot
+		write_byte(sig1[1]);
+		write_byte(sig2[1]);
+		usleep(200000);
+		_exit(0);
+	}
+	broker = fork();
+	if (broker == 0) {
+		close(p[1]);
+		close(same[1]);
+		close(other[1]);
+		close(late[1]);
+		close(out[1]);
+		close(ready[0]); close(ready[1]);
+		close(sig1[0]); close(sig1[1]);
+		close(sig2[0]); close(sig2[1]);
+		(void)broker_add(p[0], pub, 1);
+		(void)broker_add(same[0], mine, 1);
+		(void)broker_add(other[0], theirs, 2);
+		(void)broker_add(late[0], later, 1);
+		(void)broker_add(out[0], lateother, 2);
+		broker_loop();
+	}
+	close(p[0]); close(p[1]);
+	close(same[0]); close(same[1]);
+	close(other[0]); close(other[1]);
+	close(late[0]); close(late[1]);
+	close(out[0]); close(out[1]);
+	close(ready[1]); close(sig1[1]); close(sig2[1]);
+	close(sig1[0]); close(sig2[0]);
+	wait_byte(ready[0]);
+	wait_byte(ready[0]);
+	int st;
+	waitpid(mine, &st, 0);
+	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0)
+		note("a same-uid instance frame was not delivered");
+	waitpid(theirs, &st, 0);
+	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0)
+		note("another uid's instance frame was delivered");
+	waitpid(later, &st, 0);
+	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0)
+		note("a same-uid instance snapshot was not replayed");
+	waitpid(lateother, &st, 0);
+	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0)
+		note("another uid's instance snapshot was replayed");
+	waitpid(pub, &st, 0);
+	// broker_loop() is the daemon's loop, not a test fixture: stop it
+	// rather than wait for it to decide it is done.
+	(void)kill(broker, SIGKILL);
+	waitpid(broker, &st, 0);
+}
+
+// A case that blocks would hang the whole suite; the alarm turns it into a
+// reported failure instead.
+static void watchdog(int sig) {
+	(void)sig;
+	note("the bus harness did not finish");
+	fflush(NULL);
+	_exit(1);
+}
+
 int main(void) {
+	signal(SIGALRM, watchdog);
+	alarm(25);
 	test_live();
 	test_snapshot();
 	test_cancel();
 	test_authorization();
 	test_firehose_scope();
+	test_instance_scope();
 	if (fail) return 1;
 	printf("PASS: the event bus routes live frames, replays a snapshot to a\n"
 	       "      late subscriber, delivers cancel to the operation's owner,\n"

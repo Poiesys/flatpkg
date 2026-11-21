@@ -33,6 +33,7 @@ typedef struct {
 	size_t len[BUS_MAX_SNAP];
 	int head;
 	int n;
+	uid_t owner; // who published into the slot, for the per-user topics
 } snap_t;
 
 static peer_t peers[BUS_MAX_PEERS];
@@ -99,12 +100,14 @@ static snap_t* snap_new(const char* topic) {
 	return &snaps[0];
 }
 
-static void snap_add(const char* topic, const void* frame, size_t len) {
+static void snap_add(const char* topic, const void* frame, size_t len,
+		     uid_t publisher) {
 	snap_t* s = snap_find(topic);
 	int slot;
 
 	if (len > BUS_MAX_MSG) return;
 	if (s == NULL) s = snap_new(topic);
+	if (s->n == 0) s->owner = publisher;
 	slot = (s->head + s->n) % BUS_MAX_SNAP;
 	if (s->n == BUS_MAX_SNAP) {
 		slot = s->head;
@@ -122,10 +125,15 @@ static void snap_add(const char* topic, const void* frame, size_t len) {
 	s->len[slot] = len;
 }
 
-static void snap_send(int fd, const char* topic) {
+static void snap_send(int fd, const char* topic, uid_t peer_uid) {
 	snap_t* s = snap_find(topic);
 
 	if (s == NULL) return;
+	// Someone's running app is theirs: the replay of its started/exited
+	// events does not reach another group member.
+	if (strncmp(topic, "instance/", 9) == 0 && s->owner != 0 &&
+	    peer_uid != 0 && peer_uid != s->owner)
+		return;
 	for (int i = 0; i < s->n; i++) {
 		int k = (s->head + i) % BUS_MAX_SNAP;
 		if (send_msg(fd, true, BUS_FORWARD, s->frame[k], s->len[k],
@@ -213,13 +221,16 @@ static void route(const char* topic, const void* frame, size_t len,
 	peer_t* src = peer_for(from_fd);
 	uid_t publisher = src != NULL ? src->uid : 0;
 	bool firehose = strcmp(topic, "op") == 0;
+	// A live instance is the launcher's: its events go to that uid (and to
+	// root), not to every member of the group.
+	bool per_user = firehose || strncmp(topic, "instance/", 9) == 0;
 
 	for (size_t i = 0; i < sizeof(peers) / sizeof(peers[0]); i++) {
 		peer_t* p = &peers[i];
 
 		if (p->fd == 0 || p->fd == from_fd) continue;
 		if (!peer_subscribed(p, topic)) continue;
-		if (firehose && p->uid != 0 && p->uid != publisher) continue;
+		if (per_user && p->uid != 0 && p->uid != publisher) continue;
 		if (send_msg(p->fd, true, BUS_FORWARD, frame, len, NULL,
 			     0) == 0) {
 			p->slow = 0;
@@ -307,7 +318,7 @@ void broker_handle(int fd) {
 			peer_remove(fd);
 			return;
 		}
-		snap_send(fd, topic);
+		snap_send(fd, topic, p->uid);
 		return;
 	}
 	case BUS_UNSUBSCRIBE: {
@@ -341,7 +352,8 @@ void broker_handle(int fd) {
 		size_t flen = h.len - 4 - tlen;
 		// `op` is a live stream, not one operation: replaying whatever ran before would
 		// tell a new watcher nothing true about the operation it waits for.
-		if (strcmp(topic, "op") != 0) snap_add(topic, frame, flen);
+		if (strcmp(topic, "op") != 0)
+			snap_add(topic, frame, flen, p->uid);
 		route(topic, frame, flen, fd);
 		return;
 	}
