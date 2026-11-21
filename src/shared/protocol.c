@@ -5,6 +5,7 @@
 #include <sys/endian.h>
 #include <sys/nv.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -44,6 +45,8 @@ const char* fp_proto_strerror(int err) {
 		return "unexpected frame kind";
 	case FP_P_ERR_TOO_BIG:
 		return "field or payload too large";
+	case FP_P_ERR_TIMEOUT:
+		return "the frame did not finish in time";
 	case FP_P_ERR_TRUNCATED:
 		return "frame ends inside a field";
 	case FP_P_ERR_MALFORMED:
@@ -1270,10 +1273,13 @@ int fp_frame_recv(int fd, nvlist_t** out) {
 
 	if (out == NULL) return FP_P_ERR_MALFORMED;
 	*out = NULL;
-	// Wait for the header only.  A peer that sends half of it and stops is
-	// a truncated frame, not a frame whose body is read.  MSG_WAITALL is
-	// not honoured together with MSG_PEEK on this kernel, so peek what is
-	// there and wait for the rest without consuming it.
+	// Wait for the header without spinning.  A peeked partial header keeps
+	// POLLIN set, and poll(2) ignores SO_RCVTIMEO, so the wait is bounded by
+	// a deadline that starts with the first byte instead of blocking
+	// forever.
+	struct timespec start;
+
+	(void)clock_gettime(CLOCK_MONOTONIC, &start);
 	for (;;) {
 		n = recv(fd, &h, sizeof(h), MSG_PEEK);
 		if (n < 0) {
@@ -1283,12 +1289,19 @@ int fp_frame_recv(int fd, nvlist_t** out) {
 		if ((size_t)n >= sizeof(h)) break;
 		if (n == 0) return FP_P_EOF;
 		{
+			struct timespec now;
 			struct pollfd p = {fd, POLLIN, 0};
+			long long spent;
 			int pr;
 
-			do pr = poll(&p, 1, -1);
+			(void)clock_gettime(CLOCK_MONOTONIC, &now);
+			spent = (now.tv_sec - start.tv_sec) * 1000LL +
+				(now.tv_nsec - start.tv_nsec) / 1000000LL;
+			if (spent >= FP_FRAME_WAIT_MS) return FP_P_ERR_TIMEOUT;
+			do pr = poll(&p, 1, (int)(FP_FRAME_WAIT_MS - spent));
 			while (pr < 0 && errno == EINTR);
 			if (pr < 0) return FP_P_ERR_IO;
+			if (pr == 0) return FP_P_ERR_TIMEOUT;
 			// Data left over after the peer closed cannot become a
 			// whole header: that is a truncated frame.
 			if ((p.revents & (POLLHUP | POLLERR)) != 0)

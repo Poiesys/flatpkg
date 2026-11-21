@@ -32,6 +32,7 @@ typedef enum {
 	FP_P_ERR_MALFORMED = -6, // unknown type, trailing bytes, bad value
 	FP_P_ERR_NOMEM = -7,
 	FP_P_ERR_IO = -8,
+	FP_P_ERR_TIMEOUT = -10, // a partial frame sat past the deadline
 	FP_P_EOF = -9, // clean end of stream before a frame
 } fp_proto_err_t;
 
@@ -110,6 +111,9 @@ typedef struct {
 
 // The most descriptors one request carries, and the highest target number a
 // forwarded descriptor may name: outside it would land on a worker descriptor.
+// A frame that starts arriving must finish within this long, or the worker
+// reports a timeout instead of holding the connection.
+#define FP_FRAME_WAIT_MS 30000
 #define FP_MAX_FDS 64
 
 // FP_REQ_STDIO carries the caller's stdin, stdout and stderr.  Terminals are
