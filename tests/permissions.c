@@ -472,27 +472,33 @@ main(void)
 	{
 		struct {
 			const char *meta;
-			const char *want;      /* NULL = must stay quiet */
+			const char *want;      /* NULL = no warning */
 			const char *what;
+			bool refused;          /* the plan must be rejected */
+			bool error;            /* the words are an error badge */
 		} cases[] = {
 			{ "[Session Bus Policy]\norg.gnome.Settings=see\n",
-			  NULL, "a well-known see= is quiet" },
+			  NULL, "a well-known see= is quiet", false, false },
 			{ "[Session Bus Policy]\norg.gnome.Settings=own\n",
-			  NULL, "a well-known own= is quiet" },
+			  NULL, "a well-known own= is quiet", false, false },
 			{ "[Session Bus Policy]\ntalk=org.gnome.Settings\n",
 			  "is wrong; write",
-			  "the legacy talk= shape warns: it grants nothing" },
+			  "the legacy talk= shape warns: it grants nothing", false, false },
 			{ "[Session Bus Policy]\norg.gnome.Settings=listen\n",
 			  "unknown policy 'listen'",
-			  "an unknown policy warns, naming it" },
-			{ "[Session Bus Policy]\norg.freedesktop.Flatpak=talk\n",
-			  "on flatpkg's own session helper",
-			  "talk on the session helper warns, in words" },
+			  "an unknown policy warns, naming it", false, false },
+			// Refused, not warned: the harness counts WARN badges, so
+			// a refusal is "quiet" here and the case is that the plan
+			// was rejected.
+			{ "[Session Bus Policy]\norg.freedesktop.Flatpak.SystemHelper=talk\n",
+			  "is refused",
+			  "talk on the system helper is refused, in words", false,
+			  true },
 			{ "[Session Bus Policy]\norg.freedesktop.portal.Flatpak=own\n",
-			  "on flatpkg's own portal",
-			  "own on the portal warns, in words" },
+			  NULL,
+			  "own on the portal is quiet", false, false },
 			{ "[Session Bus Policy]\norg.freedesktop.Flatpak=see\n",
-			  NULL, "see on the session helper is quiet" },
+			  NULL, "see on the session helper is quiet", false, false },
 		};
 		for (size_t c = 0; c < sizeof(cases) / sizeof(cases[0]); c++) {
 			char meta[512];
@@ -500,14 +506,25 @@ main(void)
 			    "[Application]\nname=Demo\ncommand=demo\n%s",
 			    cases[c].meta);
 			memset(&plan, 0, sizeof(plan));
-			(void)plan_from("bus policy", meta, &plan);
-			snprintf(why, sizeof(why), "warnings: %s", captured);
-			if (cases[c].want == NULL)
-				ok(cases[c].what, warning_lines() == 0, why);
-			else
-				ok(cases[c].what,
-				    warning_lines() == 1 &&
-				    strstr(captured, cases[c].want) != NULL, why);
+			{
+				int prc = plan_from("bus policy", meta, &plan);
+
+				if (cases[c].refused)
+					ok(cases[c].what, prc != 0,
+					   "the plan was not refused");
+				else if (cases[c].want == NULL)
+					ok(cases[c].what,
+					   prc == 0 && warning_lines() == 0,
+					   "not quiet");
+				else
+					ok(cases[c].what,
+					   prc == 0 &&
+					   warning_lines() ==
+						   (cases[c].error ? 0 : 1) &&
+					   strstr(captured,
+						  cases[c].want) != NULL,
+					   "wrong outcome");
+			}
 			permissions_free_plan(&plan);
 		}
 	}

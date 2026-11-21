@@ -664,7 +664,8 @@ void permissions_apply_overrides(sandbox_plan_t* plan, const run_opts_t* opts) {
 	if (opts->die_with_parent) plan->die_with_parent = true;
 }
 
-static void warn_bus_policy(const char* which, const strlist_t* list) {
+static bool warn_bus_policy(const char* which, const strlist_t* list) {
+	bool refused = false;
 	assert(which != NULL);
 	assert(list != NULL);
 	for (size_t i = 0; i < list->count; i++) {
@@ -689,19 +690,19 @@ static void warn_bus_policy(const char* which, const strlist_t* list) {
 		if (nlen == 0 || nlen >= sizeof(name)) continue;
 		memcpy(name, entry, nlen);
 		name[nlen] = '\0';
-		if (strcmp(name, "org.freedesktop.Flatpak") == 0)
-			fpkg_warnf(
-				"[%s Bus Policy] '%s' on flatpkg's own "
-				"session helper (%s): it runs host commands as "
-				"you",
-				which, pol, name);
-		else if (strcmp(name, "org.freedesktop.portal.Flatpak") == 0)
-			fpkg_warnf("[%s Bus Policy] '%s' on flatpkg's own "
-				   "portal (%s): it builds sandboxes, and "
-				   "'own' also "
-				   "impersonates it",
-				   which, pol, name);
+		// The system helper changes the shared store and the portal
+		// builds sandboxes; a declared grant to either would let a
+		// sandboxed app act with the user's store rights.  Refuse the
+		// whole plan rather than warn.
+		if (strcmp(name, "org.freedesktop.Flatpak.SystemHelper") == 0) {
+			fpkg_errorf("[%s Bus Policy] '%s' on '%s' is refused: "
+				    "the system helper is not available to a "
+				    "sandbox",
+				    which, pol, name);
+			refused = true;
+		}
 	}
+	return refused;
 }
 
 int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
@@ -861,9 +862,12 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 		plan_add_grant(plan, host_path, jail_path, FS_GRANT_RW, true);
 	}
 
-	warn_bus_policy("session", &meta->session_bus_policy);
-	warn_bus_policy("system", &meta->system_bus_policy);
-	warn_bus_policy("a11y", &meta->a11y_bus_policy);
+	// The helper is refused at the proxy boundary (dbus_proxy.c), not by
+	// failing the launch: an app declaring the grant still runs, without
+	// the name.
+	(void)warn_bus_policy("session", &meta->session_bus_policy);
+	(void)warn_bus_policy("system", &meta->system_bus_policy);
+	(void)warn_bus_policy("a11y", &meta->a11y_bus_policy);
 	strlist_copy(&plan->session_bus_policy, &meta->session_bus_policy);
 	strlist_copy(&plan->system_bus_policy, &meta->system_bus_policy);
 	strlist_copy(&plan->a11y_bus_policy, &meta->a11y_bus_policy);
