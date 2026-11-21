@@ -37,18 +37,32 @@ bool daemon_is_user(void) { return g_user; }
 
 const char* daemon_store(void) { return g_store; }
 
+// The group is fixed for the daemon's life; a lookup per connection in the
+// single-threaded loop stalls every user when the source is slow (LDAP, NIS).
+static gid_t g_flatpkg_gid = (gid_t)-1;
+static bool g_flatpkg_gid_known;
+
 static int group_allowed(uid_t uid) {
 	if (uid == 0) return 1;
+	if (!g_flatpkg_gid_known) {
+		struct group* g = getgrnam("flatpkg");
+
+		g_flatpkg_gid = g != NULL ? g->gr_gid : (gid_t)-1;
+		g_flatpkg_gid_known = true;
+	}
+	if (g_flatpkg_gid == (gid_t)-1 || g_flatpkg_gid_known == false)
+		return 0;
 	struct passwd* pw = getpwuid(uid);
 	if (!pw) return 0;
-	struct group* g = getgrnam("flatpkg");
-	if (!g) return 0;
+	struct group* g = NULL;
+	gid_t want = g_flatpkg_gid;
 	gid_t groups[NGROUPS_MAX];
 	int ngroups = NGROUPS_MAX;
 	if (getgrouplist(pw->pw_name, pw->pw_gid, groups, &ngroups) < 0)
 		return 0;
+	(void)g;
 	for (int i = 0; i < ngroups; i++)
-		if (groups[i] == g->gr_gid) return 1;
+		if (groups[i] == want) return 1;
 	return 0;
 }
 
