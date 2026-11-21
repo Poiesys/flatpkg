@@ -185,6 +185,11 @@ void typed_refuse(int conn, const char* msg) {
 	fp_ack_t a;
 	nvlist_t* nvl = NULL;
 
+	// This runs in the single-threaded accept loop; a peer that does not
+	// read its refusal must not stall every other user.
+	struct timeval tv = {1, 0};
+
+	(void)setsockopt(conn, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 	memset(&a, 0, sizeof(a));
 	a.type = FP_ACK_ERR;
 	a.code = FP_E_DENIED;
