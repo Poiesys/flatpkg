@@ -105,4 +105,24 @@ if try >/dev/null 2>&1; then
 fi
 cp "$T/fc.real" "$T/fc.inc"
 
+# 4. the global dialog cap is the portal's, not one app's
+if ! carve_function '^static fc_request_t\* fc_track\(' "$T/portal.c" \
+	> "$T/track.inc"; then
+	echo "FAIL: cannot carve fc_track() out of $SRC"
+	exit 1
+fi
+grep -q 'FC_MAX_PER_SENDER' "$T/track.inc" ||
+	{ echo "FAIL: fc_track() does not cap one app's dialogs"; exit 1; }
+grep -q 'sender' "$T/track.inc" ||
+	{ echo "FAIL: fc_track() does not look at the caller"; exit 1; }
+sed 's/mine >= FC_MAX_PER_SENDER/0/' "$T/track.inc" > "$T/track.plant"
+if cmp -s "$T/track.inc" "$T/track.plant"; then
+	echo "FAIL: the per-app cap plant was not applied"
+	exit 1
+fi
+if grep -q 'FC_MAX_PER_SENDER' "$T/track.plant"; then
+	echo "FAIL: the per-app cap plant still names the cap"
+	exit 1
+fi
+
 echo "PASS: the FileChooser and Spawn parsers read typed elements, and a container cannot abort the portal"

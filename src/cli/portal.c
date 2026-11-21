@@ -1564,6 +1564,9 @@ static size_t fc_nrequests;
 // opens them faster than they are answered would otherwise run the shared
 // portal out of descriptors and children.
 #define FC_MAX_REQUESTS 64
+// The global cap is the portal's, not an app's: one caller must not be able
+// to hold every dialog slot and starve the others.
+#define FC_MAX_PER_SENDER 8
 
 static long fc_timeout = 600;
 
@@ -1572,6 +1575,15 @@ static fc_request_t* fc_track(pid_t pid, const char* path, const char* sender,
 	fc_request_t* r;
 
 	if (fc_nrequests >= FC_MAX_REQUESTS) return NULL;
+	{
+		size_t mine = 0;
+
+		for (size_t i = 0; i < fc_nrequests; i++)
+			if (fc_requests[i].sender != NULL && sender != NULL &&
+			    strcmp(fc_requests[i].sender, sender) == 0)
+				mine++;
+		if (mine >= FC_MAX_PER_SENDER) return NULL;
+	}
 	r = realloc(fc_requests, (fc_nrequests + 1) * sizeof(*r));
 	if (!r) return NULL;
 	fc_requests = r;
