@@ -827,7 +827,9 @@ static uid_t caller_uid(void) {
 	char* end = NULL;
 	unsigned long v;
 
-	if (s == NULL || *s == '\0') return getuid();
+	// The caller's uid comes from the peer; without it the answer is "no
+	// caller", never root's own uid.
+	if (s == NULL || *s == '\0') return (uid_t)-1;
 	errno = 0;
 	v = strtoul(s, &end, 10);
 	if (errno != 0 || end == s || *end != '\0') return (uid_t)-1;
@@ -967,7 +969,10 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 			close(gate[0]);
 		}
 
-		if (gid != 0) (void)setgroups(1, &gid);
+		if (gid != 0 && setgroups(1, &gid) != 0) {
+			fpkg_errorf("enter: setgroups: %s", strerror(errno));
+			_exit(127);
+		}
 
 		closefrom(3);
 		if (jail_attach(jid) != 0) {
@@ -982,8 +987,14 @@ int cmd_enter(const char* arg, char* const extra_argv[]) {
 				strerror(errno));
 			_exit(127);
 		}
-		if (gid != 0) setgid(gid);
-		if (uid != 0) setuid(uid);
+		if (gid != 0 && setgid(gid) != 0) {
+			fpkg_errorf("enter: setgid: %s", strerror(errno));
+			_exit(127);
+		}
+		if (uid != 0 && setuid(uid) != 0) {
+			fpkg_errorf("enter: setuid: %s", strerror(errno));
+			_exit(127);
+		}
 
 		char** recorded = instance_load_run_environ(inst_dir);
 		if (recorded != NULL) {

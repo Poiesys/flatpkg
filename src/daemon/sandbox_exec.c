@@ -332,9 +332,12 @@ static void child_reset_signals(void) {
 }
 
 static void child_jail_attach(sandbox_t* sb, const sandbox_plan_t* plan) {
-	if (setgroups(1, &plan->gid) != 0)
-		fpkg_warnf("setgroups(%u): %s", (unsigned)plan->gid,
-			   strerror(errno));
+	// A failed drop leaves root's supplementary groups (wheel among them)
+	// in the child; there is no safe way to continue.
+	if (setgroups(1, &plan->gid) != 0) {
+		dprintf(2, "flatpkg: setgroups: %s\n", strerror(errno));
+		_exit(127);
+	}
 
 	if (jail_attach(sb->jid) != 0) {
 		dprintf(2, "flatpkg: jail_attach(jid=%d): %s\n", sb->jid,
