@@ -1880,7 +1880,9 @@ static void handle_file_chooser(DBusConnection* conn, DBusMessage* msg,
 		reply_error(conn, msg, "cannot read the request");
 		return;
 	}
-	if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_OBJECT_PATH) {
+	// The portal spec says (s parent_window, s title, a{sv} options):
+	// parent_window is a string, not an object path.
+	if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_STRING) {
 		reply_error(conn, msg, "bad parent_window");
 		return;
 	}
