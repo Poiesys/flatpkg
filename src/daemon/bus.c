@@ -354,6 +354,9 @@ void broker_handle(int fd) {
 				ops[i].uid = p->uid;
 				return;
 			}
+		// Silently dropping this leaves the operation unwatchable and
+		// uncancellable; the worker has to learn it was refused.
+		(void)send_msg(fd, true, BUS_SUB_DENIED, NULL, 0, NULL, 0);
 		return;
 	}
 	case BUS_DONE: {
