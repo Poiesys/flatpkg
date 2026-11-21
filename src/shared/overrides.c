@@ -193,7 +193,9 @@ int overrides_apply(fp_metadata_t* meta, const char* app_id) {
 			struct stat st;
 
 			if (path == NULL) return -1;
-			if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+			// The path is under a caller-owned directory; a symlink
+			// there would have root parse somewhere else.
+			if (lstat(path, &st) == 0 && S_ISREG(st.st_mode)) {
 				fp_metadata_t ov;
 
 				if (fp_metadata_parse_any(path, &ov) == 0) {

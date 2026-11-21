@@ -3089,13 +3089,15 @@ static int stage_user_store(sandbox_t* sb, const sandbox_plan_t* plan,
 
 	if (!metadata_wants_user_flatpak(meta)) return 0;
 	snprintf(host, sizeof(host), "%s/.local/share/flatpak", plan->home_dir);
-	if (stat(host, &st) != 0) {
+	// The home is the caller's; a symlinked store would be mounted
+	// writable from somewhere else.
+	if (lstat(host, &st) != 0) {
 		if (mkdir_as_caller(plan, host, 0755) != 0) {
 			fpkg_warnf("cannot create the user installation %s: %s",
 				   host, strerror(errno));
 			return 0;
 		}
-		if (stat(host, &st) != 0) {
+		if (lstat(host, &st) != 0) {
 			fpkg_warnf("cannot stat the user installation %s: %s",
 				   host, strerror(errno));
 			return 0;
