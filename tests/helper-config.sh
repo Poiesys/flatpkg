@@ -90,6 +90,17 @@ out=$("$T/helper-config")
 printf '%s\n' "$out" | grep -q '^mapped=0' ||
 	note "an unrelated entry did not fall back: $out"
 
+# The shipped map gives a caller-supplied URL and name to a command line, so
+# the operands have to come after `--`: a URL starting with `-` is otherwise
+# read as an option by the client the helper starts.
+map="$ROOT/scripts/flatpkg-helper.conf"
+for k in configure-remote-add configure-remote-remove; do
+	line=$(grep -E "^$k[[:space:]]*=" "$map" || true)
+	[ -n "$line" ] || { note "$map has no $k"; continue; }
+	printf '%s\n' "$line" | grep -q ' -- ' ||
+		note "$k passes its operands without --: $line"
+done
+
 if [ "$fail" -eq 0 ]; then
 	echo "PASS: helper.conf maps a D-Bus request to an absolute argv,"
 	echo "      substitutes a placeholder wherever it appears in a word, and"

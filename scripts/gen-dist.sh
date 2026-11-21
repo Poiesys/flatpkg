@@ -3,9 +3,10 @@
 # Usage: gen-dist.sh VERSION DISTDIR
 #
 # A staged copy fixes ownership and every mtime before tar (DragonFlyBSD's
-# bsdtar has no --mtime) and the entries are fed sorted (it has no --sort);
-# gzip -n keeps the tarball reproducible, so distinfo only changes when a
-# tracked file does.
+# bsdtar has no --mtime) and the entries are fed sorted (it has no --sort).
+# gzip -n drops the timestamp, so the bytes depend only on the tree - but on
+# one machine: another gzip or zlib can emit different ones, so distinfo is
+# regenerated on the machine that serves the port.
 set -e
 
 version=$1
