@@ -336,6 +336,12 @@ int sandbox_create_jail(sandbox_t* sb, const fp_metadata_t* meta,
 	int nparams = 0;
 #define ADDP(name, val)                                                        \
 	do {                                                                   \
+		/* A table that grew past its array is a build bug, but an     \
+		 * overflow here would corrupt the jail parameters. */         \
+		if (nparams >= (int)(sizeof(params) / sizeof(params[0]))) {    \
+			fpkg_errorf("too many jail parameters");               \
+			goto fail;                                             \
+		}                                                              \
 		jailparam_init(&params[nparams], name);                        \
 		if (jailparam_import(&params[nparams], val) != 0) {            \
 			fpkg_errorf("jailparam %s: %s", name, jail_errmsg);    \
