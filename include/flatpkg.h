@@ -292,6 +292,8 @@ typedef struct {
 } fpkg_caller_t;
 
 void permissions_set_caller(const fpkg_caller_t* caller);
+// NULL when the worker has not said who it acts for.
+const fpkg_caller_t* permissions_caller(void);
 
 int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 		     sandbox_plan_t* plan);

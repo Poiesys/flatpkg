@@ -202,10 +202,8 @@ int instance_uses_path(const char* path) {
 	if (xdg != NULL && *xdg != '\0')
 		snprintf(bases[n++], PATH_MAX, "%s/.flatpak", xdg);
 
-	uid_t uid = getuid();
-	const char* app_uid = cli_getenv("FLATPKG_APP_UID");
-	if (app_uid != NULL && *app_uid != '\0')
-		uid = (uid_t)strtoul(app_uid, NULL, 10);
+	const fpkg_caller_t* caller = permissions_caller();
+	uid_t uid = caller != NULL ? caller->uid : getuid();
 	snprintf(bases[n++], PATH_MAX, "/var/run/user/%u/.flatpak",
 		 (unsigned)uid);
 
@@ -337,10 +335,8 @@ const char* instances_dir(void) {
 	static char fallback[PATH_MAX];
 	const char* xdg = cli_getenv("XDG_RUNTIME_DIR");
 
-	uid_t uid = getuid();
-	const char* app_uid = cli_getenv("FLATPKG_APP_UID");
-	if (app_uid != NULL && *app_uid != '\0')
-		uid = (uid_t)strtoul(app_uid, NULL, 10);
+	const fpkg_caller_t* caller = permissions_caller();
+	uid_t uid = caller != NULL ? caller->uid : getuid();
 
 	snprintf(fallback, sizeof(fallback), "/var/run/user/%u/.flatpak",
 		 (unsigned)uid);

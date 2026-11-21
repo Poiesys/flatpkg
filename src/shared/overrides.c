@@ -331,13 +331,10 @@ int overrides_save(bool user, const char* app_id, const fp_metadata_t* ctx) {
 	// otherwise land root-owned and be uneditable.  The descriptor is used
 	// rather than the name, so what was written is what gets chowned.
 	if (user) {
-		const char* eu = cli_getenv("FLATPKG_APP_UID");
-		const char* eg = cli_getenv("FLATPKG_APP_GID");
-		if (eu != NULL && *eu != '\0') {
-			uid_t uid = (uid_t)strtoul(eu, NULL, 10);
-			gid_t gid = (eg != NULL && *eg != '\0')
-					    ? (gid_t)strtoul(eg, NULL, 10)
-					    : uid;
+		const fpkg_caller_t* caller = permissions_caller();
+		if (caller != NULL) {
+			uid_t uid = caller->uid;
+			gid_t gid = caller->gid;
 			if (fchown(fileno(fp), uid, gid) != 0)
 				fpkg_warnf(
 					"%s is %s-owned after writing; "

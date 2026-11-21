@@ -822,30 +822,20 @@ static long jail_owner_uid(int jid) {
 	return owner;
 }
 
+// The caller comes from the peer, handed over by the worker; without it the
+// answer is "no caller", never this process's own uid.
 static uid_t caller_uid(void) {
-	const char* s = cli_getenv("FLATPKG_APP_UID");
-	char* end = NULL;
-	unsigned long v;
+	const fpkg_caller_t* caller = permissions_caller();
 
-	// The caller's uid comes from the peer; without it the answer is "no
-	// caller", never root's own uid.
-	if (s == NULL || *s == '\0') return (uid_t)-1;
-	errno = 0;
-	v = strtoul(s, &end, 10);
-	if (errno != 0 || end == s || *end != '\0') return (uid_t)-1;
-	return (uid_t)v;
+	if (caller == NULL) return (uid_t)-1;
+	return caller->uid;
 }
 
 static gid_t caller_gid(void) {
-	const char* s = cli_getenv("FLATPKG_APP_GID");
-	char* end = NULL;
-	unsigned long v;
+	const fpkg_caller_t* caller = permissions_caller();
 
-	if (s == NULL || *s == '\0') return getgid();
-	errno = 0;
-	v = strtoul(s, &end, 10);
-	if (errno != 0 || end == s || *end != '\0') return (gid_t)-1;
-	return (gid_t)v;
+	if (caller == NULL) return (gid_t)-1;
+	return caller->gid;
 }
 
 // enter and kill act as root, so only for the user the jail was made for (or root).

@@ -729,6 +729,23 @@ void permissions_set_caller(const fpkg_caller_t* caller) {
 		 caller->home != NULL ? caller->home : "");
 }
 
+static fpkg_caller_t g_caller_view;
+static char g_caller_view_name[128];
+static char g_caller_view_home[PATH_MAX];
+
+const fpkg_caller_t* permissions_caller(void) {
+	if (!g_caller.set) return NULL;
+	g_caller_view.uid = g_caller.uid;
+	g_caller_view.gid = g_caller.gid;
+	snprintf(g_caller_view_name, sizeof(g_caller_view_name), "%s",
+		 g_caller.name);
+	snprintf(g_caller_view_home, sizeof(g_caller_view_home), "%s",
+		 g_caller.home);
+	g_caller_view.name = g_caller_view_name;
+	g_caller_view.home = g_caller_view_home;
+	return &g_caller_view;
+}
+
 int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 		     sandbox_plan_t* plan) {
 	assert(meta != NULL);
