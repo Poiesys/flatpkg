@@ -91,6 +91,18 @@ int user_socket_path(char* out, size_t outlen) {
 		snprintf(out, outlen, "%s/flatpkg/control.sock", run);
 		return 0;
 	}
+	// No session runtime dir.  /tmp/flatpkg-<uid> is a shared directory
+	// another user can pre-create, so fall back under the caller's own home
+	// instead, where nobody else can write.
+	{
+		const char* home = cli_getenv("HOME");
+
+		if (home != NULL && home[0] == '/') {
+			snprintf(out, outlen, "%s/.cache/flatpkg/control.sock",
+				 home);
+			return 0;
+		}
+	}
 	snprintf(out, outlen, "/tmp/flatpkg-%u/control.sock",
 		 (unsigned)getuid());
 	return 0;
