@@ -41,20 +41,16 @@ static bool unix_socket_live(const char* path) {
 	return rc == 0;
 }
 
-static bool address_has_unix_path(const char* address) {
+// One entry, exactly unix:path=<absolute path>: no list, no other keys.  A
+// permissive parse hands libdbus a transport (unixexec:) that runs a program,
+// and the helper below runs before any privilege drop.
+static char* address_unix_path(const char* address) {
 	assert(address != NULL);
-	char* copy = xstrdup(address);
-	char* save = NULL;
-	bool found = false;
-	for (char* tok = strtok_r(copy, ";", &save); tok;
-	     tok = strtok_r(NULL, ";", &save)) {
-		if (strncmp(tok, "unix:path=", 10) == 0 && tok[10] != '\0') {
-			found = true;
-			break;
-		}
-	}
-	free(copy);
-	return found;
+	if (strncmp(address, "unix:path=", 10) != 0) return NULL;
+	const char* path = address + 10;
+	if (path[0] != '/') return NULL;
+	if (strpbrk(path, ";,") != NULL) return NULL;
+	return xstrdup(path);
 }
 
 static bool path_is_user_socket(const char* path, uid_t uid) {
@@ -69,7 +65,16 @@ static bool path_is_user_socket(const char* path, uid_t uid) {
 char* dbus_host_session_address(const sandbox_plan_t* plan) {
 	assert(plan != NULL);
 	const char* addr = cli_getenv("DBUS_SESSION_BUS_ADDRESS");
-	if (addr && *addr && address_has_unix_path(addr)) return xstrdup(addr);
+
+	if (addr != NULL && *addr != '\0') {
+		char* path = address_unix_path(addr);
+
+		// A caller-named bus counts only when it is the caller's own
+		// socket; anything else falls back to the paths below.
+		if (path != NULL && path_is_user_socket(path, plan->uid))
+			return xasprintf("unix:path=%s", path);
+		free(path);
+	}
 
 	char path[PATH_MAX];
 	snprintf(path, sizeof(path), "%s/bus", plan->xdg_runtime_dir);
@@ -85,7 +90,18 @@ char* dbus_host_session_address(const sandbox_plan_t* plan) {
 
 char* dbus_host_system_address(void) {
 	const char* addr = cli_getenv("DBUS_SYSTEM_BUS_ADDRESS");
-	if (addr && *addr && address_has_unix_path(addr)) return xstrdup(addr);
+
+	if (addr != NULL && *addr != '\0') {
+		char* path = address_unix_path(addr);
+		struct stat st;
+
+		// The system bus is root's; never proxy a socket someone else
+		// named.
+		if (path != NULL && stat(path, &st) == 0 && S_ISSOCK(st.st_mode) &&
+		    st.st_uid == 0)
+			return xasprintf("unix:path=%s", path);
+		free(path);
+	}
 	if (access("/var/run/dbus/system_bus_socket", F_OK) == 0)
 		return xstrdup("unix:path=/var/run/dbus/system_bus_socket");
 	if (access("/run/dbus/system_bus_socket", F_OK) == 0)
@@ -215,7 +231,16 @@ static int bus_addrs_resolve(bus_addrs_t* a, const sandbox_plan_t* plan) {
 	}
 	{
 		const char* a11y = cli_getenv("AT_SPI_BUS_ADDRESS");
-		if (a11y && *a11y) a->a11y = xstrdup(a11y);
+
+		// Same rule as the session bus: one unix:path entry, and only the
+		// caller's own socket.
+		if (a11y != NULL && *a11y != '\0') {
+			char* path = address_unix_path(a11y);
+
+			if (path != NULL && path_is_user_socket(path, plan->uid))
+				a->a11y = xasprintf("unix:path=%s", path);
+			free(path);
+		}
 	}
 	if (!a->a11y && plan->xdg_runtime_dir && *plan->xdg_runtime_dir) {
 		static const char* names[] = {"bus_0", "bus"};
@@ -266,6 +291,12 @@ static int bus_addrs_resolve(bus_addrs_t* a, const sandbox_plan_t* plan) {
 			}
 			if (sess != NULL)
 				setenv("DBUS_SESSION_BUS_ADDRESS", sess, 1);
+			// The helper talks to a caller-controlled bus; it must
+			// never run as root.  Every drop is fatal on failure.
+			if (plan->user_name != NULL)
+				(void)initgroups(plan->user_name, plan->gid);
+			if (setgid(plan->gid) != 0 || setuid(plan->uid) != 0)
+				_exit(127);
 			execvp("/usr/local/bin/dbus-send", av);
 			_exit(127);
 		}
