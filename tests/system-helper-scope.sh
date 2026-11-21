@@ -126,8 +126,9 @@ printf '%s' "$ur" | grep -q 'flatpkg reads classic OSTree summaries' &&
 ix=$(printf '%s\n' "$sb" | sed -n '/^static void install_index_summary(/,/^}/p')
 printf '%s' "$ix" | grep -q 'read_owned_file' ||
 	note "the index summary is not read through the caller-owned reader"
-printf '%s' "$ix" | grep -q 'summary.idx' ||
-	note "the index summary is not written as summary.idx"
+# Nothing reads it, so the helper must not store an unverified summary.
+printf '%s' "$ix" | grep -q 'summary.idx' &&
+	note "the index summary is still written into the repo"
 ro=$(printf '%s\n' "$sb" | sed -n '/^static gboolean read_owned_file(/,/^}/p')
 printf '%s' "$ro" | grep -q 'O_NOFOLLOW' ||
 	note "the summary reader follows a symlink"

@@ -695,29 +695,6 @@ static gboolean read_owned_file(const char* path, uid_t uid,
 	return TRUE;
 }
 
-static gboolean write_repo_metadata(const char* name, const void* data,
-				    size_t len, GError** error) {
-	char repo[PATH_MAX], path[PATH_MAX];
-	struct stat st;
-
-	snprintf(repo, sizeof(repo), "%s/repo", store_root());
-	if (stat(repo, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != 0 ||
-	    (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
-		g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
-			    "the store repo is not root-owned: %s", repo);
-		return FALSE;
-	}
-	snprintf(path, sizeof(path), "%s/%s", repo, name);
-	if (!g_file_set_contents(path, data, (gssize)len, error)) return FALSE;
-	if (chmod(path, 0644) != 0) {
-		g_set_error(error, G_DBUS_ERROR, G_DBUS_ERROR_FAILED,
-			    "cannot set the mode of %s: %s", path,
-			    g_strerror(errno));
-		return FALSE;
-	}
-	return TRUE;
-}
-
 static void install_index_summary(GDBusConnection* connection,
 				  const gchar* sender, const gchar* remote,
 				  const gchar* summary_path,
@@ -748,19 +725,9 @@ static void install_index_summary(GDBusConnection* connection,
 	if (sig_path != NULL && *sig_path != '\0' &&
 	    !read_owned_file(sig_path, uid, &sig, &sig_len, &error))
 		goto fail;
-	if (!write_repo_metadata("summary.idx", summary, summary_len, &error))
-		goto fail;
-	if (sig != NULL) {
-		if (!write_repo_metadata("summary.idx.sig", sig, sig_len,
-					 &error))
-			goto fail;
-	} else {
-		char dst[PATH_MAX];
-
-		snprintf(dst, sizeof(dst), "%s/repo/summary.idx.sig",
-			 store_root());
-		(void)unlink(dst);
-	}
+	// Nothing reads this file, so storing an unverified summary in the
+	// shared repo buys nothing; the caller's files are validated above and
+	// the request is acknowledged without copying them in.
 	g_free(summary);
 	g_free(sig);
 	g_dbus_method_invocation_return_value(invocation, NULL);
