@@ -65,6 +65,38 @@ static bool ref_matches(const char* ref, const char* want, bool runtime) {
 	return strcmp(branch, w_arch_end + 1) == 0;
 }
 
+// Does the commit carry a detached signature the configured remote's keyring
+// accepts?  A bundle is untrusted input, so nothing may be written into a
+// remote's refs before this answers yes.
+int fp_repo_verify_commit(const char* checksum, char** out_error) {
+	GError* err = NULL;
+	OstreeRepo* repo = NULL;
+	g_autoptr(OstreeGpgVerifyResult) result = NULL;
+	g_autofree char* repo_path = NULL;
+	int rc = -1;
+
+	*out_error = NULL;
+	repo_path = g_strdup_printf("%s/repo", store_root());
+	repo = ostree_repo_new(g_file_new_for_path(repo_path));
+	if (!ostree_repo_open(repo, NULL, &err)) {
+		*out_error = g_strdup(err != NULL ? err->message : "cannot open");
+		g_clear_error(&err);
+		goto out;
+	}
+	result = ostree_repo_verify_commit_ext(repo, checksum, NULL, NULL, NULL,
+					       &err);
+	if (result == NULL) {
+		*out_error = g_strdup(err != NULL ? err->message
+						  : "no valid signature");
+		g_clear_error(&err);
+		goto out;
+	}
+	rc = 0;
+out:
+	g_object_unref(repo);
+	return rc;
+}
+
 int fp_repo_local_ref_info(const char* store, const char* remote,
 			   const char* ref, const char* commit, bool runtime,
 			   char out_ref[512], char out_commit[65],

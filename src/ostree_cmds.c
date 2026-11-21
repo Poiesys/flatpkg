@@ -1888,23 +1888,26 @@ int ostree_install_bundle(const char* bundle_path, const char* remote,
 		snprintf(useremote, sizeof(useremote), "%s", remote);
 	} else if (bundle_find_remote(origin, useremote, sizeof(useremote)) !=
 		   0) {
-		const char* base = strrchr(bundle_path, '/');
-		base = base != NULL ? base + 1 : bundle_path;
-		size_t n = 0;
-		for (; base[n] != '\0' && n + 1 < sizeof(useremote); n++) {
-			char c = base[n];
-			useremote[n] = (isalnum((unsigned char)c) || c == '.' ||
-					c == '_' || c == '-')
-					       ? c
-					       : '_';
-		}
-		useremote[n] = '\0';
-		fpkg_warnf("no remote matches '%s'; creating '%s' for it "
-			   "(add its GPG key to enable updates)",
+		// Never name a remote after the bundle's file name: that would let
+		// a bundle called "flathub" write into the real one.  An unsigned
+		// bundle is local-only.
+		snprintf(useremote, sizeof(useremote), "bundle-local");
+		fpkg_warnf("no remote matches '%s'; recording it under '%s'",
 			   origin != NULL ? origin : "?", useremote);
-		if (origin != NULL && *origin != '\0')
-			(void)ostree_remote_add(useremote, origin, false,
-						false);
+	}
+
+	{
+		char* verr = NULL;
+
+		if (fp_repo_verify_commit(commit, &verr) != 0) {
+			fpkg_errorf("bundle %s is not signed by '%s'%s%s",
+				    bundle_path, useremote,
+				    verr != NULL ? ": " : "",
+				    verr != NULL ? verr : "");
+			g_free(verr);
+			goto fail;
+		}
+		g_free(verr);
 	}
 
 	snprintf(full, sizeof(full), "%s:%s", useremote, ref);
@@ -1916,8 +1919,10 @@ int ostree_install_bundle(const char* bundle_path, const char* remote,
 
 		tool_ctx_init(&tc);
 		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
-		char* argv[] = {"ostree", "refs", create, "--force",
-				repo_arg, commit, NULL};
+		// No --force: a bundle may only create its own ref, never
+		// redirect an existing one to different content.
+		char* argv[] = {"ostree", "refs", create, repo_arg, commit,
+				NULL};
 		tool_res_init(&res);
 		if (ostree_run(argv, &res) != 0 || res.rc != 0) {
 			log_tool_stderr(&res);

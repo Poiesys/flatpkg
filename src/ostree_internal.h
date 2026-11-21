@@ -119,6 +119,7 @@ extern bool g_fetch_quiet;
 char* slurp_file(const char* path);
 void store_path(char* buf, size_t len, const char* fmt, ...);
 const char* host_arch(void);
+int fp_repo_verify_commit(const char* checksum, char** out_error);
 int atomic_symlink(const char* target, const char* link_path);
 int ref_parse(const char* s, fpkg_ref_t* out);
 void ref_full(const fpkg_ref_t* r, const char* type, char* out,
