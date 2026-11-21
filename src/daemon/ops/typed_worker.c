@@ -1440,6 +1440,36 @@ static int pump_bus(wctx_t* c) {
 	}
 }
 
+static void store_set_root_for(wctx_t* c, bool user_store) {
+	char path[PATH_MAX];
+	struct stat st;
+
+	if (!user_store) {
+		// The root daemon serves several stores; a request that names none
+		// acts on its own.  The user daemon's store is fixed at startup and
+		// must not be cleared here.
+		if (!daemon_is_user()) store_set_root(NULL);
+		return;
+	}
+	// The path is derived from the peer, never named by the request: a
+	// launch from the caller's own user installation.  lstat, not stat, so a
+	// symlink cannot redirect root, and the directory must be the caller's
+	// own and closed to group and others.
+	struct passwd* pw = getpwuid(c->uid);
+
+	if (pw == NULL || pw->pw_dir == NULL || pw->pw_dir[0] != '/') {
+		store_set_root(NULL);
+		return;
+	}
+	snprintf(path, sizeof(path), "%s/.local/share/flatpak", pw->pw_dir);
+	if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
+	    st.st_uid != c->uid || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) {
+		store_set_root(NULL);
+		return;
+	}
+	store_set_root(path);
+}
+
 void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 	(void)signal(SIGUSR1, on_cancel);
 	(void)signal(SIGHUP, on_client_gone);
@@ -1627,7 +1657,7 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 			if (c.dead) break;
 			continue;
 		}
-		store_set_root(req.store);
+		store_set_root_for(&c, req.user_store);
 		if (daemon_is_user() &&
 		    (req.type == FP_REQ_RUN || req.type == FP_REQ_ENTER ||
 		     req.type == FP_REQ_STDIO)) {

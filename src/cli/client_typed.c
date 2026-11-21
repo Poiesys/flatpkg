@@ -1140,8 +1140,10 @@ int client_try_typed(int argc, char* argv[]) {
 				    c.req.name);
 		rc = 1;
 		goto out;
-	} else if (c.store[0] != '\0') {
-		c.typed.store = c.store;
+	} else if (c.store[0] != '\0' && c.launch_via_root) {
+		// Only the launch kinds may name the user installation; every other
+		// request acts on the store its daemon already serves.
+		c.typed.user_store = true;
 	}
 
 	// A run may carry descriptors the caller wants inherited. The list is decided

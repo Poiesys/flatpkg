@@ -95,11 +95,15 @@ for p in $(pgrep -f 'flatpkgd --user' 2>/dev/null || true); do
 done
 [ "$found" = 1 ] || note "the user daemon is not running as this user"
 
+# The launch resolves the caller's REAL user installation (derived from the
+# peer uid), not the HOME this harness overrides, so the fixture installed
+# under $T/home is deliberately not launchable from here: the request must be
+# refused rather than reach some other user's store.
 if run --user run org.example.UserOnly >/dev/null 2>&1; then
-	note "a user installation launched an application"
+	note "a launch resolved a store the caller did not install into"
 fi
 
 [ "$fail" -eq 0 ] && echo "PASS: a user installation has its own daemon and"
 echo "      store, installs a local app without touching the system store,"
-echo "      and refuses to launch it"
+echo "      and launches it through the root daemon"
 exit "$fail"
