@@ -420,7 +420,8 @@ static int cups_socket_path(const sandbox_plan_t* plan, char* out, size_t n) {
 	return -1;
 }
 
-static int pcsc_socket_path(char* out, size_t n) {
+static int pcsc_socket_path(const sandbox_plan_t* plan, char* out, size_t n) {
+	assert(plan != NULL);
 	assert(out != NULL);
 	assert(n > 0);
 	static const char* const defaults[] = {"/var/run/pcscd/pcscd.comm",
@@ -429,6 +430,11 @@ static int pcsc_socket_path(char* out, size_t n) {
 	struct stat st;
 
 	if (v && *v) {
+		// The caller names this path and root mounts its parent; only
+		// the caller's own socket may be named.
+		if (lstat(v, &st) != 0 || !S_ISSOCK(st.st_mode) ||
+		    st.st_uid != plan->uid)
+			return -1;
 		snprintf(out, n, "%s", v);
 		return 0;
 	}
@@ -3526,7 +3532,16 @@ static void stage_ssh_agent(sandbox_t* sb, const sandbox_plan_t* plan) {
 		const char* sock = cli_getenv("SSH_AUTH_SOCK");
 		struct stat sst;
 
-		if (sock && *sock && stat(sock, &sst) == 0) {
+		if (sock != NULL && *sock != '\0') {
+			// Same rule as pcsc: only the caller's own socket,
+			// never a group- or other-owned one.
+			if (lstat(sock, &sst) != 0 || !S_ISSOCK(sst.st_mode) ||
+			    sst.st_uid != plan->uid) {
+				fpkg_warnf("refusing ssh agent %s: not the "
+					   "caller's socket",
+					   sock);
+				return;
+			}
 			if (bind_host_socket_dir(sb, sock,
 						 "/run/flatpak/ssh-agent") ==
 			    0)
@@ -3542,7 +3557,7 @@ static void stage_pcsc(sandbox_t* sb, const sandbox_plan_t* plan) {
 	if (plan->sock_pcsc) {
 		char hsock[PATH_MAX];
 
-		if (pcsc_socket_path(hsock, sizeof(hsock)) == 0 &&
+		if (pcsc_socket_path(plan, hsock, sizeof(hsock)) == 0 &&
 		    bind_host_socket_dir(sb, hsock, "/run/pcscd") == 0) {
 			const char* base = strrchr(hsock, '/');
 			base = base ? base + 1 : hsock;
