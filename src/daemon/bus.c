@@ -90,11 +90,11 @@ static snap_t* snap_new(const char* topic) {
 				 topic);
 			return &snaps[i];
 		}
-	for (size_t i = 0; i < sizeof(snaps) / sizeof(snaps[0]); i++) {
-		for (int k = 0; k < snaps[i].n; k++)
-			free(snaps[i].frame[k]);
-		memset(&snaps[i], 0, sizeof(snaps[i]));
-	}
+	// Evict the oldest snapshot rather than every topic's: one busy topic
+	// must not erase the history of all the others.
+	for (int k = 0; k < snaps[0].n; k++)
+		free(snaps[0].frame[k]);
+	memset(&snaps[0], 0, sizeof(snaps[0]));
 	snprintf(snaps[0].topic, sizeof(snaps[0].topic), "%s", topic);
 	return &snaps[0];
 }
