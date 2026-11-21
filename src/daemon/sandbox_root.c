@@ -1909,10 +1909,19 @@ static void prune_ld_so_caches(const char* cache_dir) {
 }
 
 // Read a whole Xauthority file; a 1 MiB cap keeps a hostile file bounded.
+// The path is the caller's home, which they control: a FIFO here would block
+// root's launch, and a symlink would read somewhere else.  No O_NOFOLLOW, no
+// regular file, no read.
 static bool xauth_read_file(const char* path, unsigned char** out,
 			    size_t* outlen) {
-	int fd = open(path, O_RDONLY);
+	int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	struct stat st;
+
 	if (fd < 0) return false;
+	if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+		close(fd);
+		return false;
+	}
 
 	size_t cap = 65536, len = 0;
 	unsigned char* buf = malloc(cap);
