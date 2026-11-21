@@ -155,6 +155,20 @@ int daemon_main(bool user) {
 			return 1;
 		}
 		(void)chmod(dir, 0700);
+		{
+			// A directory another user created first would let them
+			// answer the socket; it has to be this user's own 0700.
+			struct stat st;
+
+			if (lstat(dir, &st) != 0 || !S_ISDIR(st.st_mode) ||
+			    st.st_uid != getuid() ||
+			    (st.st_mode & (S_IRWXG | S_IRWXO)) != 0) {
+				fpkg_errorf("the user socket directory %s is "
+					    "not this user's own 0700 directory",
+					    dir);
+				return 1;
+			}
+		}
 	} else {
 		// Only the flatpkg group may look in or write here: a
 		// world-writable run directory lets anyone unlink the control
