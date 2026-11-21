@@ -150,7 +150,10 @@ static int peer_subscribed(const peer_t* p, const char* topic) {
 
 static void op_forget(int fd) {
 	for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
-		if (ops[i].fd == fd) memset(&ops[i], 0, sizeof(ops[i]));
+		if (ops[i].fd == fd) {
+			memset(&ops[i], 0, sizeof(ops[i]));
+			ops[i].fd = -1;
+		}
 }
 
 static void peer_remove(int fd) {
@@ -251,7 +254,7 @@ static bool peer_may_watch(const peer_t* p, const char* topic) {
 	want = strtoull(topic + 3, &end, 10);
 	if (end == topic + 3 || *end != '\0') return false;
 	for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
-		if (ops[i].op == want && ops[i].fd != 0 &&
+		if (ops[i].op == want && ops[i].fd != -1 &&
 		    (p->uid == 0 || ops[i].uid == p->uid))
 			return true;
 	return false;
@@ -377,7 +380,7 @@ void broker_handle(int fd) {
 		// The op id is random and the registration records its owner:
 		// naming someone else's operation is a refusal, not a signal.
 		for (size_t i = 0; i < sizeof(ops) / sizeof(ops[0]); i++)
-			if (ops[i].op == op && ops[i].fd != 0 &&
+			if (ops[i].op == op && ops[i].fd != -1 &&
 			    (p->uid == 0 || ops[i].uid == p->uid)) {
 				// Ask the worker down its own socket rather than
 				// signalling a pid recorded earlier: the pid may
