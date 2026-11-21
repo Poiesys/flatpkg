@@ -153,9 +153,11 @@ n_clear=$(printf '%s\n' "$clear_names" | grep -c . || true)
 
 # Floors, because an empty list compares equal to everything - and this
 # guard is worthless if the carves stop matching and say so by agreeing.
-if [ "$n_app" -lt 5 ] || [ "$n_set" -lt 4 ]; then
+# Four readers: the plan builder takes its identity from the caller struct
+# now, so it is no longer one of them.
+if [ "$n_app" -lt 4 ] || [ "$n_set" -lt 4 ]; then
 	echo "FAIL the carve found $n_app APP_* names read and $n_set set by"
-	echo "       the daemon (expected at least 5 and 4): a carve that"
+	echo "       the daemon (expected at least 4 and 4): a carve that"
 	echo "       returns nothing is not a guard, it is a compliment"
 	fail=1
 else

@@ -281,6 +281,18 @@ typedef struct {
 	strlist_t a11y_bus_policy;
 } sandbox_plan_t;
 
+// Who this process acts for.  The worker fills it from the peer's
+// credentials - never from request text or the environment, which the
+// caller controls.
+typedef struct {
+	uid_t uid;
+	gid_t gid;
+	const char* name;
+	const char* home;
+} fpkg_caller_t;
+
+void permissions_set_caller(const fpkg_caller_t* caller);
+
 int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 		     sandbox_plan_t* plan);
 void permissions_free_plan(sandbox_plan_t* plan);

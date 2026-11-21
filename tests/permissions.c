@@ -224,6 +224,11 @@ main(void)
 {
 	sandbox_plan_t plan;
 	char why[9000];
+	fpkg_caller_t caller = {
+		.uid = 1000, .gid = 1000, .name = "tester", .home = PERM_HOME,
+	};
+
+	permissions_set_caller(&caller);
 
 	/* 1. A KNOWN entry sets the flag and warns about nothing.  This is
 	 * the control: without it, "warns on an unknown entry" is also

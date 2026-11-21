@@ -74,4 +74,13 @@ grep -q 'if (plan->uid == 0) {' "$perm" ||
 grep -q 'plan->uid == 0 && getuid() != 0' "$perm" &&
 	{ echo "FAIL: the uid-0 refusal is compared against this process,"
 	  echo "      which is 0 in the root worker"; exit 1; }
+# The identity is handed over by the worker, not read back out of an
+# environment the caller can set.
+grep -q 'FLATPKG_APP_UID\|FLATPKG_APP_GID\|FLATPKG_APP_USER\|FLATPKG_APP_HOME' \
+	"$perm" &&
+	{ echo "FAIL: the plan builder reads the identity from the environment";
+	  exit 1; }
+grep -q 'g_caller.set' "$perm" ||
+	{ echo "FAIL: the plan builder has no caller to take an identity from";
+	  exit 1; }
 exit 0

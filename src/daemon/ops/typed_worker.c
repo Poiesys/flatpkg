@@ -1610,6 +1610,15 @@ void typed_worker(int conn, int bus_fd, uid_t peer_uid, gid_t peer_gid) {
 		setenv("FLATPKG_APP_HOME", pw->pw_dir, 1);
 		setenv("HOME", pw->pw_dir, 1);
 	}
+	// The plan builder takes the identity from here, not from the
+	// environment it was just written to.
+	fpkg_caller_t caller = {
+		.uid = peer_uid,
+		.gid = peer_gid,
+		.name = pw != NULL ? pw->pw_name : NULL,
+		.home = pw != NULL ? pw->pw_dir : NULL,
+	};
+	permissions_set_caller(&caller);
 	// No pty here, so no descriptor for the app's terminal: cleared so a
 	// value the caller exported cannot survive.
 	unsetenv("FLATPKG_APP_TTY");

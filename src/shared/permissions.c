@@ -705,6 +705,30 @@ static bool warn_bus_policy(const char* which, const strlist_t* list) {
 	return refused;
 }
 
+// The caller is copied here so no pointer into the password database
+// outlives the next lookup.
+static struct {
+	bool set;
+	uid_t uid;
+	gid_t gid;
+	char name[128];
+	char home[PATH_MAX];
+} g_caller;
+
+void permissions_set_caller(const fpkg_caller_t* caller) {
+	if (caller == NULL) {
+		g_caller.set = false;
+		return;
+	}
+	g_caller.set = true;
+	g_caller.uid = caller->uid;
+	g_caller.gid = caller->gid;
+	snprintf(g_caller.name, sizeof(g_caller.name), "%s",
+		 caller->name != NULL ? caller->name : "user");
+	snprintf(g_caller.home, sizeof(g_caller.home), "%s",
+		 caller->home != NULL ? caller->home : "");
+}
+
 int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 		     sandbox_plan_t* plan) {
 	assert(meta != NULL);
@@ -714,34 +738,20 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 	plan->home_dir = xstrdup(home_dir);
 	plan->dev_snd = false;
 
-	const char* eu = cli_getenv("FLATPKG_APP_UID");
-	if (eu && *eu) {
-		plan->uid = (uid_t)strtoul(eu, NULL, 10);
-		const char* eg = cli_getenv("FLATPKG_APP_GID");
-		plan->gid = eg && *eg ? (gid_t)strtoul(eg, NULL, 10)
-				      : (gid_t)plan->uid;
-		const char* en = cli_getenv("FLATPKG_APP_USER");
-		plan->user_name = xstrdup(en && *en ? en : "user");
-		plan->real_name = xstrdup("");
-		const char* eh = cli_getenv("FLATPKG_APP_HOME");
-		if (eh && *eh) {
-			free(plan->home_dir);
-			plan->home_dir = xstrdup(eh);
-		}
-	} else {
-		struct passwd* pw = getpwuid(getuid());
-		if (pw) {
-			plan->user_name = xstrdup(pw->pw_name);
-			plan->real_name =
-				xstrdup(pw->pw_gecos ? pw->pw_gecos : "");
-			plan->uid = pw->pw_uid;
-			plan->gid = pw->pw_gid;
-		} else {
-			plan->user_name = xstrdup("user");
-			plan->real_name = xstrdup("");
-			plan->uid = getuid();
-			plan->gid = getgid();
-		}
+	// The identity is the peer's, handed over by the worker.  Reading it
+	// back out of the environment made it caller-settable, and a missing
+	// value fell back to this process's account - root's, in a worker.
+	if (!g_caller.set) {
+		fpkg_errorf(get_string("no caller identity; refusing to plan"));
+		return -1;
+	}
+	plan->uid = g_caller.uid;
+	plan->gid = g_caller.gid;
+	plan->user_name = xstrdup(g_caller.name);
+	plan->real_name = xstrdup("");
+	if (g_caller.home[0] != '\0') {
+		free(plan->home_dir);
+		plan->home_dir = xstrdup(g_caller.home);
 	}
 	// The caller's identity is the peer's.  A plan for uid 0 means the
 	// identity went missing (in the root worker getuid() is 0, so a check
