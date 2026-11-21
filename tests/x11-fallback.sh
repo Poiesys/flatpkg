@@ -56,7 +56,13 @@ printf '%s\n' "$out" | grep -q '^DISPLAY=' ||
 printf '%s\n' "$out" | grep -q '^WAYLAND_DISPLAY=' &&
 	{ echo "FAIL: the sandbox was promised a Wayland display"; exit 1; }
 printf '%s\n' "$out" | grep -q '^TMPDIR=/var/tmp$' ||
-	{ echo "FAIL: the sandbox temp dir is not the shared /var/tmp"; exit 1; }
+	{ echo "FAIL: the sandbox temp dir is not /var/tmp"; exit 1; }
+# The jail's /var/tmp must be the app's OWN cache/tmp, not the host's
+# directory: the host one would let two apps write over each other.
+grep -q '{"cache/tmp", "var/tmp"}' "$ROOT/src/daemon/sandbox_root.c" ||
+	{ echo "FAIL: the jail's /var/tmp is not the app's own cache/tmp"; exit 1; }
+grep -q 'm_nullfs(sb, from, to, false)' "$ROOT/src/daemon/sandbox_root.c" ||
+	{ echo "FAIL: the app's cache/tmp is not mounted writable"; exit 1; }
 # The host's own Xauthority is not in one place (Hyprland's Xwayland uses a
 # private one): check the staging only where the caller's ~/.Xauthority is
 # what the cookie came from.
