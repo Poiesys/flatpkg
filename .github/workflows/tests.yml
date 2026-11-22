@@ -28,10 +28,17 @@ jobs:
         image_url: https://github.com/cross-platform-actions/freebsd-builder/releases/download/v0.17.0/freebsd-15.1-x86-64.qcow2
         memory: 4096
         cpu_count: 2
-        # zig cc builds the Linux-ELF shims, so the guards that need it run
-        # rather than skipping.  libostree and dbus are the link dependencies.
+        # libjail and libnv are part of the base system, and libostree is not
+        # in the package repository: the tree carries it as an overlay port.
+        # The VM ships no ports tree, so the recipe applies the port's own
+        # tarball, patches and configure arguments.  zig cc builds the
+        # Linux-ELF shims, so the guards that need it run rather than
+        # skipping, and git is what the distinfo guard lists the tree with.
         run: |
           sudo pkg update -f
-          sudo pkg install -y libjail zig pkgconf libostree dbus glib
+          sudo pkg install -y zig pkgconf dbus glib git gmake \
+            autoconf automake libtool gettext-runtime \
+            libarchive libgpg-error gpgme libsoup3 e2fsprogs-core
+          sh scripts/ci-libostree.sh
           make
           sh tests/run-suite.sh
