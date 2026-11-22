@@ -1478,6 +1478,16 @@ static bool appstream_arch_valid(const char* arch) {
 int ostree_appstream_deploy(const char* remote, const char* arch) {
 	assert(remote != NULL);
 	assert(arch != NULL);
+	// `remote` becomes an operand of `ostree pull` and `arch` a ref
+	// component, so both are checked here, where the argv is built, and not
+	// only at the caller: ostree reads a leading-dash operand as an option
+	// (--untrusted, --repo).
+	if (!remote || !*remote || !arch || !*arch) return -1;
+	if (!remote_name_valid(remote) || !appstream_arch_valid(arch)) {
+		fpkg_errorf("invalid appstream remote/arch '%s'/'%s'", remote,
+			    arch);
+		return -1;
+	}
 	// appstream2 first, then the legacy appstream branch.
 	static const char* branch_fmts[] = {"appstream2/%s", "appstream/%s"};
 	tool_ctx_t tc;

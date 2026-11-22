@@ -1377,6 +1377,12 @@ static void appstream_request(wctx_t* c, uint32_t id, const fp_req_t* r) {
 	size_t nrem = 0;
 
 	if (arch == NULL) arch = "x86_64";
+	// Same gate as the other store requests: the remote names a store path
+	// and an ostree operand, so it is checked before any work is done.
+	if (!remote_name_valid(remote)) {
+		ack_err(c, id, FP_E_INVALID, "invalid remote name");
+		return;
+	}
 	if (remote != NULL) {
 		remotes = malloc(sizeof(*remotes));
 		if (remotes == NULL) {

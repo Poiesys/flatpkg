@@ -90,6 +90,21 @@ else
 	note "could not carve store_pointer_path()"
 fi
 
+# appstream's pull puts the remote in ostree's argv and the arch in a ref, so
+# the deploy path validates both, not only the extract path.
+body=$(tmp3=$(mktemp /tmp/.fpkg-carve.XXXXXX); strip_comments <"$ROOT/src/ostree_cmds.c" > "$tmp3"; carve_function '^int ostree_appstream_deploy\(' "$tmp3"; rm -f "$tmp3")
+if [ -n "$body" ]; then
+	printf '%s' "$body" | grep -q 'remote_name_valid(remote)' ||
+		note "ostree_appstream_deploy() puts an unchecked remote in ostree's argv"
+	printf '%s' "$body" | grep -q 'appstream_arch_valid(arch)' ||
+		note "ostree_appstream_deploy() builds a ref from an unchecked arch"
+	planted=$(printf '%s' "$body" | sed 's/remote_name_valid(remote)/(1)/')
+	printf '%s' "$planted" | grep -q 'remote_name_valid(remote)' &&
+		note "the appstream plant was not applied"
+else
+	note "could not carve ostree_appstream_deploy()"
+fi
+
 [ $fail -eq 0 ] &&
     echo "PASS: every name flatpkg turns into a path is checked first"
 exit $fail
