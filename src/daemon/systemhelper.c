@@ -855,12 +855,31 @@ handle_install_bundle(GDBusConnection* connection, const gchar* sender,
 			    FLATPAK_HELPER_INSTALL_BUNDLE_FLAGS_NO_INTERACTION))
 		goto out;
 
-	if (*bundle_path == '\0' ||
-	    !g_file_test(bundle_path, G_FILE_TEST_IS_REGULAR)) {
-		g_dbus_method_invocation_return_error(
-			invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
-			"Bundle %s does not exist", bundle_path);
-		goto out;
+	// The bundle path is the caller's, and the command it is handed to runs
+	// here as root: it has to be the caller's own regular file, and not a
+	// symlink to something else.  g_file_test() follows symlinks.
+	{
+		uid_t caller = 0;
+		GError* uerr = NULL;
+		struct stat bst;
+
+		if (!caller_uid(connection, sender, &caller, &uerr)) {
+			g_dbus_method_invocation_return_error(
+				invocation, G_DBUS_ERROR,
+				G_DBUS_ERROR_FAILED,
+				"cannot resolve caller: %s", uerr->message);
+			g_error_free(uerr);
+			goto out;
+		}
+		if (*bundle_path != '/' || lstat(bundle_path, &bst) != 0 ||
+		    !S_ISREG(bst.st_mode) || bst.st_uid != caller) {
+			g_dbus_method_invocation_return_error(
+				invocation, G_DBUS_ERROR,
+				G_DBUS_ERROR_ACCESS_DENIED,
+				"Bundle %s is not a regular file owned by "
+				"the caller", bundle_path);
+			goto out;
+		}
 	}
 	if (*remote != '\0' && !valid_remote_name(remote)) {
 		g_dbus_method_invocation_return_error(

@@ -11,6 +11,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -926,12 +927,21 @@ static int typed_send_request(typed_ctx_t* c) {
 	int e;
 
 	if (c->typed.type == FP_REQ_INSTALL_BUNDLE) {
-		int bfd = open(c->req.from, O_RDONLY | O_CLOEXEC);
+		// The path is the caller's, and this process may be root (the
+		// system helper runs `install --from`): a symlink here would
+		// make root read whatever it names.
+		int bfd = open(c->req.from, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
 		nvlist_t* nvl = NULL;
+		struct stat bst;
 
 		if (bfd < 0) {
 			fpkg_errorf("cannot open %s: %s", c->req.from,
 				    strerror(errno));
+			return 1;
+		}
+		if (fstat(bfd, &bst) != 0 || !S_ISREG(bst.st_mode)) {
+			fpkg_errorf("%s is not a regular file", c->req.from);
+			close(bfd);
 			return 1;
 		}
 		e = fp_req_encode(&nvl, c->req_id, &c->typed);

@@ -176,6 +176,18 @@ printf '%s' "$ib" | grep -q 'ostree_bundle_ref(bundle_path, &ref)' ||
 	note "InstallBundle does not read the ref from the bundle"
 printf '%s' "$ib" | grep -q 'run_helper_command(argv, argc, &ref)' &&
 	note "InstallBundle still takes the ref from captured CLI output"
+# The path is handed to a command that runs as root: it has to be the
+# caller's own regular file, and g_file_test() follows symlinks.
+printf '%s' "$ib" | grep -q 'lstat(bundle_path, &bst)' ||
+	note "InstallBundle hands a caller path to a root command unchecked"
+printf '%s' "$ib" | grep -q 'bst.st_uid != caller' ||
+	note "InstallBundle does not require the caller to own the bundle"
+printf '%s' "$ib" | grep -q 'G_FILE_TEST_IS_REGULAR' &&
+	note "InstallBundle follows a symlink through g_file_test"
+# And the CLI opens it without following: under the helper map it is root.
+printf '%s' "$(sed -n '/FP_REQ_INSTALL_BUNDLE/,/nvlist_add_descriptor/p' \
+	"$ROOT/src/cli/client_typed.c")" | grep -q 'O_NOFOLLOW' ||
+	note "the CLI opens the bundle path with a following open"
 
 # A bundle deploys through the store repo: ostree_deploy_from_repo(NULL).
 # The old assert turned every bundle install into a daemon abort.
