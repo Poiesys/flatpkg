@@ -422,11 +422,7 @@ static void reply_uint32(DBusConnection* conn, DBusMessage* msg,
 static DBusHandlerResult handle_message(DBusConnection* conn, DBusMessage* msg,
 					void* ud);
 
-static long long now_ms(void) {
-	struct timespec ts;
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
-	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
+static long long now_ms(void) { return (long long)(fpkg_mono_ns() / 1000000); }
 
 // While handle_spawn() polls it must not dispatch (a nested Spawn would re-enter
 // the poll), but it must answer flatpak-spawn's read-only `version` query.

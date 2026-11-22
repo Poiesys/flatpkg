@@ -71,23 +71,6 @@ static bool xauth_read_file(const char* path, unsigned char** out,
 	return true;
 }
 
-static bool write_all(int fd, const void* p, size_t n) {
-	const unsigned char* b = p;
-
-	while (n > 0) {
-		ssize_t w = write(fd, b, n);
-
-		if (w < 0) {
-			if (errno == EINTR) continue;
-			return false;
-		}
-		if (w == 0) return false;
-		b += w;
-		n -= (size_t)w;
-	}
-	return true;
-}
-
 bool sandbox_xauth_write_filtered(const char* root, const char* app_id,
 				 const char* home, uid_t uid, gid_t gid) {
 	assert(root != NULL);
@@ -216,7 +199,7 @@ bool sandbox_xauth_write_filtered(const char* root, const char* app_id,
 	for (size_t i = 0; i < nrecs; i++) {
 		if (!recs[i].keep) continue;
 		if (!recs[i].rewrite) {
-			if (!write_all(out, buf + recs[i].start,
+			if (!fpkg_write_all(out, buf + recs[i].start,
 				       recs[i].len)) {
 				wrote = false;
 				break;
@@ -232,10 +215,10 @@ bool sandbox_xauth_write_filtered(const char* root, const char* app_id,
 			size_t rest_len = recs[i].start + recs[i].len - rest;
 
 			if (alen > 0xffff ||
-			    !write_all(out, buf + recs[i].start, 2) ||
-			    !write_all(out, hdr, 2) ||
-			    !write_all(out, app_id, alen) ||
-			    !write_all(out, buf + rest, rest_len)) {
+			    !fpkg_write_all(out, buf + recs[i].start, 2) ||
+			    !fpkg_write_all(out, hdr, 2) ||
+			    !fpkg_write_all(out, app_id, alen) ||
+			    !fpkg_write_all(out, buf + rest, rest_len)) {
 				wrote = false;
 				break;
 			}

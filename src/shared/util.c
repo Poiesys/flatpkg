@@ -10,6 +10,7 @@
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "flatpkg.h"
@@ -82,6 +83,49 @@ char* xasprintf(const char* fmt, ...) {
 		exit(1);
 	}
 	return r;
+}
+
+// One clock and one pair of full-transfer loops: the tree had four copies of
+// the first and three of the second, each with its own idea of EINTR.
+int64_t fpkg_mono_ns(void) {
+	struct timespec ts;
+
+	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
+	return (int64_t)ts.tv_sec * 1000000000 + (int64_t)ts.tv_nsec;
+}
+
+bool fpkg_write_all(int fd, const void* buf, size_t n) {
+	const unsigned char* b = buf;
+
+	while (n > 0) {
+		ssize_t w = write(fd, b, n);
+
+		if (w < 0) {
+			if (errno == EINTR) continue;
+			return false;
+		}
+		if (w == 0) return false;
+		b += w;
+		n -= (size_t)w;
+	}
+	return true;
+}
+
+bool fpkg_read_all(int fd, void* buf, size_t n) {
+	unsigned char* b = buf;
+
+	while (n > 0) {
+		ssize_t r = read(fd, b, n);
+
+		if (r < 0) {
+			if (errno == EINTR) continue;
+			return false;
+		}
+		if (r == 0) return false;
+		b += r;
+		n -= (size_t)r;
+	}
+	return true;
 }
 
 bool fpkg_buf_append(char* buf, size_t len, size_t* off, const char* fmt, ...) {

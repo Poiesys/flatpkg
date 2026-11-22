@@ -864,7 +864,6 @@ bool changeset_has_work(const flatpkg_changeset_t* cs) {
 	return false;
 }
 
-int64_t fp_now_ns(void);
 
 static int g_txn_depth;
 
@@ -885,7 +884,7 @@ void flatpkg_txn_begin(flatpkg_txn_t* t, size_t total) {
 	t->nested = g_txn_depth > 0;
 	g_txn_depth++;
 	if (t->nested || total == 0) return;
-	t->start_ns = fp_now_ns();
+	t->start_ns = fpkg_mono_ns();
 	t->bar = fp_bar_init("transaction", "", "overall", total);
 	if (!fp_bar_can_pin()) return;
 	fp_bar_update(&t->bar, 0);
@@ -899,7 +898,7 @@ static void txn_took(const flatpkg_txn_t* t, char* out, size_t len) {
 	double sec = 0.0;
 
 	if (t->start_ns != 0)
-		sec = (double)(fp_now_ns() - t->start_ns) / 1e9;
+		sec = (double)(fpkg_mono_ns() - t->start_ns) / 1e9;
 	if (sec < 60.0) snprintf(out, len, "%.1fs", sec);
 	else
 		snprintf(out, len, "%dm %ds", (int)(sec / 60.0), (int)sec % 60);

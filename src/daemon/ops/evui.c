@@ -275,13 +275,7 @@ const char* cli_getenv(const char* name) { return getenv(name); }
 
 const char* get_string(const char* msgid) { return msgid; }
 
-// fp_now_ns/fp_logf: the CLI's terminal library on the other side.
-int64_t fp_now_ns(void) {
-	struct timespec ts;
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
-	return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
-}
-
+// fp_logf: the CLI's terminal library on the other side.
 void fp_logf(const char* scope, const char* desc, int level, const char* fmt,
 	     ...) {
 	va_list ap;

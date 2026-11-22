@@ -138,20 +138,6 @@ static void on_client_gone(int sig) {
 	fpkg_client_mark_gone();
 }
 
-static int write_all(int fd, const void* buf, size_t n) {
-	const char* p = buf;
-	while (n > 0) {
-		ssize_t w = write(fd, p, n);
-		if (w < 0) {
-			if (errno == EINTR) continue;
-			return -1;
-		}
-		p += w;
-		n -= (size_t)w;
-	}
-	return 0;
-}
-
 static void send_ack(wctx_t* c, uint32_t id, const fp_ack_t* a) {
 	nvlist_t* nvl = NULL;
 	int e;
@@ -1001,25 +987,6 @@ static void remote_list_request(wctx_t* c, uint32_t id) {
 // Run fp_repo_local_ref_info() in a child that has dropped to the caller.
 // The result crosses a pipe: ref and commit are fixed-size strings, metadata
 // and error are NUL-terminated blobs the parent owns.
-// A pipe can hand back a short read; a reply built from one would be
-// trusted bytes the child never wrote.
-static bool read_full(int fd, void* buf, size_t n) {
-	char* p = buf;
-
-	while (n > 0) {
-		ssize_t r = read(fd, p, n);
-
-		if (r < 0) {
-			if (errno == EINTR) continue;
-			return false;
-		}
-		if (r == 0) return false;
-		p += r;
-		n -= (size_t)r;
-	}
-	return true;
-}
-
 // The child hands back one fixed header then the two variable parts.  The
 // parent checks the framing and the child's exit status before believing any
 // of it: the child runs as the caller, and the strings it carries come from
@@ -1095,7 +1062,7 @@ static int local_ref_info_as_caller(wctx_t* c, const char* remote,
 		out_commit[0] = '\0';
 		// Only a child that ran to completion and framed its answer may be
 		// believed; anything else is a lookup that did not happen.
-		if (read_full(fds[0], &rep, sizeof(rep))) {
+		if (fpkg_read_all(fds[0], &rep, sizeof(rep))) {
 			rc = rep.rc;
 			mdlen = rep.mdlen;
 			erlen = rep.erlen;
@@ -1581,7 +1548,7 @@ static int pump_bus(wctx_t* c) {
 			continue;
 		}
 		if (type != BUS_FORWARD) continue;
-		if (write_all(c->conn, frame, len) != 0) return -1;
+		if (!fpkg_write_all(c->conn, frame, len)) return -1;
 	}
 }
 

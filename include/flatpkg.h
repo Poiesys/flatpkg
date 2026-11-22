@@ -68,6 +68,10 @@ static inline char* trim(char* s) {
 fpkg_error_t mkdir_p(const char* path, mode_t mode);
 // Copy a regular file, creating `to`; errno is set on failure.
 fpkg_error_t copy_file(const char* from, const char* to, mode_t mode);
+// The tree's one monotonic clock, and full-transfer loops that own EINTR.
+int64_t fpkg_mono_ns(void);
+bool fpkg_write_all(int fd, const void* buf, size_t n);
+bool fpkg_read_all(int fd, void* buf, size_t n);
 // Append formatted text to a bounded buffer, refusing rather than truncating.
 // snprintf's return is the length it *wanted*, so adding it back into the next
 // size argument underflows once the buffer is full; this never does.

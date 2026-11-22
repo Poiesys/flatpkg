@@ -1,3 +1,4 @@
+#include "flatpkg.h"
 #include "fplog.h"
 #include "fplog_int.h"
 #include "translations.h"
@@ -653,13 +654,6 @@ static void emit_logfmt(const char* scope, int level, const char* msg) {
 	fp_write_fd(g_logfmt_fd, line, pos);
 }
 
-int64_t fp_now_ns(void) {
-	struct timespec ts;
-
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
-	return (int64_t)ts.tv_sec * 1000000000 + ts.tv_nsec;
-}
-
 static size_t format_took(char* out, size_t outlen, double secs) {
 	unsigned long long total_s, m, s, h;
 	double tenths;
@@ -687,7 +681,7 @@ static size_t took_suffix(char* out, size_t outlen, int64_t start_ns) {
 	int64_t now;
 
 	if (start_ns == 0) return 0;
-	now = fp_now_ns();
+	now = fpkg_mono_ns();
 	if (now <= start_ns) return 0;
 	format_took(dur, sizeof(dur), (double)(now - start_ns) / 1e9);
 	return (size_t)snprintf(out, outlen, " (took %s)", dur);
@@ -778,7 +772,7 @@ static void emit_begin(const char* scope, const char* desc, const char* msg) {
 
 	if (record_line(scope, FP_LEVEL_INFO, msg)) return;
 	fp_out_lock();
-	g_last_begin_ns = fp_now_ns();
+	g_last_begin_ns = fpkg_mono_ns();
 	rows = print_line_locked(scope, desc, FP_LVL_PROGRESS, msg, FP_LINE_FULL);
 	fp_anchor_after_log_line(rows);
 	fp_out_unlock();

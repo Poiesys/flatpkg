@@ -32,18 +32,12 @@ static int64_t g_start_ns;
 static __thread int g_depth;
 static __thread int64_t g_child_ns[PROF_MAX_DEPTH];
 
-static int64_t now_ns(void) {
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (int64_t)ts.tv_sec * 1000000000 + (int64_t)ts.tv_nsec;
-}
-
 bool fpkg_prof_on(void) { return g_on > 0; }
 
 void fpkg_prof_enable(void) {
 	if (g_on > 0) return;
 	g_on = 1;
-	g_start_ns = now_ns();
+	g_start_ns = fpkg_mono_ns();
 }
 
 fpkg_span_t fpkg_span_begin(const char* fmt, ...) {
@@ -55,7 +49,7 @@ fpkg_span_t fpkg_span_begin(const char* fmt, ...) {
 	vsnprintf(s.label, sizeof(s.label), fmt, ap);
 	va_end(ap);
 	s.live = true;
-	s.t0 = now_ns();
+	s.t0 = fpkg_mono_ns();
 	g_depth++;
 	if (g_depth < PROF_MAX_DEPTH) g_child_ns[g_depth] = 0;
 	return s;
@@ -64,7 +58,7 @@ fpkg_span_t fpkg_span_begin(const char* fmt, ...) {
 void fpkg_span_end(fpkg_span_t* s) {
 	if (!s->live) return;
 	s->live = false;
-	int64_t incl = now_ns() - s->t0;
+	int64_t incl = fpkg_mono_ns() - s->t0;
 	int d = g_depth;
 	int64_t kids = d < PROF_MAX_DEPTH ? g_child_ns[d] : 0;
 	if (g_depth > 0) g_depth--;
@@ -117,6 +111,6 @@ void fpkg_prof_report(void) {
 			   (double)rows[i].incl_ns / 1e6, rows[i].calls,
 			   rows[i].label);
 	fpkg_infof("wall clock since profiling began: %.1f ms",
-		   (double)(now_ns() - g_start_ns) / 1e6);
+		   (double)(fpkg_mono_ns() - g_start_ns) / 1e6);
 	free(rows);
 }

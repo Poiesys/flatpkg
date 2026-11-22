@@ -1,3 +1,4 @@
+#include "flatpkg.h"
 #include "evui.h"
 #include "fplog.h"
 #include "fplog_int.h"
@@ -88,12 +89,6 @@ static void print_progress_line_ex(const char* sn, const char* desc,
 static void finish_progress(const char* sn, const char* desc, bool success,
 			    int64_t start_ns, const char* msg);
 
-static int64_t mono_ns(void) {
-	struct timespec ts;
-
-	if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
-	return (int64_t)ts.tv_sec * NS_PER_S + (int64_t)ts.tv_nsec;
-}
 
 static void tb_add(tbbuf* t, const char* s, size_t n) {
 	if (t->pos >= t->cap) return;
@@ -381,7 +376,7 @@ static void format_duration(int64_t ns, char* buf, size_t cap) {
 }
 
 static size_t took_suffix(int64_t start_ns, char* buf, size_t cap) {
-	int64_t now = mono_ns();
+	int64_t now = fpkg_mono_ns();
 	char dur[32];
 
 	if (start_ns == 0 || now <= start_ns) {
@@ -443,7 +438,7 @@ static size_t build_progress_msg(const char* label, size_t label_w,
 	if (show_eta && total > 0) {
 		if (current == 0) g_progress_start_ns = 0;
 		if (current > 0) {
-			int64_t now = mono_ns();
+			int64_t now = fpkg_mono_ns();
 			if (g_progress_start_ns == 0) g_progress_start_ns = now;
 			if (now > g_progress_start_ns) {
 				double elapsed_s =
@@ -953,9 +948,9 @@ static void print_progress_line_ex(const char* sn, const char* desc,
 				   uint64_t total,
 				   const unsigned char glyphs[4], bool show_eta,
 				   bool force) {
-	if (g_one_shot_start_ns == 0) g_one_shot_start_ns = mono_ns();
+	if (g_one_shot_start_ns == 0) g_one_shot_start_ns = fpkg_mono_ns();
 	if (!force) {
-		int64_t now = mono_ns();
+		int64_t now = fpkg_mono_ns();
 		bool final = total > 0 && current >= total;
 
 		if (g_progress_throttle_ms > 0 && !final &&
@@ -1229,7 +1224,7 @@ void fp_bar_update(fp_bar_t* b, uint64_t current) {
 	// Pull threads draw their own bars at the same time.
 	fp_out_lock();
 	b->current = current < b->total ? current : b->total;
-	now = mono_ns();
+	now = fpkg_mono_ns();
 	if (b->start_ns == 0) b->start_ns = now;
 	final = b->current >= b->total;
 
@@ -1311,7 +1306,7 @@ void fp_bar_finishf(fp_bar_t* b, int success, const char* fmt, ...) {
 		// Like a spinner's result: how long it took, once it is worth
 		// saying.
 		if (success && b->start_ns != 0 &&
-		    mono_ns() - b->start_ns >= NS_PER_S &&
+		    fpkg_mono_ns() - b->start_ns >= NS_PER_S &&
 		    took_suffix(b->start_ns, took, sizeof(took)) > 0 &&
 		    used + strlen(took) < sizeof(msg))
 			(void)strlcat(msg, took, sizeof(msg));
@@ -1366,7 +1361,7 @@ fp_spin_t fp_spin_init(const char* scope, const char* desc, const char* label) {
 void fp_spin_tick(fp_spin_t* s) {
 	if (s == NULL || s->done) return;
 	if (fp_record_active()) return;
-	if (s->start_ns == 0) s->start_ns = mono_ns();
+	if (s->start_ns == 0) s->start_ns = fpkg_mono_ns();
 	s->frame = (unsigned)((s->frame + 1) % TB_SPINNER_NFRAMES);
 	print_spinner_line(s->scope, s->desc, s->label, s->frame);
 }

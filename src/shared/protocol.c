@@ -1273,7 +1273,6 @@ static int nv_header_check(const struct fp_nv_header* h, size_t* bodyp) {
 static int recv_header(int fd, struct fp_nv_header* h) {
 	struct timespec start, now;
 	size_t last = 0;
-	int rc = FP_P_OK;
 
 	(void)clock_gettime(CLOCK_MONOTONIC, &start);
 	for (;;) {
@@ -1309,7 +1308,7 @@ static int recv_header(int fd, struct fp_nv_header* h) {
 			last = (size_t)n;
 		}
 	}
-	return rc;
+	return FP_P_OK;
 }
 
 int fp_frame_recv(int fd, nvlist_t** out) {

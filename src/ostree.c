@@ -384,11 +384,6 @@ static double size_bytes(double val, const char* unit) {
 	if (strcmp(unit, "GiB") == 0) return val * 1073741824.0;
 	return -1.0;
 }
-static int64_t mono_ns(void) {
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (int64_t)ts.tv_sec * 1000000000 + (int64_t)ts.tv_nsec;
-}
 static __thread int64_t g_delta_start_ns;
 static __thread double g_delta_total_bytes;
 static void transfer_progress_cb(const char* line, void* arg) {
@@ -452,12 +447,12 @@ static void transfer_progress_cb(const char* line, void* arg) {
 					if (rb > 0) {
 						if (g_delta_start_ns == 0) {
 							g_delta_start_ns =
-								mono_ns();
+								fpkg_mono_ns();
 							g_delta_total_bytes =
 								tb;
 						}
 						double elapsed =
-							(mono_ns() -
+							(fpkg_mono_ns() -
 							 g_delta_start_ns) /
 							1e9;
 						double done = rb * elapsed;
