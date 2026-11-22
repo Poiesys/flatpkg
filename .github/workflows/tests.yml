@@ -37,7 +37,7 @@ jobs:
         run: |
           sudo pkg update -f
           sudo pkg install -y zig pkgconf dbus glib git gmake \
-            autoconf automake libtool gettext-runtime \
+            autoconf automake libtool bison gettext-runtime \
             libarchive libgpg-error gpgme libsoup3 e2fsprogs-core
           sh scripts/ci-libostree.sh
           make
