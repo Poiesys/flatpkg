@@ -719,11 +719,13 @@ else
 fi
 
 # 4. The one decision.  Both call sites, the same callee.
-strip_comments < "$ROOT/src/cli/portal.c" > "$tmp/p_caller.c"
+strip_comments < "$ROOT/src/cli/portal_identity.c" > "$tmp/p_caller.c"
 rid=$(carve_function '^resolve_app_id\(' "$tmp/p_caller.c" || true)
-[ -n "$rid" ] || note "could not carve resolve_app_id() out of src/cli/portal.c"
+[ -n "$rid" ] ||
+	note "could not carve resolve_app_id() out of src/cli/portal_identity.c"
 ncall=0
-for f in "portal.c:resolve_app_id" "sessionhelper.c:handle_host_command"; do
+for f in "portal_identity.c:resolve_app_id" \
+	 "sessionhelper.c:handle_host_command"; do
 	cf=${f%%:*}
 	fn=${f##*:}
 	strip_comments < "$(srcf "$cf")" > "$tmp/one_call.c"
@@ -803,9 +805,9 @@ else
 	esac
 fi
 
-rid=$(carve_function '^resolve_app_id\(' "$tmp/portal_stripped.c" || true)
+rid=$(carve_function '^resolve_app_id\(' "$tmp/p_caller.c" || true)
 if [ -z "$rid" ]; then
-	note "could not carve resolve_app_id() out of src/cli/portal.c"
+	note "could not carve resolve_app_id() out of src/cli/portal_identity.c"
 else
 	# The ORDER: "we established the caller is ours" before "we believe the
 	# name it claims".  The executable half now lives in the shared caller

@@ -106,6 +106,7 @@ CLI_OBJS=       $(OBJDIR)/cli/dispatch.o \
 		$(OBJDIR)/cli/repair.o \
 		$(OBJDIR)/cli/translations.o \
 		$(OBJDIR)/cli/portal.o \
+		$(OBJDIR)/cli/portal_identity.o \
 		$(OBJDIR)/cli/sessionhelper.o
 
 # Daemon binary objects
@@ -425,6 +426,11 @@ sinclude $(OBJDIR)/cli/upgrade.d
 sinclude $(OBJDIR)/cli/translations.d
 sinclude $(OBJDIR)/daemon/daemon.d
 sinclude $(OBJDIR)/daemon/bus.d
+$(OBJDIR)/cli/portal_identity.o: src/cli/portal_identity.c
+	@mkdir -p $(OBJDIR)/cli
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/cli/portal_identity.c
+
+sinclude $(OBJDIR)/cli/portal_identity.d
 sinclude $(OBJDIR)/cli/portal.d
 sinclude $(OBJDIR)/daemon/sandbox.d
 sinclude $(OBJDIR)/daemon/sandbox_root.d

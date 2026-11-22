@@ -15,6 +15,7 @@ trap 'rm -rf "$T"' EXIT
 
 strip_comments "$ROOT/src/shared/instance.c" > "$T/instance.c"
 strip_comments "$ROOT/src/cli/portal.c" > "$T/portal.c"
+strip_comments "$ROOT/src/cli/portal_identity.c" > "$T/pid.c"
 strip_comments "$ROOT/src/shared/dbus.c" > "$T/dbus.c"
 strip_comments "$ROOT/src/cli/sessionhelper.c" > "$T/helper.c"
 
@@ -22,7 +23,7 @@ carve_function '^static bool runtime_dir_is_ours\(' "$T/instance.c" \
 	> "$T/trust.inc" || { echo "FAIL: runtime_dir_is_ours() not found"; exit 1; }
 carve_function '^const char\* session_instances_dir\(' "$T/instance.c" \
 	> "$T/base.inc" || { echo "FAIL: session_instances_dir() not found"; exit 1; }
-carve_function '^static void instance_base\(' "$T/portal.c" \
+carve_function '^void instance_base\(' "$T/pid.c" \
 	> "$T/ibase.inc" || { echo "FAIL: instance_base() not found"; exit 1; }
 carve_function '^static bool proxy_trusted\(' "$T/dbus.c" \
 	> "$T/proxy.inc" || { echo "FAIL: proxy_trusted() not found"; exit 1; }
