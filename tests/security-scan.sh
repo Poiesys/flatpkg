@@ -66,38 +66,74 @@ echo
 TMP=$(mktemp -d /tmp/.fpkg-tidyscan.XXXXXX)
 trap 'rm -rf "$TMP"' EXIT
 
-for f in $FILES; do
-	echo "-- $f"
-	# Captured to a file so compile errors can be checked for separately.  The limit
-	# stops a hung analyser: the ostree units take 60-90s here.  The status is captured with
-	# `||` because `set -e` would exit on a bare `cmd; rc=$?`.
-	tidy_rc=0
+# Each unit is analysed in its own process: 24 files at ~1-10 minutes each is
+# an hour of wall time one after another, and the analyser is the only slow
+# part of the suite.  The outputs are collected per file and printed in order,
+# so the report reads the same as a serial run.
+tidy_one() {
+	f=$1
+	out=$2
+	rc=0
 	timeout "${FPKG_TIDY_TIMEOUT:-600}" "$TIDY" -checks="$CKS" "$f" -- $CF \
-		> "$TMP/out.txt" 2>&1 || tidy_rc=$?
+		> "$out" 2>&1 || rc=$?
+	if [ "$rc" -eq 124 ]; then
+		echo "TIMEOUT" > "$out"
+		echo "tidytimeout" > "$out.verdict"
+	elif grep -q 'error:' "$out"; then
+		echo "tidyerror" > "$out.verdict"
+	elif grep 'warning:' "$out" |
+		grep -v DeprecatedOrUnsafeBufferHandling > "$out.warn" &&
+		[ -s "$out.warn" ]; then
+		echo "tidywarn" > "$out.verdict"
+	else
+		echo "clean" > "$out.verdict"
+	fi
+}
 
-	# timeout (124) means the file took too long to analyse.
-	# That is not a finding, but it is not clean either.
-	if [ "$tidy_rc" -eq 124 ]; then
+# The analyser is CPU-bound, so one unit per core is the useful ceiling, and
+# the batches make the fan-out portable (/bin/sh has no `wait -n`).
+jobs=${FPKG_TIDY_JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 4)}
+[ "$jobs" -gt 8 ] && jobs=8
+[ "$jobs" -lt 1 ] && jobs=1
+running=0
+n=0
+for f in $FILES; do
+	n=$((n + 1))
+	tidy_one "$f" "$TMP/out.$n" &
+	running=$((running + 1))
+	# Bounded fan-out, in portable batches: the analyser is memory-hungry
+	# and /bin/sh has no `wait -n`.
+	if [ "$running" -ge "$jobs" ]; then
+		wait
+		running=0
+	fi
+done
+wait
+
+n=0
+for f in $FILES; do
+	n=$((n + 1))
+	echo "-- $f"
+	verdict=$(cat "$TMP/out.$n.verdict" 2>/dev/null || echo tidyerror)
+	case "$verdict" in
+	clean) ;;
+	tidytimeout)
 		echo "TIMEOUT (${FPKG_TIDY_TIMEOUT:-600}s exceeded)"
 		tidy_fail=1
-		continue
-	fi
-
-	# Compile errors: "error:" lines that are not warnings.
-	# A compile error means the file cannot be analysed and is a failure.
-	if grep -q 'error:' "$TMP/out.txt"; then
-		grep 'error:' "$TMP/out.txt" | head -5
+		;;
+	tidyerror)
+		grep 'error:' "$TMP/out.$n" | head -5
 		tidy_fail=1
-		continue
-	fi
-
-	# Warnings: filter out the DeprecatedOrUnsafeBufferHandling noise
-	# (every sprintf/snprintf triggers it) and count the rest.
-	W=$(grep 'warning:' "$TMP/out.txt" | grep -v DeprecatedOrUnsafeBufferHandling || true)
-	if [ -n "$W" ]; then
-		echo "$W"
+		;;
+	tidywarn)
+		cat "$TMP/out.$n.warn"
 		tidy_fail=1
-	fi
+		;;
+	*)
+		echo "no verdict recorded"
+		tidy_fail=1
+		;;
+	esac
 done
 
 if [ "$tidy_fail" -eq 1 ]; then

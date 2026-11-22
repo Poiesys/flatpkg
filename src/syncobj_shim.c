@@ -52,8 +52,9 @@ int drmSyncobjTimelineWait(int fd, uint32_t* handles, uint64_t* points,
 		real = (timeline_wait_fn)real_symbol("drmSyncobjTimelineWait");
 	fn = real;
 	if (fn == NULL) {
+		// libdrm reports failures as -errno, not -1 with errno.
 		errno = ENOSYS;
-		return -1;
+		return -ENOSYS;
 	}
 	return normalise(fn(fd, handles, points, num_handles, timeout_nsec,
 			    flags, first_signaled));
@@ -68,8 +69,9 @@ int drmSyncobjWait(int fd, uint32_t* handles, unsigned num_handles,
 	if (real == NULL) real = (wait_fn)real_symbol("drmSyncobjWait");
 	fn = real;
 	if (fn == NULL) {
+		// libdrm reports failures as -errno, not -1 with errno.
 		errno = ENOSYS;
-		return -1;
+		return -ENOSYS;
 	}
 	return normalise(fn(fd, handles, num_handles, timeout_nsec, flags,
 			    first_signaled));

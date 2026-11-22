@@ -803,6 +803,11 @@ static void child_exec(const fp_metadata_t* meta, const sandbox_plan_t* plan,
 	while (extra && extra[nextra]) nextra++;
 
 	char** argv = calloc(nextra + 2, sizeof(char*));
+
+	if (argv == NULL) {
+		fprintf(stderr, "flatpkg: out of memory building argv\n");
+		_exit(127);
+	}
 	argv[0] = (char*)cmd;
 	for (size_t i = 0; i < nextra; i++) argv[i + 1] = extra[i];
 	argv[nextra + 1] = NULL;

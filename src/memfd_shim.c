@@ -62,12 +62,19 @@ static int interpose(int fd, void* buf, size_t bufsize) {
 	fstatfs_fn fn = real_fstatfs();
 	int saved;
 
-	if (fn != NULL && fn(fd, buf) == 0) return 0;
-
-	saved = errno;
-	if (saved != EINVAL && saved != ENOSYS && saved != ENOTSUP) {
-		errno = saved;
-		return -1;
+	if (fn != NULL) {
+		if (fn(fd, buf) == 0) return 0;
+		saved = errno;
+		// Only a call the kernel does not implement is answered here; a
+		// bad descriptor keeps its EBADF.
+		if (saved != EINVAL && saved != ENOSYS && saved != ENOTSUP) {
+			errno = saved;
+			return -1;
+		}
+	} else {
+		// No real symbol: nothing to fall back to, so synthesise rather
+		// than decide on whatever errno happened to hold.
+		saved = ENOSYS;
 	}
 
 	if (synthesise(fd, buf, bufsize) == 0) return 0;
