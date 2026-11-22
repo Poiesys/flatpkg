@@ -29,7 +29,10 @@ LICENSE_FILE=	${WRKSRC}/COPYING
 # Avahi, libcurl, OpenSSL, SELinux, libmount, rofiles-fuse, composefs and
 # O_TMPFILE are Linux-only or unnecessary and are disabled.
 
-BUILD_DEPENDS=	${LOCALBASE}/libdata/pkgconfig/e2p.pc:filesystems/e2fsprogs-core
+# configure requires YACC=bison to build the CLI's date parser; USES=autoreconf
+# does not pull it in.
+BUILD_DEPENDS=	bison:devel/bison \
+		${LOCALBASE}/libdata/pkgconfig/e2p.pc:filesystems/e2fsprogs-core
 LIB_DEPENDS=	libarchive.so:archivers/libarchive \
 		libgpg-error.so:security/libgpg-error \
 		libgpgme.so:security/gpgme \
