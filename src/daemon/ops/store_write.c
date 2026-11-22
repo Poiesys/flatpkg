@@ -482,14 +482,26 @@ static int export_mkdir(const char* store, const char* path, const char* app_id,
 	return 0;
 }
 
+// An imported app's export tree is the app's own, and this walk runs as root:
+// a chain of directories deep enough would exhaust the worker's stack, so the
+// depth is bounded.  A real export is share/applications, share/icons/
+// hicolor/<size>/<context>, share/dbus-1/services - a handful.
+#define FP_EXPORT_MAX_DEPTH 32
+
 static int export_walk(const char* store, const char* app_id,
 		       const char* export_dir, const char* rel,
 		       const char* arch, const char* branch,
-		       const char* abs_base) {
+		       const char* abs_base, unsigned depth) {
 	assert(store != NULL);
 	assert(app_id != NULL);
 	assert(export_dir != NULL);
 	assert(arch != NULL);
+	if (depth > FP_EXPORT_MAX_DEPTH) {
+		fpkg_warnf("exports: %s is deeper than %u directories under "
+			   "%s; the rest is skipped",
+			   app_id, (unsigned)FP_EXPORT_MAX_DEPTH, rel);
+		return -1;
+	}
 	assert(branch != NULL);
 	char dir[PATH_MAX];
 	DIR* d;
@@ -521,7 +533,7 @@ static int export_walk(const char* store, const char* app_id,
 				rc = -1;
 			else if (export_walk(store, app_id, export_dir,
 					     child_rel, arch, branch,
-					     abs_base) != 0)
+					     abs_base, depth + 1) != 0)
 				rc = -1;
 			continue;
 		}
@@ -639,7 +651,7 @@ int store_update_exports(void) {
 		}
 
 		if (export_walk(store, id, export_dir, "", arch, branch,
-				import_base) == 0)
+				import_base, 0) == 0)
 			exported++;
 		else
 			fpkg_warnf("exports: %s did not export completely", id);

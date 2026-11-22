@@ -177,6 +177,23 @@ fi
 # Back to the imported store for what follows.
 import_store
 
+# An imported app's export tree is walked as root, so a chain deep enough to
+# exhaust the stack is bounded and reported, not followed to the end.
+deep=$SRC/app/$APPID/x86_64/stable/active/export/deep
+p=$deep
+i=0
+while [ $i -lt 40 ]; do
+	p=$p/d
+	mkdir -p "$p"
+	i=$((i + 1))
+done
+deepout=$(run exports)
+case "$deepout" in
+*"deeper than"*) ;;
+*) note "a 40-deep export tree was walked without a bound" ;;
+esac
+rm -rf "$SRC/app/$APPID/x86_64/stable/active/export/deep"
+
 # Structural: the pointer path is written in exactly one place.  Matched on
 # the literal, not the helper name, so any other spelling of the layout is
 # caught whichever way it is written.
