@@ -537,7 +537,20 @@ main(void)
 			permissions_free_plan(&plan);
 		}
 
-		/* 11b. A log line is not a refusal: the name must be gone from
+		/* 9b. name= becomes a per-app directory under the caller's home, so a
+	 * name that is not one component must not reach the plan. */
+	memset(&plan, 0, sizeof(plan));
+	{
+		int prc = plan_from("bad name",
+		    "[Application]\nname=../../escape\ncommand=demo\n",
+		    &plan);
+
+		ok("a traversal name= is refused", prc != 0,
+		   "the plan was built from a traversal name");
+	}
+	permissions_free_plan(&plan);
+
+	/* 11b. A log line is not a refusal: the name must be gone from
 		 * the plan, or the proxy's filter arguments carry it. */
 		memset(&plan, 0, sizeof(plan));
 		(void)plan_from("helper grant",

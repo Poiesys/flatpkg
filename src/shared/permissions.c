@@ -823,6 +823,14 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 		plan->xdg_runtime_dir = xstrdup(fb);
 	}
 
+	// The per-app data dir is a root-side path: it is created and mounted, so
+	// the id it is built from has to be one component.  The parser refuses an
+	// invalid name=, and this is the second look at the same question.
+	if (meta->app_id != NULL && !fpkg_component_ok(meta->app_id)) {
+		fpkg_errorf(get_string("the app id is not a valid component; "
+				       "refusing to plan"));
+		return -1;
+	}
 	// Build the per-app data dir from plan->home_dir, NOT the parameter: in
 	// daemon mode that is the worker's HOME.
 	char data_dir[4096];

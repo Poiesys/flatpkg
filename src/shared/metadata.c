@@ -233,8 +233,18 @@ static int fp_metadata_parse_internal(const char* path, fp_metadata_t* out,
 		char* val = trim(eq + 1);
 
 		if (strcmp(group, "Application") == 0) {
-			if (strcmp(key, "name") == 0)
-				set_str(&out->app_id, val);
+			if (strcmp(key, "name") == 0) {
+				// name= is the app id, and it becomes a store
+				// path and a per-app directory under the
+				// caller's home.  A name that is not one
+				// component is refused, not sanitised.
+				if (fpkg_component_ok(val))
+					set_str(&out->app_id, val);
+				else
+					fpkg_warnf("%s: invalid app id '%s' in "
+						   "name=, ignored",
+						   path, val);
+			}
 			else if (strcmp(key, "version") == 0)
 				set_str(&out->version, val);
 			else if (strcmp(key, "runtime") == 0)
