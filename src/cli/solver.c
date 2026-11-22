@@ -115,10 +115,15 @@ int world_dep_parse(const char* line, flatpkg_dep_t* out) {
 
 char* world_dep_format(const flatpkg_dep_t* dep) {
 	if (!dep || !dep->name) return xstrdup("");
+	// The worldfile's text is client-supplied, so every part here is
+	// unbounded: `off += snprintf(...)` would underflow sizeof(buf)-off
+	// once the text is longer than the buffer, and write past it.
 	char buf[1024];
 	size_t off = 0;
-	if (dep->conflict) buf[off++] = '!';
-	const char* kind_str = "";
+	const char* kind_str;
+
+	if (dep->conflict && !fpkg_buf_append(buf, sizeof(buf), &off, "!"))
+		return xstrdup("");
 	switch (dep->kind) {
 	case FLATPKG_DEP_KIND_RUNTIME:
 		kind_str = "runtime/";
@@ -131,13 +136,15 @@ char* world_dep_format(const flatpkg_dep_t* dep) {
 		kind_str = "";
 		break;
 	}
-	off += snprintf(buf + off, sizeof(buf) - off, "%s%s", kind_str,
-			dep->name);
-	if (dep->remote)
-		off += snprintf(buf + off, sizeof(buf) - off, "@%s",
-				dep->remote);
-	if (dep->branch) {
-		const char* op = "";
+	if (!fpkg_buf_append(buf, sizeof(buf), &off, "%s%s", kind_str,
+			    dep->name))
+		return xstrdup("");
+	if (dep->remote != NULL &&
+	    !fpkg_buf_append(buf, sizeof(buf), &off, "@%s", dep->remote))
+		return xstrdup("");
+	if (dep->branch != NULL) {
+		const char* op;
+
 		switch (dep->op) {
 		case FLATPKG_DEP_EQ:
 			op = "=";
@@ -158,11 +165,13 @@ char* world_dep_format(const flatpkg_dep_t* dep) {
 			op = "~";
 			break;
 		case FLATPKG_DEP_ANY:
+		default:
 			op = "";
 			break;
 		}
-		off += snprintf(buf + off, sizeof(buf) - off, "%s%s", op,
-				dep->branch);
+		if (!fpkg_buf_append(buf, sizeof(buf), &off, "%s%s", op,
+				     dep->branch))
+			return xstrdup("");
 	}
 	return xstrdup(buf);
 }
@@ -711,7 +720,8 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 		}
 		if (!found && !dep->conflict) {
 			char ref[512];
-			const char* kind_str = "app";
+			const char* kind_str;
+
 			switch (dep->kind) {
 			case FLATPKG_DEP_KIND_RUNTIME:
 				kind_str = "runtime";
@@ -756,12 +766,13 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 		// for 22.08..24.08, never for master.  The app's own extensions
 		// (its Locale, its Debug) are published on the app's branch.
 		const char* ebranch = ibranch;
-		const char* rbranch = ibranch;
 		fpkg_ref_t rt;
 		bool have_rt = inc->meta.runtime_ref && *inc->meta.runtime_ref &&
 			       ref_parse(inc->meta.runtime_ref, &rt) == 0;
 		if (have_rt) {
-			rbranch = rt.branch ? rt.branch : "stable";
+			const char* rbranch =
+				rt.branch ? rt.branch : "stable";
+
 			ebranch = rbranch;
 			if (!installed_has(installed, ninst, "runtime", rt.id,
 					   rt.branch)) {

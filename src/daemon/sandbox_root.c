@@ -1474,23 +1474,9 @@ static void stage_dconf_migration(sandbox_t* sb, const sandbox_plan_t* plan) {
 			fpkg_warnf("copy %s: %s", kf_path, strerror(errno));
 	}
 
-	char app_fc[PATH_MAX];
-	char host_fc[PATH_MAX];
-	const char* home = cli_getenv("HOME");
-	struct stat fcst;
-	snprintf(app_fc, sizeof(app_fc), "%s/.var/app/%s/cache/fontconfig",
-		 plan->home_dir, sb->app_id);
-	snprintf(host_fc, sizeof(host_fc), "%s/.cache/fontconfig",
-		 home ? home : "/nonexistent");
-	if (stat(host_fc, &fcst) == 0 && S_ISDIR(fcst.st_mode) &&
-	    access(app_fc, F_OK) != 0) {
-		char* const argv[] = {"/bin/cp", "-R", host_fc, app_fc, NULL};
-		int devnull = open("/dev/null", O_WRONLY);
-
-		if (run_program(argv, -1, -1, devnull) != 0)
-			fpkg_warnf("could not copy the fontconfig cache");
-		if (devnull >= 0) close(devnull);
-	}
+	// No copy of ~/.cache/fontconfig here: stage_font_cache() binds the same
+	// directory into the jail read-only, and a root `cp -R` of a path the
+	// caller controls followed whatever that path named.
 }
 
 
@@ -1663,9 +1649,7 @@ static void write_font_dirs_xml(sandbox_t* sb, const sandbox_plan_t* plan) {
 			char ud[PATH_MAX];
 			snprintf(ud, sizeof(ud), "%s/%s", plan->home_dir,
 				 user_dirs[i]);
-			struct stat st;
-			if (stat(ud, &st) != 0 || !S_ISDIR(st.st_mode))
-				continue;
+			if (!caller_dir(ud, plan->uid)) continue;
 			off += snprintf(xml + off, sizeof(xml) - off,
 					"   <remap-dir as-path=\"%s\">"
 					"/run/host/user-fonts</remap-dir>\n",
@@ -3695,10 +3679,9 @@ static int stage_font_cache(sandbox_t* sb, const sandbox_plan_t* plan) {
 		char ucache[PATH_MAX], ust[PATH_MAX];
 		snprintf(ucache, sizeof(ucache), "%s/.cache/fontconfig",
 			 plan->home_dir);
-		struct stat ustat;
 		snprintf(ust, sizeof(ust), "%s/run/host/user-fonts-cache",
 			 sb->jailroot);
-		if (stat(ucache, &ustat) == 0 && S_ISDIR(ustat.st_mode)) {
+		if (caller_dir(ucache, plan->uid)) {
 			if (mkdir_p(ust, 0755) == 0)
 				m_nullfs(sb, ucache, ust, true);
 		} else {
@@ -3730,7 +3713,7 @@ static int stage_icons(sandbox_t* sb, const sandbox_plan_t* plan) {
 		char uic[PATH_MAX];
 		snprintf(uic, sizeof(uic), "%s/.local/share/icons",
 			 plan->home_dir);
-		if (stat(uic, &st) == 0 && S_ISDIR(st.st_mode)) {
+		if (caller_dir(uic, plan->uid)) {
 			char ic[PATH_MAX];
 			snprintf(ic, sizeof(ic), "%s/run/host/user-share/icons",
 				 sb->jailroot);
@@ -3766,8 +3749,7 @@ static int stage_fonts(sandbox_t* sb, const sandbox_plan_t* plan) {
 			char ud[PATH_MAX];
 			snprintf(ud, sizeof(ud), "%s/%s", plan->home_dir,
 				 user_dirs[i]);
-			if (stat(ud, &st0) != 0 || !S_ISDIR(st0.st_mode))
-				continue;
+			if (!caller_dir(ud, plan->uid)) continue;
 			snprintf(p, sizeof(p), "%s/run/host/user-fonts",
 				 sb->jailroot);
 			mkdir_p(p, 0755);

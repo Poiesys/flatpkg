@@ -468,7 +468,8 @@ static void test_firehose_scope(void) {
 // `instance/<app>` names someone's running app, so its live frames and its
 // snapshot reach the uid that published them (and root), nobody else.
 static void test_instance_scope(void) {
-	int p[2], same[2], other[2], late[2], out[2], ready[2], sig1[2], sig2[2];
+	int p[2], same[2], other[2], late[2], out[2], ready[2], sig1[2];
+	int sig2[2], go[2];
 	pid_t pub, mine, theirs, later, lateother, broker;
 	static const char topic[] = "instance/org.example.App";
 
@@ -477,7 +478,8 @@ static void test_instance_scope(void) {
 	    socketpair(AF_UNIX, SOCK_DGRAM, 0, other) != 0 ||
 	    socketpair(AF_UNIX, SOCK_DGRAM, 0, late) != 0 ||
 	    socketpair(AF_UNIX, SOCK_DGRAM, 0, out) != 0 ||
-	    pipe(ready) != 0 || pipe(sig1) != 0 || pipe(sig2) != 0)
+	    pipe(ready) != 0 || pipe(sig1) != 0 || pipe(sig2) != 0 ||
+	    pipe(go) != 0)
 		exit(2);
 
 	// A uid-2 subscriber that was there before the publish sees nothing.
@@ -495,6 +497,7 @@ static void test_instance_scope(void) {
 		close(ready[0]);
 		close(sig1[0]); close(sig1[1]);
 		close(sig2[0]); close(sig2[1]);
+		close(go[0]); close(go[1]);
 		bus_worker_init(other[1]);
 		if (bus_subscribe(topic) != 0 || wait_subscribed() != 0)
 			_exit(3);
@@ -514,6 +517,7 @@ static void test_instance_scope(void) {
 		close(out[0]); close(out[1]);
 		close(ready[0]); close(ready[1]);
 		close(sig1[1]); close(sig2[0]); close(sig2[1]);
+		close(go[0]); close(go[1]);
 		bus_worker_init(late[1]);
 		if (read(sig1[0], &b, 1) != 1) _exit(3);
 		if (bus_subscribe(topic) != 0) _exit(3);
@@ -530,6 +534,7 @@ static void test_instance_scope(void) {
 		close(out[0]);
 		close(ready[0]); close(ready[1]);
 		close(sig1[0]); close(sig1[1]); close(sig2[1]);
+		close(go[0]); close(go[1]);
 		bus_worker_init(out[1]);
 		if (read(sig2[0], &b, 1) != 1) _exit(3);
 		if (bus_subscribe(topic) != 0) _exit(3);
@@ -546,6 +551,7 @@ static void test_instance_scope(void) {
 		close(ready[0]);
 		close(sig1[0]); close(sig1[1]);
 		close(sig2[0]); close(sig2[1]);
+		close(go[0]); close(go[1]);
 		bus_worker_init(same[1]);
 		if (bus_subscribe(topic) != 0 || wait_subscribed() != 0)
 			_exit(3);
@@ -561,8 +567,12 @@ static void test_instance_scope(void) {
 		close(out[0]); close(out[1]);
 		close(ready[0]); close(ready[1]);
 		close(sig1[0]); close(sig2[0]);
+		char b;
+
 		bus_worker_init(p[1]);
-		usleep(600000); // both pre-subscribers are in
+		// Both pre-subscribers are in only when the parent says so: a
+		// fixed sleep loses the race on a loaded machine.
+		if (read(go[0], &b, 1) != 1) _exit(3);
 		(void)bus_publish(topic, "started", 7);
 		usleep(300000); // the broker has recorded the snapshot
 		write_byte(sig1[1]);
@@ -580,6 +590,7 @@ static void test_instance_scope(void) {
 		close(ready[0]); close(ready[1]);
 		close(sig1[0]); close(sig1[1]);
 		close(sig2[0]); close(sig2[1]);
+		close(go[0]); close(go[1]);
 		(void)broker_add(p[0], pub, 1);
 		(void)broker_add(same[0], mine, 1);
 		(void)broker_add(other[0], theirs, 2);
@@ -594,8 +605,11 @@ static void test_instance_scope(void) {
 	close(out[0]); close(out[1]);
 	close(ready[1]); close(sig1[1]); close(sig2[1]);
 	close(sig1[0]); close(sig2[0]);
+	close(go[0]);
 	wait_byte(ready[0]);
 	wait_byte(ready[0]);
+	write_byte(go[1]); // both pre-subscribers are in; let the publisher run
+	close(go[1]);
 	int st;
 	waitpid(mine, &st, 0);
 	if (!WIFEXITED(st) || WEXITSTATUS(st) != 0)

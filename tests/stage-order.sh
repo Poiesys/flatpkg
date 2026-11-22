@@ -35,7 +35,9 @@ carve_function '^void stage_dev_shm\(' "$T/sb.c" > "$T/shm.inc" ||
 	{ echo "FAIL: stage_dev_shm() not found"; exit 1; }
 : > "$T/socks.inc"
 for fn in '^static int pulse_socket_path\(' '^static int pulse_runtime_dir\(' \
-	  '^static int cups_socket_path\('; do
+	  '^static int cups_socket_path\(' \
+	  '^static int stage_font_cache\(' '^static int stage_icons\(' \
+	  '^static int stage_fonts\(' '^static void stage_dconf_migration\('; do
 	if ! carve_function "$fn" "$T/sb.c" >> "$T/socks.inc"; then
 		echo "FAIL: cannot carve $fn out of sandbox_root.c"
 		exit 1
@@ -112,6 +114,16 @@ check() {
 		bug "a caller-named pulse runtime dir is staged without an owner check"
 	grep -q 'caller_file(v, plan->uid)' "$socks" ||
 		bug "a caller-named client config is read without an owner check"
+
+	# The caller's own directories are mounted read-only, so the path must be
+	# the caller's real directory: a planted symlink made root mount whatever
+	# it named.
+	[ "$(grep -c 'caller_dir(ucache, plan->uid)\|caller_dir(uic, plan->uid)\|caller_dir(ud, plan->uid)' "$socks")" -ge 3 ] ||
+		bug "a user font or icon directory is mounted after a stat()"
+	# And no root `cp -R` of a caller-controlled path: the same directory is
+	# bound read-only instead.
+	grep -q '/bin/cp' "$socks" &&
+		bug "the dconf migration copies a caller path as root"
 
 	# A tmpfs the app can fill carries a size, in both mount spellings.
 	grep -q 'size=%llu' "$tmpfs" ||

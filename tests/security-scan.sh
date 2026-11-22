@@ -44,7 +44,7 @@ CF="$CF -w"
 
 # ---- the privileged set ----------------------------------------------
 FILES="\
-src/daemon/daemon.c src/daemon/sandbox.c src/daemon/sandbox_root.c src/daemon/sandbox_exec.c src/ostree.c src/ostree_plan.c src/ostree_cmds.c src/shared/store.c src/shared/config.c src/daemon/ops/store_write.c src/shared/dbus.c src/daemon/ops/dbus_proxy.c \
+src/daemon/daemon.c src/daemon/sandbox.c src/daemon/sandbox_root.c src/daemon/sandbox_exec.c src/daemon/apply.c src/daemon/extensions.c src/cli/solver.c src/ostree.c src/ostree_plan.c src/ostree_cmds.c src/shared/store.c src/shared/config.c src/daemon/ops/store_write.c src/daemon/ops/evui.c src/shared/dbus.c src/daemon/ops/dbus_proxy.c \
 src/shared/permissions.c src/shared/protocol.c src/shared/instance.c src/daemon/ops/instance_ctl.c src/cli/portal.c src/cli/sessionhelper.c \
 src/daemon/systemhelper.c src/cli/dispatch.c"
 
