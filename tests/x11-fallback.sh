@@ -71,6 +71,57 @@ if [ -f "$HOME/.Xauthority" ]; then
 		{ echo "FAIL: the sandbox Xauthority was not staged"; exit 1; }
 fi
 
+# WAYLAND_DISPLAY becomes a path segment root unlinks and re-links when it
+# stages the socket, so it has to be one component.
+strip_comments "$ROOT/src/shared/dbus.c" > "$T/dbus.c"
+strip_comments "$ROOT/src/shared/util.c" > "$T/util.c"
+carve_function '^char\* fp_wayland_display_name\(' "$T/dbus.c" > "$T/wl.inc" ||
+	{ echo "FAIL: fp_wayland_display_name() not found"; exit 1; }
+carve_function '^bool fpkg_component_ok\(' "$T/util.c" > "$T/ck.inc" ||
+	{ echo "FAIL: fpkg_component_ok() not found"; exit 1; }
+cat > "$T/wlprobe.c" <<'PROBE'
+#include <stdbool.h>
+#include <dirent.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/param.h>
+#include <sys/stat.h>
+static const char* g_wl;
+static const char* cli_getenv(const char* n) {
+	return strcmp(n, "WAYLAND_DISPLAY") == 0 ? g_wl : NULL;
+}
+static char* xstrdup(const char* s) { return strdup(s); }
+PROBE
+cat "$T/ck.inc" >> "$T/wlprobe.c"
+cat "$T/wl.inc" >> "$T/wlprobe.c"
+cat >> "$T/wlprobe.c" <<'PROBE'
+int main(void) {
+	char* n;
+
+	g_wl = "wayland-0";
+	n = fp_wayland_display_name(NULL);
+	if (n == NULL || strcmp(n, "wayland-0") != 0) return 1;
+	free(n);
+	g_wl = "../../../../etc/x";
+	if (fp_wayland_display_name(NULL) != NULL) return 2;
+	g_wl = "a/b";
+	if (fp_wayland_display_name(NULL) != NULL) return 3;
+	return 0;
+}
+PROBE
+cc -std=gnu11 -Wall -Wextra -Werror -o "$T/wlprobe" "$T/wlprobe.c" \
+	> "$T/wlprobe.log" 2>&1 ||
+	{ echo "FAIL: the Wayland probe did not build: $(tail -2 "$T/wlprobe.log")"; exit 1; }
+"$T/wlprobe" ||
+	{ echo "FAIL: the Wayland display name is not one component"; exit 1; }
+sed 's/fpkg_component_ok(wl)/(1)/' "$T/wlprobe.c" > "$T/wlprobe-plant.c"
+cmp -s "$T/wlprobe.c" "$T/wlprobe-plant.c" &&
+	{ echo "FAIL: the Wayland plant was not applied"; exit 1; }
+cc -std=gnu11 -o "$T/wlprobe-plant" "$T/wlprobe-plant.c" >/dev/null 2>&1 &&
+	"$T/wlprobe-plant" &&
+	{ echo "FAIL: the Wayland probe passes without the grammar"; exit 1; }
+
 echo "PASS: fallback-x11 gives an app on an X11-only host DISPLAY, does not"
 echo "      invent a Wayland display, and puts the Xauthority record on the"
 echo "      jail's hostname"

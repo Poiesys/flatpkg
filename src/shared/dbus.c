@@ -115,7 +115,13 @@ fp_caller_t flatpkg_caller_check(pid_t pid, int* jid_out, char** path_out) {
 
 char* fp_wayland_display_name(const char* xdg_runtime_dir) {
 	const char* wl = cli_getenv("WAYLAND_DISPLAY");
-	if (wl && *wl && wl[0] != '/') return xstrdup(wl);
+
+	// The name becomes a path segment under the runtime dir, and root
+	// unlinks and re-creates that path when it stages the socket link: a
+	// value with a '/' or a ".." walks out of the directory and has root
+	// delete whatever it names.
+	if (wl && *wl && wl[0] != '/' && fpkg_component_ok(wl))
+		return xstrdup(wl);
 
 	if (xdg_runtime_dir && *xdg_runtime_dir) {
 		DIR* d = opendir(xdg_runtime_dir);
