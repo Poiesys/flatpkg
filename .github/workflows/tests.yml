@@ -32,13 +32,20 @@ jobs:
         # in the package repository: the tree carries it as an overlay port.
         # The VM ships no ports tree, so the recipe applies the port's own
         # tarball, patches and configure arguments.  zig cc builds the
-        # Linux-ELF shims, so the guards that need it run rather than
-        # skipping, and git is what the distinfo guard lists the tree with.
+        # Linux-ELF shims and the Linuxulator runs them, so the shim guards
+        # get a Linux base and module; python3 is what one of them generates
+        # its syscall table with, and git is what the distinfo guard lists the
+        # tree with.
         run: |
           sudo pkg update -f
           sudo pkg install -y zig pkgconf dbus glib git gmake \
             autoconf automake libtool bison gettext-runtime \
-            libarchive libgpg-error gpgme libsoup3 e2fsprogs-core
+            libarchive libgpg-error gpgme libsoup3 e2fsprogs-core \
+            python3 linux_base-rl9
           sh scripts/ci-libostree.sh
+          # The seccomp guards exec Linux ELFs, which need the module.
+          sudo kldload linux64 || true
+          kldstat | grep -q 'linux64.ko' ||
+            { echo "linux64 did not load" >&2; exit 1; }
           make
           sh tests/run-suite.sh

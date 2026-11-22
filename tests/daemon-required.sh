@@ -36,6 +36,12 @@ run() {
 	"$bin" "$@" > "$tmp/out" 2> "$tmp/err" < /dev/null || rc=$?
 }
 
+# `complete` reads the store itself, but the root still has to exist: a fresh
+# box has no store, and this guard owns the environment its subject reads.
+FLATPKG_STORE="$tmp/store"
+mkdir -p "$FLATPKG_STORE"
+export FLATPKG_STORE
+
 # --- 1. what needs the daemon refuses without it ---------------------------
 for cmd in "upgrade --simulate" "install org.example.App" \
 	"uninstall org.example.App" "update" "remote-add foo https://example.com" \

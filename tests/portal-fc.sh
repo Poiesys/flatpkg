@@ -29,6 +29,10 @@ fi
 T=$(mktemp -d /tmp/.fpkg-portalfc.XXXXXX)
 trap 'rm -rf "$T"' EXIT
 
+# The plants abort inside libdbus on purpose; without this the core lands in
+# the caller's tree, which the suite's residue check reads.
+ulimit -c 0
+
 . "$ROOT/tests/commentlib.sh"
 strip_comments "$SRC" > "$T/portal.c"
 
