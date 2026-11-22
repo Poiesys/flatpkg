@@ -46,7 +46,9 @@ done
 
 # --prefix is the ports framework's; the rest is the port's CONFIGURE_ARGS.
 # BASH_COMPLETIONSDIR would otherwise come from the host's bash-completion
-# package and leave the prefix.
+# package and leave the prefix.  Introspection is off because the image's
+# g-ir-scanner drives distutils, which wants gcc, and nothing here needs the
+# typelib.
 (cd "$wrk" && \
 	CPPFLAGS="-I$PORT/files ${CPPFLAGS:-}" \
 	BASH_COMPLETIONSDIR="$PREFIX/share/bash-completion/completions" \
@@ -59,6 +61,7 @@ done
 	--disable-gtk-doc \
 	--disable-man \
 	--disable-man-html \
+	--disable-introspection \
 	--disable-rofiles-fuse \
 	--disable-otmpfile \
 	--disable-dependency-tracking)
