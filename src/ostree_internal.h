@@ -183,16 +183,16 @@ void related_refs_for_metadata(const fp_metadata_t* meta,
 			       const char* parent_branch, const char* arch,
 			       char** srefs, size_t nsrefs,
 			       fpkg_ref_t** refs, size_t* nrefs);
-int ostree_install_extension_ref(const char* ref);
 int update_deploy(const char* ref);
 
 int find_deploy_dir(const char* type, const fpkg_ref_t* r, char* out,
 			   size_t len);
 bool remote_name_valid(const char* name);
+// A URL that may be handed to ostree's argv: a scheme, and no leading dash.
+bool remote_url_ok(const char* url);
 bool is_commit_dir_name(const char* name);
 int collect_commit_dirs(const char* branch_dir, bool newest_first,
 			       commit_dir_t** out);
-int update_deploy(const char* ref);
 void write_deploy_data(const char* branch_dir, const char* commit,
 			      const char* origin, char** subpaths,
 			      size_t nsubpaths);

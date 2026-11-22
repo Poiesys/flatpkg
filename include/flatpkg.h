@@ -937,7 +937,6 @@ char* ostree_resolve_install_request(const char* request, bool runtime_only);
 // Fetch one ref's commit and metadata text for a client-side plan.
 int ostree_fetch_ref_metadata(const char* remote, const char* request,
 			      char** commit_out, char** meta_out);
-void closure_follow(idset_t* s, const char* id);
 
 void changeset_show_full(const flatpkg_changeset_t* cs, const char* remote);
 
@@ -946,7 +945,6 @@ int solver_solve(const flatpkg_dep_array_t* world, unsigned flags,
 		 size_t nincoming);
 
 int confirm_proceed(int assume_yes);
-void ostree_closure_reset(void);
 
 // --profile or FLATPKG_PROFILE=1: a span prints its duration when it closes,
 // and the report ranks labels by self time.  No-op when profiling is off.

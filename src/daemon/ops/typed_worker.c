@@ -863,12 +863,12 @@ static void changeset_build(const fp_req_t* r, flatpkg_changeset_t* cs) {
 	for (size_t k = 0; k < cs->count; k++) {
 		const fp_change_row_t* row = &r->u.apply.rows[k];
 		cs->items[k].type = (flatpkg_change_type_t)row->type;
-		cs->items[k].ref = strdup(row->ref);
+		cs->items[k].ref = xstrdup(row->ref);
 		cs->items[k].old_version = row->old_version != NULL
-						   ? strdup(row->old_version)
+						   ? xstrdup(row->old_version)
 						   : NULL;
 		cs->items[k].new_version = row->new_version != NULL
-						   ? strdup(row->new_version)
+						   ? xstrdup(row->new_version)
 						   : NULL;
 	}
 }

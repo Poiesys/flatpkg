@@ -1700,6 +1700,28 @@ static int ostree_config_get(const char* key, char* out, size_t outlen) {
 	tool_res_free(&res);
 	return 0;
 }
+// ostree parses options after its positional arguments (proven: a URL of
+// "--not-an-option" is reported as an unknown option), so a remote URL that
+// starts with '-' would be an option it acts on as root - --gpg-import reads a
+// file, --repo redirects the whole command.  Requiring a scheme already rules
+// every such URL out, since a scheme starts with a letter; the leading-dash
+// test stays as the sentence that says so.
+bool remote_url_ok(const char* url) {
+	const char* p;
+
+	if (url == NULL || *url == '\0' || *url == '-') return false;
+	for (p = url; *p != '\0'; p++)
+		if ((unsigned char)*p <= ' ' || *p == 0x7f) return false;
+	const char* scheme_end = strstr(url, "://");
+	if (scheme_end == NULL || scheme_end == url) return false;
+	for (p = url; p < scheme_end; p++) {
+		bool alnum = (*p >= 'a' && *p <= 'z') || (*p >= '0' && *p <= '9');
+		if (p == url && !(*p >= 'a' && *p <= 'z')) return false;
+		if (!alnum && *p != '+' && *p != '-' && *p != '.') return false;
+	}
+	return true;
+}
+
 int ostree_remote_add(const char* name, const char* url, bool gpg_verify,
 		      bool gpg_verify_summary) {
 	assert(name != NULL);
@@ -1709,6 +1731,14 @@ int ostree_remote_add(const char* name, const char* url, bool gpg_verify,
 	char gv[64], gvs[64];
 	tool_res_t res;
 
+	// The URL goes into ostree's argv, and ostree reads a leading dash as an
+	// option (--gpg-import, --repo).  It may also come from a repo file's
+	// Url= line, so this is checked here rather than at one caller.
+	if (!remote_url_ok(url)) {
+		fpkg_errorf("refusing remote '%s': '%s' is not a URL", name,
+			    url);
+		return -1;
+	}
 	if (ostree_remote_exists(name)) return 0;
 
 	tool_ctx_init(&tc);

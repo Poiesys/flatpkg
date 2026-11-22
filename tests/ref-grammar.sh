@@ -138,6 +138,58 @@ grep -q 'ext_skip = !fpkg_component_ok(group + 10)' "$T/metadata.c" ||
 	note "an extension id is not run through the component grammar"
 
 [ "$fail" -eq 0 ] &&
-	echo "PASS: refs and remote names carry one grammar, the destructive store"
+	# ostree reads an option after its positionals, so a remote URL has to look
+# like a URL before it goes into ostree's argv: "--gpg-import=/x" is an option
+# ostree would act on as root.
+strip_comments <"$ROOT/src/ostree_cmds.c" >"$T/cmds-stripped.c"
+url_body=$(carve_function '^bool remote_url_ok\(' "$T/cmds-stripped.c" || true)
+if [ -n "$url_body" ]; then
+	{
+		printf '#include <stdbool.h>\n#include <string.h>\n#include <stdio.h>\n\n'
+		printf '%s\n' "$url_body"
+		cat <<'PROBE'
+
+static int bad;
+static void check(const char* u, bool want) {
+	if (remote_url_ok(u) != want) bad++;
+}
+int main(void) {
+	check("https://dl.flathub.org/repo/", true);
+	check("file:///tmp/repo", true);
+	check("ssh://host/repo", true);
+	check("--gpg-import=/etc/passwd", false);
+	check("-https://elsewhere/repo", false);
+	check("-o", false);
+	check("", false);
+	check("no-scheme", false);
+	check("https://a b", false);
+	return bad != 0;
+}
+PROBE
+	} > "$T/urlprobe.c"
+	if cc -std=gnu11 -Wall -Wextra -Werror -o "$T/urlprobe" "$T/urlprobe.c" \
+		> "$T/urlprobe.log" 2>&1; then
+		"$T/urlprobe" ||
+			note "remote_url_ok takes an option-shaped URL for a URL"
+	else
+		note "the URL probe did not build: $(tail -2 "$T/urlprobe.log")"
+	fi
+	# Both directions: without the scheme rule the probe must fail.
+	sed 's/if (scheme_end == NULL || scheme_end == url) return false;/if (0) return false;/' \
+		"$T/urlprobe.c" > "$T/urlprobe-plant.c"
+	if cmp -s "$T/urlprobe.c" "$T/urlprobe-plant.c"; then
+		note "the URL plant was not applied"
+	elif cc -std=gnu11 -o "$T/urlprobe-plant" "$T/urlprobe-plant.c" \
+		> /dev/null 2>&1; then
+		"$T/urlprobe-plant" &&
+			note "the URL probe accepts a URL with no scheme"
+	else
+		note "the planted URL probe did not build"
+	fi
+else
+	note "could not carve remote_url_ok()"
+fi
+
+echo "PASS: refs and remote names carry one grammar, the destructive store"
 echo "      paths prove containment, and ordinary names still work"
 exit "$fail"
