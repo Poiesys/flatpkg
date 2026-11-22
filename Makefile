@@ -114,6 +114,7 @@ DAEMON_OBJS=    $(OBJDIR)/daemon/daemon.o \
 		$(OBJDIR)/daemon/extensions.o \
 		$(OBJDIR)/daemon/sandbox.o \
 		$(OBJDIR)/daemon/sandbox_root.o \
+		$(OBJDIR)/daemon/sandbox_x11.o \
 		$(OBJDIR)/daemon/sandbox_exec.o \
 		$(OBJDIR)/daemon/systemhelper.o \
 		$(OBJDIR)/daemon/ops/typed_worker.o \
@@ -357,6 +358,12 @@ $(OBJDIR)/cli/portal.o: src/cli/portal.c
 $(OBJDIR)/daemon/sandbox.o: src/daemon/sandbox.c
 	@mkdir -p $(OBJDIR)/daemon
 	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/sandbox.c
+
+$(OBJDIR)/daemon/sandbox_x11.o: src/daemon/sandbox_x11.c
+	@mkdir -p $(OBJDIR)/daemon
+	$(CC) $(CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/sandbox_x11.c
+
+sinclude $(OBJDIR)/daemon/sandbox_x11.d
 
 $(OBJDIR)/daemon/sandbox_root.o: src/daemon/sandbox_root.c
 	@mkdir -p $(OBJDIR)/daemon

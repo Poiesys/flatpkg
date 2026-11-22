@@ -23,9 +23,9 @@ trap 'rm -rf "$T"' EXIT INT TERM
 # The jail's hostname is the app id, so a filtered Xauthority record still
 # has to be rewritten to that address; filtering alone leaves the host's
 # hostname and Xlib in the jail cannot match it.
-strip_comments "$ROOT/src/daemon/sandbox_root.c" > "$T/root.c"
-carve_function '^static bool xauth_write_filtered\(' "$T/root.c" > "$T/xauth.inc" || {
-	echo "FAIL: xauth_write_filtered() not found"
+strip_comments "$ROOT/src/daemon/sandbox_x11.c" > "$T/root.c"
+carve_function '^bool sandbox_xauth_write_filtered\(' "$T/root.c" > "$T/xauth.inc" || {
+	echo "FAIL: sandbox_xauth_write_filtered() not found"
 	exit 1
 }
 check_xauth() {

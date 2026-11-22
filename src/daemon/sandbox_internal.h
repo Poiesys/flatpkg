@@ -41,6 +41,11 @@ typedef struct {
 	time_t mtime;
 } ld_cache_file_t;
 
+// Write the jail's Xauthority from the caller's, keeping only the records a
+// sandboxed client can use and rewriting each address to the jail's hostname.
+bool sandbox_xauth_write_filtered(const char* root, const char* app_id,
+				  const char* home, uid_t uid, gid_t gid);
+
 // How long a launch waits for the runtime's ldconfig before it gives up.
 #ifndef FLATPKG_LDCONFIG_TIMEOUT_S
 #define FLATPKG_LDCONFIG_TIMEOUT_S 120
