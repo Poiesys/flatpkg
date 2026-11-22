@@ -98,6 +98,18 @@ int world_dep_parse(const char* line, flatpkg_dep_t* out) {
 		p++;
 		if (*p) out->branch = xstrdup(p);
 	}
+	// The worldfile's text is client-supplied (a state write carries it),
+	// so a name, remote or branch that is not one path component is refused
+	// here: downstream these become refs, and a ref becomes a path.
+	if (!fpkg_component_ok(out->name) ||
+	    (out->remote != NULL && !fpkg_component_ok(out->remote)) ||
+	    (out->branch != NULL && !fpkg_component_ok(out->branch))) {
+		free(out->name);
+		free(out->remote);
+		free(out->branch);
+		memset(out, 0, sizeof(*out));
+		return -1;
+	}
 	return 0;
 }
 

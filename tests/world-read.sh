@@ -33,6 +33,27 @@ out=$(FLATPKG_STORE="$store" "$BIN" --no-color complete world 2>&1) || {
 [ -z "$out" ] || note "an empty store printed a world entry: $out"
 chmod 0755 "$store/clients" "$store/clients/flatpkg"
 
+# The worldfile's text is client-supplied, and an entry becomes a ref, which
+# becomes a path: a name that is not one component is refused out loud rather
+# than kept.
+store="$T/store3"
+mkdir -p "$store/clients/flatpkg"
+printf 'app/../../escape\napp.drey.Warp\n' > "$store/clients/flatpkg/world"
+err=$(FLATPKG_STORE="$store" "$BIN" --no-color complete world 2>&1 >/dev/null) ||
+	true
+case "$err" in
+*"cannot parse"*) ;;
+*) note "a traversal name in the worldfile was quietly dropped: $err" ;;
+esac
+out=$(FLATPKG_STORE="$store" "$BIN" --no-color complete world 2>/dev/null) ||
+	true
+case "$out" in
+*escape*) note "the refused world entry was still offered: $out" ;;
+*) ;;
+esac
+printf '%s\n' "$out" | grep -qx 'app.drey.Warp' ||
+	note "a good world entry after a bad one was dropped: $out"
+
 # Even where the reader could write, reading is not seeding: the first writer
 # (the daemon, or the client's state write) creates the file.
 store="$T/store2"

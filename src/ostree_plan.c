@@ -807,13 +807,31 @@ static int parse_metadata_text(const char* body, fp_metadata_t* out) {
 		fpkg_errorf("mkstemp: %s", strerror(errno));
 		return -1;
 	}
-	ssize_t nw = write(fd, body, strlen(body));
-	close(fd);
-	if (nw < 0) {
-		(void)unlink(tmpl);
-		fpkg_errorf("write %s: %s", tmpl, strerror(errno));
-		return -1;
+	// A short write would parse a truncated metadata: the plan would then miss
+	// the keys past the cut, or read a half-written value.
+	{
+		const char* p = body;
+		size_t left = strlen(body);
+
+		while (left > 0) {
+			ssize_t nw = write(fd, p, left);
+
+			if (nw < 0) {
+				if (errno == EINTR) continue;
+				break;
+			}
+			if (nw == 0) break;
+			p += nw;
+			left -= (size_t)nw;
+		}
+		if (left > 0) {
+			close(fd);
+			(void)unlink(tmpl);
+			fpkg_errorf("write %s: %s", tmpl, strerror(errno));
+			return -1;
+		}
 	}
+	close(fd);
 	// Runtimes use [Runtime] (no name=/command=), so parse them leniently
 	// or their metadata is rejected and the deploy skipped.
 	int rc = fp_metadata_parse_any(tmpl, out);
