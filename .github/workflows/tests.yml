@@ -1,0 +1,37 @@
+name: Tests
+
+# The tree is FreeBSD-only, so the suite runs on a FreeBSD machine or not at
+# all.  This job is the only place the guards are exercised outside a
+# developer's box; a red run is the point of it.
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+  workflow_dispatch:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v7
+
+    # The image is named rather than looked up from the version: the suite
+    # means what it says only on the release the port is developed against.
+    - name: Run the suite on FreeBSD
+      uses: cross-platform-actions/action@v0.27.0
+      with:
+        operating_system: freebsd
+        version: '15.1'
+        architecture: x86-64
+        image_url: https://github.com/cross-platform-actions/freebsd-builder/releases/download/v0.17.0/freebsd-15.1-x86-64.qcow2
+        memory: 4096
+        cpu_count: 2
+        # zig cc builds the Linux-ELF shims, so the guards that need it run
+        # rather than skipping.  libostree and dbus are the link dependencies.
+        run: |
+          sudo pkg update -f
+          sudo pkg install -y libjail zig pkgconf libostree dbus glib
+          make
+          sh tests/run-suite.sh
