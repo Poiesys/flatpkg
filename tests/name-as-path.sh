@@ -77,6 +77,19 @@ n_spell=$(grep -c 'app/%s/pointer' "$ROOT"/src/*.c "$ROOT"/src/*/*.c "$ROOT"/src
 [ "$n_spell" -le 1 ] ||
     note "the <store>/app/<id>/pointer layout is spelled out $n_spell times"
 
+# The import layout is the one place an app id becomes a directory name, so
+# the grammar is checked there and not only at the callers.
+body=$(tmp2=$(mktemp /tmp/.fpkg-carve.XXXXXX); strip_comments <"$ROOT/src/shared/store.c" > "$tmp2"; carve_function '^void store_pointer_path\(' "$tmp2"; rm -f "$tmp2")
+if [ -n "$body" ]; then
+	printf '%s' "$body" | grep -q 'fpkg_component_ok(id)' ||
+		note "store_pointer_path() builds a path from an unchecked id"
+	planted=$(printf '%s' "$body" | sed 's/fpkg_component_ok(id)/1/')
+	printf '%s' "$planted" | grep -q 'fpkg_component_ok(id)' &&
+		note "the pointer-path plant was not applied"
+else
+	note "could not carve store_pointer_path()"
+fi
+
 [ $fail -eq 0 ] &&
     echo "PASS: every name flatpkg turns into a path is checked first"
 exit $fail

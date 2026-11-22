@@ -112,6 +112,12 @@ void store_pointer_path(char* out, size_t outlen, const char* id) {
 	assert(out != NULL);
 	assert(outlen > 0);
 	assert(id != NULL);
+	// The id is a directory name here, and this is the one place the layout
+	// is spelled: anything that is not one component gets no path at all.
+	if (!fpkg_component_ok(id)) {
+		snprintf(out, outlen, "%s", "");
+		return;
+	}
 	snprintf(out, outlen, "%s/app/%s/pointer", store_root(), id);
 }
 
