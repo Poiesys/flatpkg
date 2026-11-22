@@ -87,6 +87,19 @@ int store_import(const char* src_root, char*** imported_out, size_t* n_out) {
 		sscanf(meta.runtime_ref ? meta.runtime_ref : "",
 		       "%255[^/]/%63[^/]/%63s", runtime_id, runtime_arch,
 		       runtime_branch);
+		// The runtime ref comes out of the caller's metadata and is about to
+		// become a path root stats and mounts: each component is one or the
+		// runtime is treated as not named.
+		if (runtime_id[0] &&
+		    (!fpkg_component_ok(runtime_id) ||
+		     !fpkg_component_ok(runtime_arch) ||
+		     !fpkg_component_ok(runtime_branch))) {
+			fpkg_warnf("%s: invalid runtime '%s', ignored",
+				   ent->d_name, meta.runtime_ref);
+			runtime_id[0] = '\0';
+			runtime_arch[0] = '\0';
+			runtime_branch[0] = '\0';
+		}
 
 		char runtime_active[PATH_MAX] = "";
 		if (runtime_id[0]) {

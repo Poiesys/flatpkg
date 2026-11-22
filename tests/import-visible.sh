@@ -55,6 +55,14 @@ deploy() {
 }
 deploy runtime org.example.Platform
 deploy app $APPID
+# A second app whose runtime= ref is a path traversal: the components are not
+# refs until they become a path root stats and mounts, so they are checked.
+BADID=org.example.BadRuntime
+deploy app $BADID
+printf 'runtime=../../../../etc/x86_64/stable\n' \
+    > "$SRC/app/$BADID/x86_64/stable/active/metadata"
+printf '[Application]\nname=%s\ncommand=prog\n' "$BADID" \
+    >> "$SRC/app/$BADID/x86_64/stable/active/metadata"
 # A file flatpkg never wrote, to prove nothing follows the pointer back
 # into the user's tree when the app is removed.
 printf 'MY PRECIOUS DATA\n' > "$SRC/app/$APPID/USER-DATA.txt"

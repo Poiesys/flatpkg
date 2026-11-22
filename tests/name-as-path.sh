@@ -105,6 +105,19 @@ else
 	note "could not carve ostree_appstream_deploy()"
 fi
 
+# An import splits runtime= out of the caller's metadata into components it
+# stats and later mounts as root, so the components are checked first.
+body=$(tmp5=$(mktemp /tmp/.fpkg-carve.XXXXXX); strip_comments <"$ROOT/src/daemon/ops/store_write.c" > "$tmp5"; carve_function '^int store_import\(' "$tmp5"; rm -f "$tmp5")
+if [ -n "$body" ]; then
+	printf '%s' "$body" | grep -q 'fpkg_component_ok(runtime_id)' ||
+		note "store_import() builds a runtime path from unchecked metadata"
+	planted=$(printf '%s' "$body" | sed 's/fpkg_component_ok(runtime_id)/1/')
+	printf '%s' "$planted" | grep -q 'fpkg_component_ok(runtime_id)' &&
+		note "the import plant was not applied"
+else
+	note "could not carve store_import()"
+fi
+
 [ $fail -eq 0 ] &&
     echo "PASS: every name flatpkg turns into a path is checked first"
 exit $fail
