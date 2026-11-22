@@ -85,6 +85,29 @@ char* xasprintf(const char* fmt, ...) {
 	return r;
 }
 
+// The growable string list behind strlist_t: metadata.c and permissions.c
+// each carried a copy, and the type is public in flatpkg.h.
+void strlist_push(strlist_t* l, const char* item) {
+	assert(l != NULL);
+	assert(item != NULL);
+	char** new_items = realloc(l->items, (l->count + 1) * sizeof(char*));
+
+	if (new_items == NULL) {
+		fpkg_errorf("out of memory");
+		exit(1);
+	}
+	l->items = new_items;
+	l->items[l->count++] = xstrdup(item);
+}
+
+void strlist_free(strlist_t* l) {
+	assert(l != NULL);
+	for (size_t i = 0; i < l->count; i++) free(l->items[i]);
+	free(l->items);
+	l->items = NULL;
+	l->count = 0;
+}
+
 // One clock and one pair of full-transfer loops: the tree had four copies of
 // the first and three of the second, each with its own idea of EINTR.
 int64_t fpkg_mono_ns(void) {

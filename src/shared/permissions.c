@@ -429,19 +429,6 @@ static void expand_fs_entry(sandbox_plan_t* plan, const char* entry) {
 	free(tok.path);
 }
 
-static void strlist_push(strlist_t* l, const char* item) {
-	assert(l != NULL);
-	assert(item != NULL);
-	l->count++;
-	char** new_items = realloc(l->items, l->count * sizeof(char*));
-	if (!new_items) {
-		fpkg_errorf("out of memory");
-		exit(1);
-	}
-	l->items = new_items;
-	l->items[l->count - 1] = xstrdup(item);
-}
-
 // flatpkg's own bus names: `org.freedesktop.Flatpak` is flatpak-spawn's host
 // command, and the system helper changes the shared store.  An app may see
 // them, never talk to or own them.  `org.freedesktop.portal.Flatpak` is the

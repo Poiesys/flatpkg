@@ -1047,21 +1047,7 @@ int cmd_search(const char* text) {
 		return 1;
 	}
 
-	char** refs = NULL;
-	size_t nrefs = 0, cap = 0;
-#define PUSH_REF(s)                                                            \
-	do {                                                                   \
-		if (nrefs == cap) {                                            \
-			cap = cap ? cap * 2 : 32;                              \
-			char** new_refs = realloc(refs, cap * sizeof(char*));  \
-			if (!new_refs) {                                       \
-				fpkg_errorf("out of memory");                  \
-				exit(1);                                       \
-			}                                                      \
-			refs = new_refs;                                       \
-		}                                                              \
-		refs[nrefs++] = xstrdup(s);                                    \
-	} while (0)
+	strlist_t refs = {0};
 
 	char repo[PATH_MAX];
 	store_path(repo, sizeof(repo), "repo");
@@ -1080,7 +1066,7 @@ int cmd_search(const char* text) {
 				char* slash = strchr(line, '/');
 				if (colon && (!slash || colon < slash))
 					line = colon + 1;
-				PUSH_REF(line);
+				strlist_push(&refs, line);
 			}
 		}
 		tool_res_free(&res);
@@ -1096,13 +1082,13 @@ int cmd_search(const char* text) {
 			fpkg_warnf("no refs found for remote '%s'", remotes[i]);
 		for (size_t k = 0; k < nsrefs; k++) {
 			bool seen = false;
-			for (size_t m = 0; m < nrefs; m++) {
-				if (strcmp(refs[m], srefs[k]) == 0) {
+			for (size_t m = 0; m < refs.count; m++) {
+				if (strcmp(refs.items[m], srefs[k]) == 0) {
 					seen = true;
 					break;
 				}
 			}
-			if (!seen) PUSH_REF(srefs[k]);
+			if (!seen) strlist_push(&refs, srefs[k]);
 			free(srefs[k]);
 		}
 		free(srefs);
@@ -1124,24 +1110,20 @@ int cmd_search(const char* text) {
 	const char** rows[SEARCH_ROWS_MAX];
 	size_t m = 0;
 	bool truncated = false;
-	for (size_t i = 0; i < nrefs; i++) {
+	for (size_t i = 0; i < refs.count; i++) {
 		char low[512];
-		snprintf(low, sizeof(low), "%s", refs[i]);
+		snprintf(low, sizeof(low), "%s", refs.items[i]);
 		for (char* c = low; *c; c++)
 			*c = (char)tolower((unsigned char)*c);
-		if (!strstr(low, needle)) {
-			free(refs[i]);
-			continue;
-		}
+		if (!strstr(low, needle)) continue;
 		if (m == SEARCH_ROWS_MAX) {
 			truncated = true;
-			free(refs[i]);
 			continue;
 		}
 		{
-			const char* slash = strchr(refs[i], '/');
-			size_t klen = slash ? (size_t)(slash - refs[i])
-					    : strlen(refs[i]);
+			const char* slash = strchr(refs.items[i], '/');
+			size_t klen = slash ? (size_t)(slash - refs.items[i])
+					    : strlen(refs.items[i]);
 			const char* rest = slash ? slash + 1 : "";
 			char* id = xstrdup(rest);
 			char *arch = (char*)"-", *branch = (char*)"-";
@@ -1157,7 +1139,7 @@ int cmd_search(const char* text) {
 			}
 			char kind[8];
 			snprintf(kind, sizeof(kind), "%.*s", (int)klen,
-				 refs[i]);
+				 refs.items[i]);
 			cells[m][0] = xstrdup(kind);
 			cells[m][1] = xstrdup(id);
 			cells[m][2] = xstrdup(arch);
@@ -1166,9 +1148,8 @@ int cmd_search(const char* text) {
 			m++;
 			free(id);
 		}
-		free(refs[i]);
 	}
-	free(refs);
+	strlist_free(&refs);
 
 	if (m == 0) {
 		fpkg_errorf("no matches for '%s'", text);
@@ -1182,7 +1163,6 @@ int cmd_search(const char* text) {
 	for (size_t i = 0; i < m; i++)
 		for (int c = 0; c < 4; c++) free(cells[i][c]);
 	return 0;
-#undef PUSH_REF
 }
 // The ref name a caller's child repo used for `branch`: ask the repo rather
 // than guessing. Returns a malloc'd name or NULL.

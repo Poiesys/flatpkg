@@ -152,6 +152,10 @@ typedef struct {
 	size_t count;
 } strlist_t;
 
+// The growable string list: push copies the item, free releases the list.
+void strlist_push(strlist_t* l, const char* item);
+void strlist_free(strlist_t* l);
+
 typedef struct {
 	char* id;
 	char* version;

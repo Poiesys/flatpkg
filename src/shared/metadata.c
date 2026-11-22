@@ -17,17 +17,6 @@ static void set_str(char** dst, const char* val) {
 	*dst = copy;
 }
 
-static void strlist_push(strlist_t* l, const char* item) {
-	assert(l != NULL);
-	assert(item != NULL);
-	l->items = realloc(l->items, (l->count + 1) * sizeof(char*));
-	if (!l->items) {
-		fpkg_errorf("out of memory");
-		exit(1);
-	}
-	l->items[l->count++] = xstrdup(item);
-}
-
 static void strlist_from_semicolon_list(strlist_t* l, const char* value) {
 	assert(l != NULL);
 	assert(value != NULL);
@@ -39,14 +28,6 @@ static void strlist_from_semicolon_list(strlist_t* l, const char* value) {
 		if (*t) strlist_push(l, t);
 	}
 	free(copy);
-}
-
-static void strlist_free(strlist_t* l) {
-	assert(l != NULL);
-	for (size_t i = 0; i < l->count; i++) free(l->items[i]);
-	free(l->items);
-	l->items = NULL;
-	l->count = 0;
 }
 
 static bool key_bool(const char* val) {

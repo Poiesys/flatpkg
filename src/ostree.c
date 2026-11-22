@@ -1036,22 +1036,7 @@ char** fetch_remote_refs(const char* remote, size_t* n_out,
 	}
 	if (sp) fp_spin_finishf(sp, 1, "fetched refs");
 
-	char** refs = NULL;
-	size_t n = 0, cap = 0;
-
-#define PUSH_REF(s)                                                            \
-	do {                                                                   \
-		if (n == cap) {                                                \
-			cap = cap ? cap * 2 : 32;                              \
-			char** new_refs = realloc(refs, cap * sizeof(char*));  \
-			if (!new_refs) {                                       \
-				fpkg_errorf("out of memory");                  \
-				exit(1);                                       \
-			}                                                      \
-			refs = new_refs;                                       \
-		}                                                              \
-		refs[n++] = xstrdup(s);                                        \
-	} while (0)
+	strlist_t refs = {0};
 
 	char* save = NULL;
 	for (char* line = strtok_r(res.out, "\n", &save); line;
@@ -1066,13 +1051,12 @@ char** fetch_remote_refs(const char* remote, size_t* n_out,
 				if (!slash || colon < slash) line = colon + 1;
 			}
 		}
-		PUSH_REF(line);
+		strlist_push(&refs, line);
 	}
-#undef PUSH_REF
 
 	tool_res_free(&res);
-	*n_out = n;
-	return refs;
+	*n_out = refs.count;
+	return refs.items;
 }
 // The keyfile a flatpak commit carries as xa.metadata.  "ostree show" prints
 // the value as GVariant text.
