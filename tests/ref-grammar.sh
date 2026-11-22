@@ -70,9 +70,12 @@ grep -q '^local' "$T/list" || note "the valid remote did not reach remote-list"
 # Source half, both directions: the grammar has one definition and the
 # destructive paths ask the containment question.
 strip_comments <"$ROOT/src/ostree.c" >"$T/ostree.c"
+strip_comments <"$ROOT/src/ostree_paths.c" >"$T/ostree_paths.c"
 strip_comments <"$ROOT/src/daemon/ostree_store.c" >"$T/ostree_store.c"
 for fn in 'int ref_parse\(' 'bool remote_name_valid\('; do
-	body=$(carve_function "^${fn}" "$T/ostree.c" || true)
+	body=$(carve_function "^${fn}" "$T/ostree_paths.c" || true)
+	[ -n "$body" ] ||
+		body=$(carve_function "^${fn}" "$T/ostree.c" || true)
 	[ -n "$body" ] || {
 		note "$fn could not be carved"
 		continue

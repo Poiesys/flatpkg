@@ -124,6 +124,7 @@ DAEMON_OBJS=    $(OBJDIR)/daemon/daemon.o \
 # Planner/policy objects both binaries link.  They carry no libostree and no
 # daemon-only command layer: the CLI's planner and store readers use them.
 PLAN_OBJS=      $(OBJDIR)/ostree.o \
+		$(OBJDIR)/ostree_paths.o \
 		$(OBJDIR)/ostree_plan.o
 
 # The command/deploy layer, daemon only.  The CLI's one remote-info reader is
@@ -455,6 +456,11 @@ $(OBJDIR)/daemon/repo.o: src/daemon/repo.c src/daemon/repo.h
 	$(CC) $(CFLAGS) $(OSTREE_CFLAGS) $(NOENV) -MMD -MP -c -o $@ src/daemon/repo.c
 
 sinclude $(OBJDIR)/daemon/repo.d
+$(OBJDIR)/ostree_paths.o: src/ostree_paths.c
+	@mkdir -p $(OBJDIR)
+	$(CC) $(CFLAGS) $(NOENV) $(GLIB_CFLAGS) -MMD -MP -c -o $@ src/ostree_paths.c
+
+sinclude $(OBJDIR)/ostree_paths.d
 sinclude $(OBJDIR)/ostree.d
 sinclude $(OBJDIR)/ostree_plan.d
 sinclude $(OBJDIR)/ostree_cmds.d
