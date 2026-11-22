@@ -38,14 +38,15 @@ jobs:
         # tree with.
         run: |
           sudo pkg update -f
+          # linux_base's PRE-INSTALL refuses without 64-bit Linux support, so
+          # the module has to be loaded before the package is installed.
+          sudo kldload linux64 || true
+          kldstat | grep -q 'linux64.ko' ||
+            { echo "linux64 did not load" >&2; exit 1; }
           sudo pkg install -y zig pkgconf dbus glib git gmake \
             autoconf automake libtool bison gettext-runtime \
             libarchive libgpg-error gpgme libsoup3 e2fsprogs-core \
             python3 linux_base-rl9
           sh scripts/ci-libostree.sh
-          # The seccomp guards exec Linux ELFs, which need the module.
-          sudo kldload linux64 || true
-          kldstat | grep -q 'linux64.ko' ||
-            { echo "linux64 did not load" >&2; exit 1; }
           make
           sh tests/run-suite.sh
