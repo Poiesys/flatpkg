@@ -478,6 +478,8 @@ int store_resolve(const char* app_id, sandbox_t* sb_out,
 	char line[PATH_MAX];
 	char app_files[PATH_MAX] = "", runtime_files[PATH_MAX] = "";
 	char metadata_path[PATH_MAX] = "";
+	bool have_uid = false;
+	unsigned long pointer_uid = 0;
 	while (fgets(line, sizeof(line), pf)) {
 		line[strcspn(line, "\n")] = '\0';
 		if (strncmp(line, "app_files=", 10) == 0)
@@ -488,8 +490,29 @@ int store_resolve(const char* app_id, sandbox_t* sb_out,
 		else if (strncmp(line, "metadata=", 9) == 0)
 			snprintf(metadata_path, sizeof(metadata_path), "%s",
 				 line + 9);
+		else if (strncmp(line, "uid=", 4) == 0) {
+			char* end = NULL;
+
+			errno = 0;
+			pointer_uid = strtoul(line + 4, &end, 10);
+			if (errno == 0 && end != line + 4 && *end == '\0')
+				have_uid = true;
+		}
 	}
 	fclose(pf);
+
+	// An import runs the importer's tree, and the importer keeps it: the
+	// uid recorded at import decides who may launch it.
+	{
+		const fpkg_caller_t* caller = permissions_caller();
+
+		if (have_uid && caller != NULL && caller->uid != 0 &&
+		    (uid_t)pointer_uid != caller->uid) {
+			fpkg_errorf("'%s' was imported by another user, so "
+				    "only they can run it", id);
+			return -1;
+		}
+	}
 
 	if (!app_files[0] || !runtime_files[0] || !metadata_path[0]) {
 		fpkg_errorf("corrupt store entry for '%s'", id);

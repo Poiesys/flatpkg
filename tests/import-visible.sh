@@ -375,6 +375,26 @@ printf '%s' "$hout" | grep -q 'metadata is not a reg' ||
     note "a symlinked metadata was imported"
 SRC=$old_src
 
+# An import points the store at the importer's own tree and keeps it: the
+# pointer records who that was, and the resolver refuses another user.  Both
+# halves of that are text checks with a plant, because launching as a second
+# uid needs a second account and root.
+. "$ROOT/tests/commentlib.sh"
+strip_comments <"$ROOT/src/shared/store.c" > "$tmp/store.c"
+rec=$(carve_function '^int store_resolve\(' "$tmp/store.c" || true)
+if [ -z "$rec" ]; then
+	note "could not carve store_resolve()"
+fi
+grep -q 'uid=%u' "$ROOT/src/daemon/ops/store_write.c" ||
+	note "the import pointer does not record the importer"
+printf '%s' "$rec" | grep -q 'permissions_caller()' ||
+	note "the resolver does not ask who is launching"
+printf '%s' "$rec" | grep -q 'pointer_uid != caller->uid' ||
+	note "the resolver does not compare the recorded importer"
+printf '%s' "$rec" | sed 's/pointer_uid != caller->uid/0/' |
+	grep -q 'pointer_uid != caller->uid' &&
+	note "the importer comparison is not what refuses the launch"
+
 [ $fail -eq 0 ] &&
     echo "PASS: an imported app is a first-class store entry, in the list and in the farm"
 exit $fail

@@ -152,6 +152,12 @@ int store_import(const char* src_root, char*** imported_out, size_t* n_out) {
 		fprintf(pf, "app_files=%s\n", files_path);
 		fprintf(pf, "runtime_files=%s\n", runtime_files);
 		fprintf(pf, "metadata=%s\n", meta_path);
+		// The tree stays the importer's, so record whose it is: another
+		// user may not be handed it to run.
+		const fpkg_caller_t* caller = permissions_caller();
+
+		fprintf(pf, "uid=%u\n",
+			(unsigned)(caller != NULL ? caller->uid : getuid()));
 		fclose(pf);
 
 		if (nimported == cap) {
