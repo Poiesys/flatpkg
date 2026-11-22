@@ -62,6 +62,7 @@ grep -q 'stable' "$T/list" ||
 run remote-modify --url="$url" local >/dev/null 2>&1 ||
 	note "remote-modify --url failed on the url it already had"
 
+
 run remote-modify --no-gpg-verify local >/dev/null 2>&1 || true
 run remote-list >"$T/list" 2>/dev/null || true
 grep -Eq 'local +[^ ]+ +false +false' "$T/list" ||

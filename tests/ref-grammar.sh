@@ -190,6 +190,34 @@ else
 	note "could not carve remote_url_ok()"
 fi
 
+# remote-modify's url is an operand of `ostree config set` and of `ostree
+# remote add` on the next key import, so the same URL gate runs there.
+mod=$(carve_function '^int cmd_remote_modify\(' "$T/cmds-stripped.c" || true)
+if [ -n "$mod" ]; then
+	printf '%s' "$mod" | grep -q 'if (url != NULL && !remote_url_ok(url))' ||
+		note "remote-modify takes an option-shaped url"
+	printf '%s' "$mod" | grep -q '!remote_url_ok(cur_url)' ||
+		note "remote-modify re-adds a stored url unchecked"
+	planted=$(printf '%s' "$mod" | sed 's/!remote_url_ok(url)/1/')
+	printf '%s' "$planted" | grep -q '!remote_url_ok(url)' &&
+		note "the remote-modify plant was not applied"
+else
+	note "could not carve cmd_remote_modify()"
+fi
+
+# A remote's title/url reaches `ostree config set` as an operand, and ostree
+# reads a leading dash as an option: the separator has to be there.
+cs=$(carve_function '^static int remote_config_set\(' "$T/cmds-stripped.c" || true)
+if [ -n "$cs" ]; then
+	printf '%s' "$cs" | grep -q '"config", repo_arg, "set", "--"' ||
+		note "remote_config_set() hands ostree an unseparated value"
+	planted=$(printf '%s' "$cs" | sed 's/"set", "--"/"set"/')
+	printf '%s' "$planted" | grep -q '"set", "--"' &&
+		note "the config-set plant was not applied"
+else
+	note "could not carve remote_config_set()"
+fi
+
 echo "PASS: refs and remote names carry one grammar, the destructive store"
 echo "      paths prove containment, and ordinary names still work"
 exit "$fail"

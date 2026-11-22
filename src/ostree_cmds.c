@@ -380,7 +380,10 @@ static int remote_config_set(const char* name, const char* key,
 
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 	snprintf(cfgkey, sizeof(cfgkey), "remote \"%s\".%s", name, key);
-	char* argv[] = {"ostree", "config", repo_arg, "set", cfgkey,
+	// The value is a title, a url or an icon out of a caller's request, and
+	// ostree reads an operand starting with '-' as an option (a title of
+	// "--repo=/tmp/x" made it open that repo).  `--` ends the options.
+	char* argv[] = {"ostree", "config", repo_arg, "set", "--", cfgkey,
 			(char*)value, NULL};
 	tool_res_t res;
 	int rc = -1;
@@ -468,6 +471,15 @@ int cmd_remote_modify(const char* name, const char* changes,
 		line = nl != NULL ? nl + 1 : NULL;
 	}
 
+	// The URL becomes an operand of `ostree config set` now and of
+	// `ostree remote add` the next time a key is imported, and ostree reads
+	// an operand that starts with '-' as an option.
+	if (url != NULL && !remote_url_ok(url)) {
+		fpkg_errorf("refusing url '%s': not a URL", url);
+		free(text);
+		return 1;
+	}
+
 	if (url == NULL && !want_key && gpg_verify < 0 && branch == NULL &&
 	    title == NULL && comment == NULL && desc == NULL &&
 	    homepage == NULL && icon == NULL) {
@@ -514,6 +526,12 @@ int cmd_remote_modify(const char* name, const char* changes,
 		if (ostree_config_get(cfgkey, cur_url, sizeof(cur_url)) != 0 ||
 		    cur_url[0] == '\0') {
 			fpkg_errorf("remote %s has no url to keep", name);
+			rc = 1;
+		} else if (!remote_url_ok(cur_url)) {
+			// Written by an older flatpkg, or by hand.
+			fpkg_errorf("refusing to re-add remote %s: its url "
+				    "'%s' is not a URL",
+				    name, cur_url);
 			rc = 1;
 		}
 		if (rc == 0) {
