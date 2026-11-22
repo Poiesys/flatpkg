@@ -129,4 +129,32 @@ if grep -q 'FC_MAX_PER_SENDER' "$T/track.plant"; then
 	exit 1
 fi
 
+# 5. The handler walks (s parent_window, s title, a{sv} options) exactly:
+# one step from the title lands on the array.  A second step walked past it,
+# so every real call was answered "bad options".
+if ! carve_function '^static void handle_file_chooser\(' "$T/portal.c" \
+	> "$T/handler.inc"; then
+	echo "FAIL: cannot carve handle_file_chooser() out of $SRC"
+	exit 1
+fi
+steps=$(awk '/get_basic\(&it, &title\)/ { seen = 1 }
+	     seen && /dbus_message_iter_next\(&it\)/ { n++ }
+	     seen && /DBUS_TYPE_ARRAY/ { exit }
+	     END { print n + 0 }' "$T/handler.inc")
+[ "$steps" -eq 1 ] ||
+	{ echo "FAIL: the chooser takes $steps steps from the title to the"
+	  echo "      options array, not one"; exit 1; }
+awk '/get_basic\(&it, &title\)/ { seen = 1 }
+     seen && /dbus_message_iter_next\(&it\)/ && !done {
+	print; print "\tdbus_message_iter_next(&it);"; done = 1; next }
+     { print }' "$T/handler.inc" > "$T/handler-plant.inc"
+cmp -s "$T/handler.inc" "$T/handler-plant.inc" &&
+	{ echo "FAIL: the handler plant was not applied"; exit 1; }
+planted=$(awk '/get_basic\(&it, &title\)/ { seen = 1 }
+	       seen && /dbus_message_iter_next\(&it\)/ { n++ }
+	       seen && /DBUS_TYPE_ARRAY/ { exit }
+	       END { print n + 0 }' "$T/handler-plant.inc")
+[ "$planted" -eq 2 ] ||
+	{ echo "FAIL: the planted second step was not counted"; exit 1; }
+
 echo "PASS: the FileChooser and Spawn parsers read typed elements, and a container cannot abort the portal"

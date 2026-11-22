@@ -1001,6 +1001,37 @@ static void remote_list_request(wctx_t* c, uint32_t id) {
 // Run fp_repo_local_ref_info() in a child that has dropped to the caller.
 // The result crosses a pipe: ref and commit are fixed-size strings, metadata
 // and error are NUL-terminated blobs the parent owns.
+// A pipe can hand back a short read; a reply built from one would be
+// trusted bytes the child never wrote.
+static bool read_full(int fd, void* buf, size_t n) {
+	char* p = buf;
+
+	while (n > 0) {
+		ssize_t r = read(fd, p, n);
+
+		if (r < 0) {
+			if (errno == EINTR) continue;
+			return false;
+		}
+		if (r == 0) return false;
+		p += r;
+		n -= (size_t)r;
+	}
+	return true;
+}
+
+// The child hands back one fixed header then the two variable parts.  The
+// parent checks the framing and the child's exit status before believing any
+// of it: the child runs as the caller, and the strings it carries come from
+// the caller's repository.
+typedef struct {
+	int rc;
+	size_t mdlen;
+	size_t erlen;
+	char ref[512];
+	char commit[65];
+} ref_reply_t;
+
 static int local_ref_info_as_caller(wctx_t* c, const char* remote,
 				    const char* ref, const char* commit,
 				    bool runtime, char out_ref[512],
@@ -1025,18 +1056,26 @@ static int local_ref_info_as_caller(wctx_t* c, const char* remote,
 		struct passwd* pw = getpwuid(c->uid);
 
 		close(fds[0]);
-		if (pw != NULL) (void)initgroups(pw->pw_name, c->gid);
-		if (setgid(c->gid) != 0 || setuid(c->uid) != 0) _exit(127);
+		// A failed drop is fatal; a child that kept root's groups would
+		// read the repository with more rights than the caller has.
+		if (pw == NULL ||
+		    initgroups(pw->pw_name, c->gid) != 0 ||
+		    setgid(c->gid) != 0 || setuid(c->uid) != 0)
+			_exit(127);
 		int rc = fp_repo_local_ref_info(store_root(), remote, ref, commit,
 						runtime, r, cm, &md, &er);
 		size_t mdlen = md != NULL ? strlen(md) : 0;
 		size_t erlen = er != NULL ? strlen(er) : 0;
 
-		(void)!write(fds[1], &rc, sizeof(rc));
-		(void)!write(fds[1], r, sizeof(r));
-		(void)!write(fds[1], cm, sizeof(cm));
-		(void)!write(fds[1], &mdlen, sizeof(mdlen));
-		(void)!write(fds[1], &erlen, sizeof(erlen));
+		ref_reply_t rep;
+
+		memset(&rep, 0, sizeof(rep));
+		rep.rc = rc;
+		rep.mdlen = mdlen;
+		rep.erlen = erlen;
+		memcpy(rep.ref, r, sizeof(rep.ref));
+		memcpy(rep.commit, cm, sizeof(rep.commit));
+		(void)!write(fds[1], &rep, sizeof(rep));
 		if (mdlen > 0) (void)!write(fds[1], md, mdlen);
 		if (erlen > 0) (void)!write(fds[1], er, erlen);
 		free(md);
@@ -1046,15 +1085,25 @@ static int local_ref_info_as_caller(wctx_t* c, const char* remote,
 	}
 	close(fds[1]);
 	{
+		ref_reply_t rep;
+		int status = -1;
 		int rc = -1;
 		size_t mdlen = 0, erlen = 0;
 
-		if (read(fds[0], &rc, sizeof(rc)) != (ssize_t)sizeof(rc))
-			rc = -1;
-		(void)!read(fds[0], out_ref, 512);
-		(void)!read(fds[0], out_commit, 65);
-		(void)!read(fds[0], &mdlen, sizeof(mdlen));
-		(void)!read(fds[0], &erlen, sizeof(erlen));
+		memset(&rep, 0, sizeof(rep));
+		out_ref[0] = '\0';
+		out_commit[0] = '\0';
+		// Only a child that ran to completion and framed its answer may be
+		// believed; anything else is a lookup that did not happen.
+		if (read_full(fds[0], &rep, sizeof(rep))) {
+			rc = rep.rc;
+			mdlen = rep.mdlen;
+			erlen = rep.erlen;
+			memcpy(out_ref, rep.ref, 512);
+			memcpy(out_commit, rep.commit, 65);
+			out_ref[511] = '\0';
+			out_commit[64] = '\0';
+		}
 		if (mdlen > 0 && mdlen < 4 * 1024 * 1024) {
 			char* md = malloc(mdlen + 1);
 
@@ -1078,7 +1127,8 @@ static int local_ref_info_as_caller(wctx_t* c, const char* remote,
 			}
 		}
 		close(fds[0]);
-		waitpid(pid, NULL, 0);
+		(void)waitpid(pid, &status, 0);
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) rc = -1;
 		if (rc != 0) {
 			if (*out_error == NULL)
 				*out_error = xstrdup("local ref lookup failed");

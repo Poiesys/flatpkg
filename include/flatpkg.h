@@ -292,6 +292,8 @@ typedef struct {
 } fpkg_caller_t;
 
 void permissions_set_caller(const fpkg_caller_t* caller);
+// flatpkg's own bus names: an app may see them, never talk to or own them.
+bool permissions_bus_name_refused(const char* name);
 // NULL when the worker has not said who it acts for.
 const fpkg_caller_t* permissions_caller(void);
 

@@ -1265,49 +1265,64 @@ static int nv_header_check(const struct fp_nv_header* h, size_t* bodyp) {
 	return FP_P_OK;
 }
 
+// Wait until a whole header is readable.  A peek does not consume what it
+// saw, so the socket stays readable at one byte and re-polling in a tight
+// loop burned a core until the deadline; when a poll brings no new bytes the
+// wait backs off instead.  SO_RCVLOWAT is not the answer: it makes the peek
+// itself return 0 below the mark, turning a truncated header into EOF.
+static int recv_header(int fd, struct fp_nv_header* h) {
+	struct timespec start, now;
+	size_t last = 0;
+	int rc = FP_P_OK;
+
+	(void)clock_gettime(CLOCK_MONOTONIC, &start);
+	for (;;) {
+		ssize_t n = recv(fd, h, sizeof(*h), MSG_PEEK);
+		long long spent;
+		struct pollfd p = {fd, POLLIN, 0};
+		int pr;
+
+		if (n < 0) {
+			if (errno == EINTR) continue;
+			return FP_P_ERR_IO;
+		}
+		if ((size_t)n >= sizeof(*h)) break;
+		if (n == 0) return FP_P_EOF;
+		(void)clock_gettime(CLOCK_MONOTONIC, &now);
+		spent = (now.tv_sec - start.tv_sec) * 1000LL +
+			(now.tv_nsec - start.tv_nsec) / 1000000LL;
+		if (spent >= FP_FRAME_WAIT_MS) return FP_P_ERR_TIMEOUT;
+		do pr = poll(&p, 1, (int)(FP_FRAME_WAIT_MS - spent));
+		while (pr < 0 && errno == EINTR);
+		if (pr < 0) return FP_P_ERR_IO;
+		if (pr == 0) return FP_P_ERR_TIMEOUT;
+		// Data left after the peer closed cannot become a whole header.
+		if ((p.revents & (POLLHUP | POLLERR)) != 0)
+			return FP_P_ERR_TRUNCATED;
+		if ((size_t)n == last) {
+			// Readable but no further: let the sender make progress
+			// instead of spending the core on the same peek.
+			struct timespec nap = {0, 20000000L};
+
+			(void)nanosleep(&nap, NULL);
+		} else {
+			last = (size_t)n;
+		}
+	}
+	return rc;
+}
+
 int fp_frame_recv(int fd, nvlist_t** out) {
 	struct fp_nv_header h;
-	ssize_t n;
 	size_t body = 0;
 	int e;
 
 	if (out == NULL) return FP_P_ERR_MALFORMED;
 	*out = NULL;
-	// Wait for the header without spinning.  A peeked partial header keeps
-	// POLLIN set, and poll(2) ignores SO_RCVTIMEO, so the wait is bounded by
-	// a deadline that starts with the first byte instead of blocking
-	// forever.
-	struct timespec start;
-
-	(void)clock_gettime(CLOCK_MONOTONIC, &start);
-	for (;;) {
-		n = recv(fd, &h, sizeof(h), MSG_PEEK);
-		if (n < 0) {
-			if (errno == EINTR) continue;
-			return FP_P_ERR_IO;
-		}
-		if ((size_t)n >= sizeof(h)) break;
-		if (n == 0) return FP_P_EOF;
-		{
-			struct timespec now;
-			struct pollfd p = {fd, POLLIN, 0};
-			long long spent;
-			int pr;
-
-			(void)clock_gettime(CLOCK_MONOTONIC, &now);
-			spent = (now.tv_sec - start.tv_sec) * 1000LL +
-				(now.tv_nsec - start.tv_nsec) / 1000000LL;
-			if (spent >= FP_FRAME_WAIT_MS) return FP_P_ERR_TIMEOUT;
-			do pr = poll(&p, 1, (int)(FP_FRAME_WAIT_MS - spent));
-			while (pr < 0 && errno == EINTR);
-			if (pr < 0) return FP_P_ERR_IO;
-			if (pr == 0) return FP_P_ERR_TIMEOUT;
-			// Data left over after the peer closed cannot become a
-			// whole header: that is a truncated frame.
-			if ((p.revents & (POLLHUP | POLLERR)) != 0)
-				return FP_P_ERR_TRUNCATED;
-		}
-	}
+	// The header decides the body's size and its descriptor count, so it is
+	// read under a deadline before nvlist_recv allocates anything.
+	e = recv_header(fd, &h);
+	if (e != FP_P_OK) return e;
 	e = nv_header_check(&h, &body);
 	if (e != FP_P_OK) return e;
 	(void)body;

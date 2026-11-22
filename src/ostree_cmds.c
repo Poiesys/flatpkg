@@ -1899,7 +1899,7 @@ int ostree_install_bundle(const char* bundle_path, const char* remote,
 	{
 		char* verr = NULL;
 
-		if (fp_repo_verify_commit(commit, &verr) != 0) {
+		if (fp_repo_verify_commit(commit, useremote, &verr) != 0) {
 			fpkg_errorf("bundle %s is not signed by '%s'%s%s",
 				    bundle_path, useremote,
 				    verr != NULL ? ": " : "",

@@ -41,7 +41,7 @@ bug() {
 check() {
 	hdr=$1 handle=$2 worker=$3 owner=$4 state=$5 cancel=$6 unimpl=$7 sys=$8
 
-	grep -q 'recv(fd, &h, sizeof(h), MSG_PEEK)' "$T/protocol.c" ||
+	grep -q 'recv(fd, h, sizeof(\*h), MSG_PEEK)' "$T/protocol.c" ||
 		bug "the frame header is not peeked before the body"
 	grep -q 'descs > FP_MAX_FDS' "$hdr" ||
 		bug "a frame may carry more descriptors than the protocol allows"

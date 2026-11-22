@@ -240,6 +240,33 @@ static int pulse_machine_id(char* out, size_t n) {
 	return gethostname(out, n) == 0 ? 0 : -1;
 }
 
+// The caller names a path and root acts on it, so the path must be the
+// caller's own: no symlink, the right type, and owned by them.  A path they
+// merely point at - /root, another user's socket - is refused.
+static bool caller_socket(const char* path, uid_t uid) {
+	struct stat st;
+
+	if (path == NULL || path[0] != '/') return false;
+	if (lstat(path, &st) != 0) return false;
+	return S_ISSOCK(st.st_mode) && st.st_uid == uid;
+}
+
+static bool caller_file(const char* path, uid_t uid) {
+	struct stat st;
+
+	if (path == NULL || path[0] != '/') return false;
+	if (lstat(path, &st) != 0) return false;
+	return S_ISREG(st.st_mode) && st.st_uid == uid;
+}
+
+static bool caller_dir(const char* path, uid_t uid) {
+	struct stat st;
+
+	if (path == NULL || path[0] != '/') return false;
+	if (lstat(path, &st) != 0) return false;
+	return S_ISDIR(st.st_mode) && st.st_uid == uid;
+}
+
 static int pulse_runtime_dir(const sandbox_plan_t* plan, char* out, size_t n) {
 	assert(plan != NULL);
 	assert(out != NULL);
@@ -248,7 +275,7 @@ static int pulse_runtime_dir(const sandbox_plan_t* plan, char* out, size_t n) {
 	char dir[PATH_MAX], real[PATH_MAX];
 	struct stat st;
 
-	if (v && *v && realpath(v, real) != NULL) {
+	if (v && *v && caller_dir(v, plan->uid) && realpath(v, real) != NULL) {
 		snprintf(out, n, "%s", real);
 		return 0;
 	}
@@ -289,13 +316,20 @@ static int pulse_socket_path(const sandbox_plan_t* plan, char* out, size_t n,
 
 	*remote = false;
 	if (v && *v) {
-		if (pulse_parse_server(v, out, n, remote) == 0) return 0;
-		if (*remote) return -1;
+		if (pulse_parse_server(v, out, n, remote) == 0) {
+			// A local socket must be the caller's own; a remote one
+			// has no path for root to touch.
+			if (*remote || caller_socket(out, plan->uid)) return 0;
+		} else if (*remote) {
+			return -1;
+		}
 	}
 	v = cli_getenv("PULSE_CLIENTCONFIG");
-	if (v && *v && pulse_server_from_config(v, raw, sizeof(raw)) == 0 &&
-	    pulse_parse_server(raw, out, n, remote) == 0)
-		return 0;
+	if (v && *v && caller_file(v, plan->uid) &&
+	    pulse_server_from_config(v, raw, sizeof(raw)) == 0 &&
+	    pulse_parse_server(raw, out, n, remote) == 0) {
+		if (*remote || caller_socket(out, plan->uid)) return 0;
+	}
 	snprintf(conf, sizeof(conf), "%s/.config/pulse/client.conf",
 		 plan->home_dir);
 	if (pulse_server_from_config(conf, raw, sizeof(raw)) == 0 &&
@@ -397,12 +431,14 @@ static int cups_socket_path(const sandbox_plan_t* plan, char* out, size_t n) {
 	const char* v = cli_getenv("CUPS_SERVER");
 	struct stat st;
 
-	if (v && *v && v[0] == '/' && strchr(v, ':') == NULL) {
+	if (v && *v && v[0] == '/' && strchr(v, ':') == NULL &&
+	    caller_socket(v, plan->uid)) {
 		snprintf(out, n, "%s", v);
 		return 0;
 	}
 	snprintf(conf, sizeof(conf), "%s/.cups/client.conf", plan->home_dir);
-	if (cups_server_from_config(conf, raw, sizeof(raw)) == 0) {
+	if (caller_file(conf, plan->uid) &&
+	    cups_server_from_config(conf, raw, sizeof(raw)) == 0) {
 		snprintf(out, n, "%s", raw);
 		return 0;
 	}

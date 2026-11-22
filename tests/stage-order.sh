@@ -33,6 +33,14 @@ carve_function '^static int m_tmpfs\(' "$T/sb.c" > "$T/tmpfs-default.inc" ||
 	{ echo "FAIL: m_tmpfs() not found"; exit 1; }
 carve_function '^void stage_dev_shm\(' "$T/sb.c" > "$T/shm.inc" ||
 	{ echo "FAIL: stage_dev_shm() not found"; exit 1; }
+: > "$T/socks.inc"
+for fn in '^static int pulse_socket_path\(' '^static int pulse_runtime_dir\(' \
+	  '^static int cups_socket_path\('; do
+	if ! carve_function "$fn" "$T/sb.c" >> "$T/socks.inc"; then
+		echo "FAIL: cannot carve $fn out of sandbox_root.c"
+		exit 1
+	fi
+done
 
 pos() {
 	grep -n "$1" "$2" | head -1 | cut -d: -f1
@@ -45,7 +53,7 @@ bug() {
 
 check() {
 	root=$1 grants=$2 apply=$3 pulse=$4 tmpfs=$5 tmpfs_default=$6 shm=$7
-	hosts=$8
+	hosts=$8 socks=$9
 
 	host=$(pos 'stage_host_mounts(' "$root")
 	home=$(pos 'stage_home(' "$root")
@@ -94,6 +102,17 @@ check() {
 	grep -q 'socket_dir_too_broad(pdir)' "$pulse" ||
 		bug "pulse staging mounts a shared directory unchecked"
 
+	# A caller-named socket or config is the caller's own: the type is
+	# checked and so is the owner, not merely that the path is absolute.
+	grep -q 'caller_socket(out, plan->uid)' "$socks" ||
+		bug "a caller-named pulse socket is staged without an owner check"
+	grep -q 'caller_socket(v, plan->uid)' "$socks" ||
+		bug "a caller-named cups socket is staged without an owner check"
+	grep -q 'caller_dir(v, plan->uid)' "$socks" ||
+		bug "a caller-named pulse runtime dir is staged without an owner check"
+	grep -q 'caller_file(v, plan->uid)' "$socks" ||
+		bug "a caller-named client config is read without an owner check"
+
 	# A tmpfs the app can fill carries a size, in both mount spellings.
 	grep -q 'size=%llu' "$tmpfs" ||
 		bug "a per-launch tmpfs has no size limit"
@@ -107,7 +126,7 @@ check() {
 
 ( check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
 	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
-	"$T/hosts.inc" )
+	"$T/hosts.inc" "$T/socks.inc" )
 
 # --- the plants ----------------------------------------------------------
 prove() {
@@ -172,6 +191,15 @@ prove "the narrower grant skipped" \
 # 4. pulse staging without the shared-directory check
 sed 's/if (socket_dir_too_broad(pdir)) {/if (0) {/' "$T/pulse.inc" \
 	> "$T/plant-pulse.inc"
+sed 's/caller_socket(out, plan->uid)/true/g' "$T/socks.inc" \
+	> "$T/socks-plant.inc"
+cmp -s "$T/socks.inc" "$T/socks-plant.inc" &&
+	{ echo "FAIL: the socket plant was not applied"; exit 1; }
+prove "a pulse socket staged without an owner check" \
+	check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" "$T/pulse.inc" \
+	"$T/tmpfs.inc" "$T/tmpfs-default.inc" "$T/shm.inc" \
+	"$T/hosts.inc" "$T/socks-plant.inc"
+
 prove "pulse staging unchecked" \
 	check "$T/root.inc" "$T/grants.inc" "$T/apply.inc" \
 	"$T/plant-pulse.inc" "$T/tmpfs.inc" "$T/tmpfs-default.inc" \

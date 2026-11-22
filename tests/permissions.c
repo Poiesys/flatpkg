@@ -499,6 +499,10 @@ main(void)
 			  "is refused",
 			  "talk on the system helper is refused, in words", false,
 			  true },
+			{ "[Session Bus Policy]\norg.freedesktop.Flatpak=talk\n",
+			  "is refused",
+			  "talk on flatpak-spawn's name is refused too", false,
+			  true },
 			{ "[Session Bus Policy]\norg.freedesktop.portal.Flatpak=own\n",
 			  NULL,
 			  "own on the portal is quiet", false, false },
@@ -532,6 +536,32 @@ main(void)
 			}
 			permissions_free_plan(&plan);
 		}
+
+		/* 11b. A log line is not a refusal: the name must be gone from
+		 * the plan, or the proxy's filter arguments carry it. */
+		memset(&plan, 0, sizeof(plan));
+		(void)plan_from("helper grant",
+		    "[Application]\nname=Demo\ncommand=demo\n"
+		    "[Session Bus Policy]\n"
+		    "org.freedesktop.Flatpak.SystemHelper=talk\n"
+		    "org.gnome.Settings=talk\n", &plan);
+		{
+			bool leaked = false, kept = false;
+
+			for (size_t i = 0; i < plan.session_bus_policy.count;
+			     i++) {
+				if (strstr(plan.session_bus_policy.items[i],
+					   "SystemHelper") != NULL)
+					leaked = true;
+				if (strcmp(plan.session_bus_policy.items[i],
+					   "org.gnome.Settings=talk") == 0)
+					kept = true;
+			}
+			ok("the refused grant is dropped from the plan",
+			   !leaked && kept,
+			   "a refused name is still in the plan");
+		}
+		permissions_free_plan(&plan);
 	}
 
 	/* 7. The `run(1)` OVERRIDE path.  `option-values.sh` proves the

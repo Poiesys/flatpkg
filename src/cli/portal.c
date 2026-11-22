@@ -1765,9 +1765,10 @@ static void handle_file_chooser(DBusConnection* conn, DBusMessage* msg,
 	}
 	dbus_message_iter_get_basic(&it, &title);
 	if (!title) title = "";
+	// One step from the title lands on the options array; a second step
+	// walked past it, so every real call was answered "bad options".
 	dbus_message_iter_next(&it);
 	DBusMessageIter opts;
-	dbus_message_iter_next(&it);
 	if (dbus_message_iter_get_arg_type(&it) != DBUS_TYPE_ARRAY) {
 		reply_error(conn, msg, "bad options");
 		return;

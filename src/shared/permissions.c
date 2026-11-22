@@ -442,11 +442,42 @@ static void strlist_push(strlist_t* l, const char* item) {
 	l->items[l->count - 1] = xstrdup(item);
 }
 
-static void strlist_copy(strlist_t* dst, const strlist_t* src) {
+// flatpkg's own bus names: `org.freedesktop.Flatpak` is flatpak-spawn's host
+// command, and the system helper changes the shared store.  An app may see
+// them, never talk to or own them.  `org.freedesktop.portal.Flatpak` is the
+// portal and is deliberately not matched.
+bool permissions_bus_name_refused(const char* name) {
+	static const char prefix[] = "org.freedesktop.Flatpak";
+
+	if (name == NULL) return false;
+	if (strncmp(name, prefix, sizeof(prefix) - 1) != 0) return false;
+	return name[sizeof(prefix) - 1] == '\0' ||
+	       name[sizeof(prefix) - 1] == '.';
+}
+
+// The plan carries a policy list only for names an app may hold: a refused
+// name is dropped here, so nothing downstream - the proxy's argv in
+// particular - can push it.
+static void strlist_copy_allowed(strlist_t* dst, const strlist_t* src) {
 	assert(dst != NULL);
 	assert(src != NULL);
-	for (size_t i = 0; i < src->count; i++)
-		strlist_push(dst, src->items[i]);
+	for (size_t i = 0; i < src->count; i++) {
+		const char* entry = src->items[i];
+		const char* eq = strchr(entry, '=');
+		char name[256];
+		size_t nlen;
+
+		if (eq == NULL || eq == entry) {
+			strlist_push(dst, entry);
+			continue;
+		}
+		nlen = (size_t)(eq - entry);
+		if (nlen >= sizeof(name)) continue;
+		memcpy(name, entry, nlen);
+		name[nlen] = '\0';
+		if (permissions_bus_name_refused(name)) continue;
+		strlist_push(dst, entry);
+	}
 }
 
 static void drop_grant(sandbox_plan_t* plan, const char* jail_path) {
@@ -690,14 +721,13 @@ static bool warn_bus_policy(const char* which, const strlist_t* list) {
 		if (nlen == 0 || nlen >= sizeof(name)) continue;
 		memcpy(name, entry, nlen);
 		name[nlen] = '\0';
-		// The system helper changes the shared store and the portal
-		// builds sandboxes; a declared grant to either would let a
-		// sandboxed app act with the user's store rights.  Refuse the
-		// whole plan rather than warn.
-		if (strcmp(name, "org.freedesktop.Flatpak.SystemHelper") == 0) {
+		// An app may not talk to or own flatpkg's own names: the
+		// helper changes the shared store and flatpak-spawn runs a host
+		// command.  The entry is dropped from the plan as well, and the
+		// proxy refuses it again when it builds the filter.
+		if (permissions_bus_name_refused(name)) {
 			fpkg_errorf("[%s Bus Policy] '%s' on '%s' is refused: "
-				    "the system helper is not available to a "
-				    "sandbox",
+				    "flatpkg's own bus name",
 				    which, pol, name);
 			refused = true;
 		}
@@ -905,9 +935,11 @@ int permissions_plan(const fp_metadata_t* meta, const char* home_dir,
 	(void)warn_bus_policy("session", &meta->session_bus_policy);
 	(void)warn_bus_policy("system", &meta->system_bus_policy);
 	(void)warn_bus_policy("a11y", &meta->a11y_bus_policy);
-	strlist_copy(&plan->session_bus_policy, &meta->session_bus_policy);
-	strlist_copy(&plan->system_bus_policy, &meta->system_bus_policy);
-	strlist_copy(&plan->a11y_bus_policy, &meta->a11y_bus_policy);
+	strlist_copy_allowed(&plan->session_bus_policy,
+			     &meta->session_bus_policy);
+	strlist_copy_allowed(&plan->system_bus_policy,
+			     &meta->system_bus_policy);
+	strlist_copy_allowed(&plan->a11y_bus_policy, &meta->a11y_bus_policy);
 
 	return 0;
 }

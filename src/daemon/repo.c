@@ -68,7 +68,8 @@ static bool ref_matches(const char* ref, const char* want, bool runtime) {
 // Does the commit carry a detached signature the configured remote's keyring
 // accepts?  A bundle is untrusted input, so nothing may be written into a
 // remote's refs before this answers yes.
-int fp_repo_verify_commit(const char* checksum, char** out_error) {
+int fp_repo_verify_commit(const char* checksum, const char* remote,
+			  char** out_error) {
 	GError* err = NULL;
 	OstreeRepo* repo = NULL;
 	g_autoptr(OstreeGpgVerifyResult) result = NULL;
@@ -83,8 +84,16 @@ int fp_repo_verify_commit(const char* checksum, char** out_error) {
 		g_clear_error(&err);
 		goto out;
 	}
-	result = ostree_repo_verify_commit_ext(repo, checksum, NULL, NULL, NULL,
-					       &err);
+	// Verify against the keyring of the remote the bundle claims to come
+	// from.  The repo-wide keyring is not a substitute: it holds every
+	// remote's keys, so one remote's signature would vouch for another's.
+	if (remote != NULL && *remote != '\0')
+		result = ostree_repo_verify_commit_for_remote(repo, checksum,
+							      remote, NULL,
+							      &err);
+	else
+		result = ostree_repo_verify_commit_ext(repo, checksum, NULL,
+						       NULL, NULL, &err);
 	if (result == NULL) {
 		*out_error = g_strdup(err != NULL ? err->message
 						  : "no valid signature");

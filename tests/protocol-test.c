@@ -10,7 +10,11 @@
 #include <string.h>
 #include <sys/nv.h>
 #include <sys/socket.h>
+#include <sys/resource.h>
+#include <sys/time.h>
+#include <time.h>
 #include <sys/wait.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include "../include/protocol.h"
@@ -915,6 +919,54 @@ static void test_fuzz(void) {
 	printf("     fuzz: %d accepted, %d rejected\n", accepted, rejected);
 }
 
+
+/* A client that sends five bytes and then nothing must cost no CPU: the wait
+ * is for a WHOLE header, not for "some bytes".  A peek does not consume what
+ * it saw, so a readiness test at one byte fires forever - the loop used to
+ * spin at 100% until the deadline.  The child is killed mid-wait and its own
+ * accounting read with wait4(), so the number is the spin, not the clock. */
+static void test_partial_header_sleeps(void) {
+	int sv[2];
+	struct rusage ru;
+	struct timespec t0, t1;
+	int st;
+	pid_t pid;
+
+	if (mkpair(sv) != 0) {
+		CHECK(0, "partial-header pair");
+		return;
+	}
+	CHECK(write_all(sv[1], "\x00\x00\x00\x00\x00", 5) == 0,
+	      "five bytes of a header");
+	pid = fork();
+	if (pid == 0) {
+		nvlist_t* got = NULL;
+
+		close(sv[1]);
+		(void)fp_frame_recv(sv[0], &got);
+		_exit(0);
+	}
+	CHECK(pid > 0, "forked the waiter");
+	// Keep the write end: closing it would turn the wait into a truncated
+	// frame and the child would never reach the wait we want to measure.
+	close(sv[0]);
+	(void)clock_gettime(CLOCK_MONOTONIC, &t0);
+	usleep(1000000);
+	(void)clock_gettime(CLOCK_MONOTONIC, &t1);
+	kill(pid, SIGKILL);
+	CHECK(wait4(pid, &st, 0, &ru) == pid, "reaped the waiter");
+	{
+		long long cpu_ms =
+			(ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000LL +
+			(ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000;
+
+		CHECK(cpu_ms < 300,
+		      "a five-byte header costs no CPU while it waits "
+		      "(used %lld ms)", cpu_ms);
+		CHECK(WIFSIGNALED(st), "the waiter was still waiting");
+	}
+}
+
 int main(void) {
 	build_corpus();
 	test_roundtrip();
@@ -925,6 +977,7 @@ int main(void) {
 	test_stream();
 	test_fds();
 	test_duplicate_names();
+	test_partial_header_sleeps();
 	test_fuzz();
 	for (int i = 0; i < ncorpus; i++) nvlist_destroy(corpus[i].nvl);
 	if (failures) {

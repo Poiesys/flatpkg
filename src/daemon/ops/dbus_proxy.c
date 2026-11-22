@@ -179,6 +179,15 @@ static void add_bus_filter_args(argvec_t* av, const char* app_id,
 		const char* pol = eq + 1;
 
 		if (strcmp(pol, "none") == 0) continue;
+		// Asking for the name would put it in the proxy's argv, which is
+		// the thing that grants it.  A plan from anywhere else still
+		// cannot smuggle one in.
+		if ((strcmp(pol, "talk") == 0 || strcmp(pol, "own") == 0) &&
+		    permissions_bus_name_refused(name)) {
+			fpkg_errorf("refusing %s on flatpkg's own bus name '%s'",
+				    pol, name);
+			continue;
+		}
 		if (strcmp(pol, "see") == 0 || strcmp(pol, "talk") == 0 ||
 		    strcmp(pol, "own") == 0) {
 			char arg[512];
@@ -293,9 +302,9 @@ static int bus_addrs_resolve(bus_addrs_t* a, const sandbox_plan_t* plan) {
 				setenv("DBUS_SESSION_BUS_ADDRESS", sess, 1);
 			// The helper talks to a caller-controlled bus; it must
 			// never run as root.  Every drop is fatal on failure.
-			if (plan->user_name != NULL)
-				(void)initgroups(plan->user_name, plan->gid);
-			if (setgid(plan->gid) != 0 || setuid(plan->uid) != 0)
+			if (plan->user_name == NULL ||
+			    initgroups(plan->user_name, plan->gid) != 0 ||
+			    setgid(plan->gid) != 0 || setuid(plan->uid) != 0)
 				_exit(127);
 			execvp("/usr/local/bin/dbus-send", av);
 			_exit(127);
