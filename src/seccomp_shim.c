@@ -243,8 +243,6 @@ int socket(int domain, int type, int protocol) {
 	return (int)real_syscall(SYS_socket, domain, type, protocol);
 }
 
-static long (*real_syscall)(long, ...) = NULL;
-
 static void init_real_syscall(void) {
 	if (!real_syscall) real_syscall = dlsym(RTLD_NEXT, "syscall");
 }
@@ -398,10 +396,12 @@ int clone(int (*fn)(void*), void* stack, int flags, void* arg, ...) {
 		return -1;
 	}
 	va_list ap;
+	void* tls;
+
 	va_start(ap, arg);
-	int r = real_clone(fn, stack, flags, arg, ap);
+	tls = va_arg(ap, void*);
 	va_end(ap);
-	return r;
+	return real_clone(fn, stack, flags, arg, tls);
 }
 
 struct clone_args;

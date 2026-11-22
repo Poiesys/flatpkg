@@ -1621,7 +1621,7 @@ static void write_font_dirs_xml(sandbox_t* sb, const sandbox_plan_t* plan) {
 	{
 		char xml[4096];
 		size_t off = 0;
-		off += snprintf(xml + off, sizeof(xml) - off,
+		bool ok = fpkg_buf_append(xml, sizeof(xml), &off,
 				"<?xml version=\"1.0\"?>\n"
 				"<!DOCTYPE fontconfig SYSTEM "
 				"\"urn:fontconfig:fonts.dtd\">\n"
@@ -1633,32 +1633,40 @@ static void write_font_dirs_xml(sandbox_t* sb, const sandbox_plan_t* plan) {
 			{"/usr/share/fonts", "/run/host/fonts"},
 			{"/usr/local/share/fonts", "/run/host/local-fonts"},
 			{NULL, NULL}};
-		for (int i = 0; fonts[i].host && off < sizeof(xml); i++) {
+		for (int i = 0; fonts[i].host && ok; i++) {
 			struct stat st;
+
 			if (stat(fonts[i].host, &st) != 0 ||
 			    !S_ISDIR(st.st_mode))
 				continue;
-			off += snprintf(
-				xml + off, sizeof(xml) - off,
+			ok = fpkg_buf_append(
+				xml, sizeof(xml), &off,
 				"   <remap-dir as-path=\"%s\">%s</remap-dir>\n",
 				fonts[i].host, fonts[i].jail);
 		}
 		static const char* user_dirs[] = {".local/share/fonts",
 						  ".fonts", NULL};
-		for (int i = 0; user_dirs[i] && off < sizeof(xml); i++) {
+		for (int i = 0; user_dirs[i] && ok; i++) {
 			char ud[PATH_MAX];
+
 			snprintf(ud, sizeof(ud), "%s/%s", plan->home_dir,
 				 user_dirs[i]);
 			if (!caller_dir(ud, plan->uid)) continue;
-			off += snprintf(xml + off, sizeof(xml) - off,
-					"   <remap-dir as-path=\"%s\">"
-					"/run/host/user-fonts</remap-dir>\n",
-					ud);
+			ok = fpkg_buf_append(
+				xml, sizeof(xml), &off,
+				"   <remap-dir as-path=\"%s\">"
+				"/run/host/user-fonts</remap-dir>\n",
+				ud);
 			break;
 		}
-		if (off < sizeof(xml) - 16)
-			snprintf(xml + off, sizeof(xml) - off,
-				 "</fontconfig>\n");
+		if (ok)
+			ok = fpkg_buf_append(xml, sizeof(xml), &off,
+					     "</fontconfig>\n");
+		if (!ok) {
+			fpkg_warnf("font directory list does not fit; "
+				   "no font-dirs.xml written");
+			return;
+		}
 		snprintf(p, sizeof(p), "%s/run/host/font-dirs.xml", root);
 		write_file(p, xml, 0644);
 	}
