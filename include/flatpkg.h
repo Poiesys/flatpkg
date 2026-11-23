@@ -550,8 +550,12 @@ int find_active_dir(const char* base, const char* component, const char* id,
 		    char* out, size_t outlen);
 
 // The system helper's command map: a D-Bus method name to an absolute argv,
-// with %-placeholders filled from fpkg_helper_args_t below.  0 means the
-// request is unconfigured and the caller refuses it.
+// with %-placeholders filled from fpkg_helper_args_t below: %r ref, %i
+// installation, %b bundle, %n remote, %o origin, %a arch, %f flags, %s
+// subpaths, %P previous, %c config, %u url, %k key, %v value, %S summary,
+// %G summary signature, %d source directory.  0 means the request is
+// unconfigured and the caller refuses it; a mapping with any other
+// placeholder is invalid and refused (-1), never passed through as text.
 #define FPKG_HELPER_MAX_ARGS 32
 typedef struct {
 	const char* ref;
@@ -560,7 +564,6 @@ typedef struct {
 	const char* remote;
 	const char* origin;
 	const char* arch;
-	const char* repo;
 	const char* subpaths;
 	const char* previous;
 	const char* config;

@@ -122,18 +122,18 @@ handle_deploy_appstream(GDBusConnection* connection, const gchar* sender,
 			const gchar* method_name, GVariant* parameters,
 			GDBusMethodInvocation* invocation, gpointer user_data) {
 	GVariant* path_v = NULL;
-	gchar* repo_path = NULL;
 	const gchar *origin = NULL, *arch = NULL, *installation = NULL;
 	guint flags = 0;
 
 
+	// The array argument is the caller's repo path.  It is taken off the wire
+	// and dropped: no placeholder hands it to a command (see %p in
+	// flatpkg.h), and root does not open a path a caller names.
 	g_variant_get(parameters, "(@ayu&s&s&s)", &path_v, &flags, &origin,
 		      &arch, &installation);
-	repo_path = variant_path(path_v);
 
 	if (!authorize(connection, sender, invocation, "DeployAppstream")) {
 		g_variant_unref(path_v);
-		g_free(repo_path);
 		return;
 	}
 
@@ -144,7 +144,6 @@ handle_deploy_appstream(GDBusConnection* connection, const gchar* sender,
 			"system installation)",
 			installation);
 		g_variant_unref(path_v);
-		g_free(repo_path);
 		return;
 	}
 	if (!valid_remote_name(origin)) {
@@ -152,7 +151,6 @@ handle_deploy_appstream(GDBusConnection* connection, const gchar* sender,
 			invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
 			"Invalid remote name '%s'", origin);
 		g_variant_unref(path_v);
-		g_free(repo_path);
 		return;
 	}
 	if (!valid_arch(arch)) {
@@ -160,20 +158,10 @@ handle_deploy_appstream(GDBusConnection* connection, const gchar* sender,
 			invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
 			"Invalid architecture '%s'", arch);
 		g_variant_unref(path_v);
-		g_free(repo_path);
-		return;
-	}
-	if (*repo_path != '\0' && !g_file_test(repo_path, G_FILE_TEST_EXISTS)) {
-		g_dbus_method_invocation_return_error(
-			invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
-			"Path does not exist: %s", repo_path);
-		g_variant_unref(path_v);
-		g_free(repo_path);
 		return;
 	}
 
 	fpkg_helper_args_t hargs = {
-		.repo = repo_path,
 		.origin = origin,
 		.arch = arch,
 		.installation = installation,
@@ -181,14 +169,10 @@ handle_deploy_appstream(GDBusConnection* connection, const gchar* sender,
 	};
 	if (!helper_run_mapped("deploy-appstream", &hargs, invocation)) {
 		g_variant_unref(path_v);
-		g_free(repo_path);
 		return;
 	}
 	g_dbus_method_invocation_return_value(invocation, NULL);
 	g_variant_unref(path_v);
-	g_free(repo_path);
-	return;
-
 }
 
 static void handle_deploy(GDBusConnection* connection, const gchar* sender,
@@ -197,7 +181,6 @@ static void handle_deploy(GDBusConnection* connection, const gchar* sender,
 			  GDBusMethodInvocation* invocation,
 			  gpointer user_data) {
 	GVariant* path_v = NULL;
-	gchar* repo_path = NULL;
 	const gchar *ref = NULL, *origin = NULL, *installation = NULL;
 	gchar **subpaths = NULL, **previous_ids = NULL;
 	guint flags = 0;
@@ -205,7 +188,6 @@ static void handle_deploy(GDBusConnection* connection, const gchar* sender,
 
 	g_variant_get(parameters, "(@ayu&s&s^as^as&s)", &path_v, &flags, &ref,
 		      &origin, &subpaths, &previous_ids, &installation);
-	repo_path = variant_path(path_v);
 
 	if (!authorize(connection, sender, invocation, "Deploy")) goto out;
 	if (*installation != '\0' && !g_str_equal(installation, "default")) {
@@ -222,15 +204,7 @@ static void handle_deploy(GDBusConnection* connection, const gchar* sender,
 			"Deploy needs a ref and an origin");
 		goto out;
 	}
-	if (*repo_path != '\0' && !g_file_test(repo_path, G_FILE_TEST_EXISTS)) {
-		g_dbus_method_invocation_return_error(
-			invocation, G_DBUS_ERROR, G_DBUS_ERROR_INVALID_ARGS,
-			"Path does not exist: %s", repo_path);
-		goto out;
-	}
-
-	fpkg_infof("Deploy %s from %s (origin %s)", ref,
-		   *repo_path ? repo_path : "the remote", origin);
+	fpkg_infof("Deploy %s from the remote (origin %s)", ref, origin);
 
 	if (previous_ids != NULL && previous_ids[0] != NULL)
 		fpkg_infof("  previous ids: %s", previous_ids[0]);
@@ -275,7 +249,6 @@ static void handle_deploy(GDBusConnection* connection, const gchar* sender,
 			}
 	}
 	fpkg_helper_args_t hargs = {
-		.repo = repo_path,
 		.ref = ref,
 		.origin = origin,
 		.subpaths = subs,
@@ -288,21 +261,18 @@ static void handle_deploy(GDBusConnection* connection, const gchar* sender,
 	free(prev);
 	if (!mapped) {
 		g_variant_unref(path_v);
-		g_free(repo_path);
 		g_strfreev(subpaths);
 		g_strfreev(previous_ids);
 		return;
 	}
 	g_dbus_method_invocation_return_value(invocation, NULL);
 	g_variant_unref(path_v);
-	g_free(repo_path);
 	g_strfreev(subpaths);
 	g_strfreev(previous_ids);
 	return;
 
 out:
 	g_variant_unref(path_v);
-	g_free(repo_path);
 	g_strfreev(subpaths);
 	g_strfreev(previous_ids);
 }

@@ -36,7 +36,6 @@ static const char* placeholder(const char c, const fpkg_helper_args_t* args) {
 	case 'n': return args->remote;
 	case 'o': return args->origin;
 	case 'a': return args->arch;
-	case 'p': return args->repo;
 	case 's': return args->subpaths;
 	case 'P': return args->previous;
 	case 'c': return args->config;
@@ -69,6 +68,14 @@ static char* expand_word(const char* word, const fpkg_helper_args_t* args) {
 				val = flag;
 			} else {
 				val = placeholder(p[1], args);
+			}
+			// An unknown placeholder is a configuration error, not a
+			// literal: passing "%p" through handed the mapped command a
+			// word the admin did not write.  The command map is parsed
+			// once per request, and the entry is refused instead.
+			if (val == NULL && p[1] != 'f') {
+				free(out);
+				return NULL;
 			}
 			if (val != NULL) {
 				len = strlen(val);

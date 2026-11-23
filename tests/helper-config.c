@@ -16,7 +16,6 @@ int main(void) {
 		.remote = "flathub",
 		.origin = "origin",
 		.arch = "x86_64",
-		.repo = "/tmp/repo",
 		.subpaths = "a,b",
 		.previous = "old",
 		.config = "cfg",
