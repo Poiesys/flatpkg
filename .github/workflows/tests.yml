@@ -102,6 +102,14 @@ jobs:
               https://dl.flathub.org/repo/ || true
           sudo flatpkg install -y com.github.tchx84.Flatseal
 
+          # The image is small and the toolchain plus a runtime with its
+          # extension pulls fill it; the package cache is pure waste by now,
+          # and a leftover libostree build tree lands in /tmp.
+          sudo pkg clean -a -y || true
+          sudo rm -rf /tmp/libostree-ci.* || true
+          df -h / /tmp /var /usr/local 2>&1 || true
+          du -sh /var/db/flatpkg /var/cache/pkg 2>/dev/null || true
+
           # No skip survives: FLATPKG_STRICT_SKIPS turns every SKIP into a
           # failure that names the guard and its reason.  Re-enter as the same
           # user so sudo rebuilds the group set from /etc/group; otherwise
