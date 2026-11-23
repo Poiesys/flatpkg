@@ -332,7 +332,20 @@ char** list_remotes(size_t* n_out) {
 			}
 			names = new_names;
 		}
-		names[n++] = strndup(line + 9, end - (line + 9));
+		{
+			// An allocation failure exits here rather than storing a
+			// NULL every caller would strcmp() and free().
+			size_t klen = (size_t)(end - (line + 9));
+			char* name = malloc(klen + 1);
+
+			if (name == NULL) {
+				fpkg_errorf("out of memory");
+				exit(1);
+			}
+			memcpy(name, line + 9, klen);
+			name[klen] = '\0';
+			names[n++] = name;
+		}
 	}
 	fclose(f);
 	*n_out = n;
