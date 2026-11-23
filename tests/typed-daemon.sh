@@ -689,10 +689,15 @@ EOF
 			_tp_sz=$(mdo stat -f %z "$ap/files/bin/ttyprobe" 2>/dev/null ||
 				echo unknown)
 			echo "NOTE: ttyprobe on the host: $_tp_sz bytes"
+			if "$tmp/ttyprobe" flood 1 >/dev/null 2>&1; then
+				echo "NOTE: ttyprobe executes on the host"
+			else
+				echo "NOTE: ttyprobe does not execute on the host: rc=$?"
+			fi
 			NO_COLOR=1 TERM=dumb timeout 60 "$bin" run \
 				--command=/app/bin/ttyprobe org.test.Echo flood 1 \
 				>"$tmp/tp.out" 2>&1 && _tp=0 || _tp=$?
-			echo "NOTE: ttyprobe by absolute path: rc=$_tp $(tr '\n' ' ' < "$tmp/tp.out" | cut -c1-600)"
+			echo "NOTE: ttyprobe by absolute path: rc=$_tp $(tr '\n' ' ' < "$tmp/tp.out" | tail -c 800)"
 			NO_COLOR=1 TERM=dumb timeout 60 "$bin" run \
 				org.test.Echo after-copy >"$tmp/ac.out" 2>&1 &&
 				_ac=0 || _ac=$?
