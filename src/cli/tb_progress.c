@@ -618,13 +618,14 @@ static size_t max_label_w(void) {
 static void render_bar_body(tbbuf* t, size_t i) {
 	tb_slot_t* s = &g_bar_slots[i];
 	char msg[1024];
-	size_t len;
 	int pct = (int)pct_of(s->current, s->total);
 
-	len = build_progress_msg(s->label, max_label_w(), s->current, s->total,
-				 tb_slot_chars(s), s->show_eta, msg,
+	// build_progress_msg() terminates `msg` itself, and its return can equal
+	// the buffer size when the text fills it exactly: writing msg[len] here
+	// was one byte past the array.
+	(void)build_progress_msg(s->label, max_label_w(), s->current,
+				 s->total, tb_slot_chars(s), s->show_eta, msg,
 				 sizeof(msg));
-	msg[len] = '\0';
 	tb_str(t, FP_CR_EL_LINE);
 	write_progress_line(t, s->scope_name, s->description, msg, pct);
 }
@@ -1016,15 +1017,16 @@ static void print_progress_line_ex(const char* sn, const char* desc,
 		tbbuf t;
 		char msg[1024];
 		char store[4][2];
-		size_t len, own, stack;
+		size_t own, stack;
 
 		own = strlen(label);
 		stack = max_label_w();
-		len = build_progress_msg(label, own > stack ? own : stack,
+		// The builder terminates `msg`, and its return can equal the buffer
+		// size: writing msg[len] here was one byte past the array.
+		(void)build_progress_msg(label, own > stack ? own : stack,
 					 current, total,
 					 chars_from_glyphs(glyphs, store),
 					 show_eta, msg, sizeof(msg));
-		msg[len] = '\0';
 		progress_clear_frame();
 		t.b = buf;
 		t.cap = sizeof(buf);
