@@ -688,11 +688,15 @@ EOF
 			# copy is whole.
 			_tp_sz=$(mdo stat -f %z "$ap/files/bin/ttyprobe" 2>/dev/null ||
 				echo unknown)
-			note "ttyprobe on the host: $_tp_sz bytes"
+			echo "NOTE: ttyprobe on the host: $_tp_sz bytes"
 			NO_COLOR=1 TERM=dumb timeout 60 "$bin" run \
 				--command=/app/bin/ttyprobe org.test.Echo flood 1 \
 				>"$tmp/tp.out" 2>&1 && _tp=0 || _tp=$?
-			note "ttyprobe by absolute path: rc=$_tp $(head -c 160 "$tmp/tp.out" | tr '\n' ' ')"
+			echo "NOTE: ttyprobe by absolute path: rc=$_tp $(tr '\n' ' ' < "$tmp/tp.out" | cut -c1-600)"
+			NO_COLOR=1 TERM=dumb timeout 60 "$bin" run \
+				org.test.Echo after-copy >"$tmp/ac.out" 2>&1 &&
+				_ac=0 || _ac=$?
+			echo "NOTE: hello after the copy: rc=$_ac $(tr '\n' ' ' < "$tmp/ac.out" | cut -c1-600)"
 			NO_COLOR=1 TERM=xterm python3 "$ROOT/tests/ptyrun.py" --rows 31 --cols 97 \
 				--wait PROBE-WAITING --send 'hello\n' --timeout 90 "$tmp/pty.out" \
 				"$bin" run --command=ttyprobe org.test.Echo && rc=0 || rc=$?
