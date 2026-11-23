@@ -1369,8 +1369,9 @@ static int install_req_prepare(const char* request, flatpkg_dep_kind_t kind,
 					}
 					char* argv[] = {
 						"ostree", "pull",
-						"--disable-fsync", out->remote,
-						refstr, repo_arg, refhdr, NULL};
+						"--disable-fsync", repo_arg,
+						refhdr, "--", out->remote,
+						refstr, NULL};
 					tool_res_t res;
 					if (ostree_run(argv, &res) != 0 ||
 					    res.rc != 0) {

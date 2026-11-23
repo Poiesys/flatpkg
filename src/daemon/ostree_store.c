@@ -92,8 +92,8 @@ static void uninstall_deploy(const char* deploy_type, const char* ref_kind,
 			}
 			for (size_t i = 0; i < npre; i++) {
 				char* argv[] = {"ostree",   "refs",
-						"--delete", prefixes[i],
-						repo_arg,   NULL};
+						"--delete", repo_arg, "--",
+						prefixes[i], NULL};
 				tool_res_t res;
 				if (ostree_run(argv, &res) == 0 && res.rc != 0)
 					log_tool_stderr(&res);
@@ -132,7 +132,7 @@ static void sweep_deploy_refs(void) {
 		}
 		fpkg_infof("dropping stale deploy ref %s", ref);
 		char* del_argv[] = {"ostree", "refs",	"--delete",
-				    ref,      repo_arg, NULL};
+				    repo_arg, "--",	ref, NULL};
 		tool_res_t dres;
 		if (ostree_run(del_argv, &dres) == 0 && dres.rc != 0)
 			log_tool_stderr(&dres);

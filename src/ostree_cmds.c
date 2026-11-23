@@ -405,7 +405,8 @@ static int remote_config_unset(const char* name, const char* key) {
 
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 	snprintf(cfgkey, sizeof(cfgkey), "remote \"%s\".%s", name, key);
-	char* argv[] = {"ostree", "config", repo_arg, "unset", cfgkey, NULL};
+	char* argv[] = {"ostree", "config", repo_arg, "unset", "--", cfgkey,
+			NULL};
 	tool_res_t res;
 	int rc = -1;
 
@@ -1244,11 +1245,12 @@ static int pull_remote_ref(tool_ctx_t* tc, const char* origin,
 	snprintf(hdr, sizeof(hdr), "--http-header=Flatpak-Ref=%s", ref);
 	char* argv[] = {"ostree",
 			"pull",
-			(char*)origin,
-			(char*)ref,
 			"--http-header=User-Agent=flatpak/1.17.6",
 			hdr,
 			repo_arg,
+			"--",
+			(char*)origin,
+			(char*)ref,
 			NULL};
 
 	tool_res_init(&res);
@@ -1274,7 +1276,7 @@ static int pull_child_repo(tool_ctx_t* tc, const char* child_repo,
 	snprintf(url, sizeof(url), "--url=file://%s", child_repo);
 	char* argv[] = {
 		"ostree", "pull",   "--untrusted", "--bareuseronly-files",
-		url,	  repo_arg, (char*)origin, (char*)commit,
+		url,	  repo_arg, "--",	      (char*)origin, (char*)commit,
 		NULL};
 
 	tool_res_init(&res);
@@ -1380,7 +1382,8 @@ static int child_repo_import(tool_ctx_t* tc, const char* child_repo,
 	    pull_remote_ref(tc, origin, ref) == 0) {
 		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc->repo);
 		snprintf(newref, sizeof(newref), "%s:%s", origin, ref);
-		char* rv[] = {"ostree", "rev-parse", repo_arg, newref, NULL};
+		char* rv[] = {"ostree", "rev-parse", repo_arg, "--", newref,
+			      NULL};
 
 		tool_res_init(&res);
 		if (ostree_run(rv, &res) != 0 || res.rc != 0 || !res.out ||
@@ -1404,7 +1407,8 @@ static int child_repo_import(tool_ctx_t* tc, const char* child_repo,
 
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", child_repo);
 	{
-		char* rv[] = {"ostree", "rev-parse", repo_arg, cref, NULL};
+		char* rv[] = {"ostree", "rev-parse", repo_arg, "--", cref,
+			      NULL};
 
 		tool_res_init(&res);
 		if (ostree_run(rv, &res) != 0 || res.rc != 0 || !res.out ||
@@ -1428,9 +1432,10 @@ static int child_repo_import(tool_ctx_t* tc, const char* child_repo,
 	argv[n++] = "pull-local";
 	argv[n++] = "--untrusted";
 	argv[n++] = "--bareuseronly-files";
+	argv[n++] = repo_arg;
+	argv[n++] = "--";
 	argv[n++] = (char*)child_repo;
 	argv[n++] = commit;
-	argv[n++] = repo_arg;
 	argv[n] = NULL;
 
 	normalize_symlink_modes(child_repo);
@@ -1463,6 +1468,7 @@ have_commit:
 	argv[n++] = create;
 	argv[n++] = "--force";
 	argv[n++] = repo_arg;
+	argv[n++] = "--";
 	argv[n++] = commit;
 	argv[n] = NULL;
 
@@ -1524,9 +1530,10 @@ int ostree_appstream_deploy(const char* remote, const char* arch) {
 		argv[n++] = "pull";
 		argv[n++] = "--depth=0";
 		argv[n++] = hdr;
+		argv[n++] = repo_arg;
+		argv[n++] = "--";
 		argv[n++] = (char*)remote;
 		argv[n++] = branch;
-		argv[n++] = repo_arg;
 		argv[n] = NULL;
 
 		tool_res_init(&res);
@@ -1572,9 +1579,10 @@ int ostree_appstream_extract(const char* remote, const char* arch) {
 			 b == 0 ? "2" : "", arch);
 		argv[0] = "ostree";
 		argv[1] = "rev-parse";
-		argv[2] = refname;
-		argv[3] = repo_arg;
-		argv[4] = NULL;
+		argv[2] = repo_arg;
+		argv[3] = "--";
+		argv[4] = refname;
+		argv[5] = NULL;
 
 		tool_res_init(&res);
 		if (ostree_run(argv, &res) == 0 && res.rc == 0 && res.out &&
@@ -1621,9 +1629,10 @@ int ostree_appstream_extract(const char* remote, const char* arch) {
 				"--user-mode",
 				"--bareuseronly-dirs",
 				"--fsync=none",
+				repo_arg,
+				"--",
 				commit,
 				tmpdir,
-				repo_arg,
 				NULL};
 		tool_res_t res;
 		tool_res_init(&res);
@@ -1710,7 +1719,8 @@ static int ostree_config_get(const char* key, char* out, size_t outlen) {
 	tool_ctx_init(&tc);
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 
-	char* argv[] = {"ostree", "config", repo_arg, "get", (char*)key, NULL};
+	char* argv[] = {"ostree", "config", repo_arg, "get", "--", (char*)key,
+			NULL};
 	tool_res_init(&res);
 	if (ostree_run(argv, &res) != 0 || res.rc != 0) {
 		tool_res_free(&res);
@@ -1926,7 +1936,7 @@ int ostree_install_bundle(const char* bundle_path, const char* remote,
 		tool_ctx_init(&tc);
 		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 		char* argv[] = {"ostree", "static-delta",     "apply-offline",
-				repo_arg, (char*)bundle_path, NULL};
+				repo_arg, "--", (char*)bundle_path, NULL};
 		tool_res_init(&res);
 		if (ostree_run(argv, &res) != 0 || res.rc != 0) {
 			log_tool_stderr(&res);
@@ -1974,7 +1984,7 @@ int ostree_install_bundle(const char* bundle_path, const char* remote,
 		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 		// No --force: a bundle may only create its own ref, never
 		// redirect an existing one to different content.
-		char* argv[] = {"ostree", "refs", create, repo_arg, commit,
+		char* argv[] = {"ostree", "refs", create, repo_arg, "--", commit,
 				NULL};
 		tool_res_init(&res);
 		if (ostree_run(argv, &res) != 0 || res.rc != 0) {
@@ -2015,7 +2025,7 @@ static void write_deploy_ref(tool_ctx_t* tc, const char* ref,
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc->repo);
 	snprintf(create, sizeof(create), "--create=deploy/%s", ref);
 	char* argv[] = {"ostree", "refs",	 repo_arg,
-			create,	  (char*)commit, NULL};
+			create,	  "--", (char*)commit, NULL};
 	tool_res_init(&res);
 	if (ostree_run(argv, &res) != 0 || res.rc != 0) {
 		log_tool_stderr(&res);

@@ -603,10 +603,11 @@ static void* pull_thread(void* arg) {
 	char* argv[] = {"ostree",
 			"pull",
 			"--disable-fsync",
-			(char*)job->remote,
-			(char*)job->refstr,
 			repo_arg,
 			refhdr,
+			"--",
+			(char*)job->remote,
+			(char*)job->refstr,
 			NULL};
 
 	tool_res_t res;
@@ -779,9 +780,9 @@ int tool_pull(const char* remote, const char* refstr) {
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 	char refhdr[600];
 	flatpak_ref_header(refstr, refhdr, sizeof(refhdr));
-	char* argv[] = {"ostree",      "pull",	      "--disable-fsync",
-			(char*)remote, (char*)refstr, repo_arg,
-			refhdr,	       NULL};
+	char* argv[] = {"ostree",      "pull",	   "--disable-fsync",
+			repo_arg,      refhdr,	   "--",
+			(char*)remote, (char*)refstr, NULL};
 	char label[640];
 	snprintf(label, sizeof(label), "Pulling %s", pull_name(refstr));
 	return tool_ok_bar(argv, "ostree pull", label);
@@ -799,8 +800,8 @@ int tool_pull_metadata(const char* remote, const char* refstr) {
 	flatpak_ref_header(refstr, refhdr, sizeof(refhdr));
 	char* argv[] = {
 		"ostree",	   "pull",	  "--commit-metadata-only",
-		"--disable-fsync", (char*)remote, (char*)refstr,
-		repo_arg,	   refhdr,	  NULL};
+		"--disable-fsync", repo_arg,	  refhdr,
+		"--",		   (char*)remote, (char*)refstr, NULL};
 	char label[640];
 	snprintf(label, sizeof(label), "fetching %s metadata", refstr);
 	return tool_ok_bar_q(argv, "ostree pull", label, true);
@@ -811,7 +812,8 @@ static int tool_rev_parse_impl(const tool_ctx_t* tc, const char* refstr,
 			       char* commit_out, size_t len, bool quiet) {
 	char repo_arg[PATH_MAX + 32];
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc->repo);
-	char* argv[] = {"ostree", "rev-parse", repo_arg, (char*)refstr, NULL};
+	char* argv[] = {"ostree", "rev-parse", repo_arg, "--", (char*)refstr,
+			NULL};
 	tool_res_t res;
 	if (ostree_run(argv, &res) != 0) {
 		tool_res_free(&res);
@@ -900,7 +902,7 @@ int deploy_checkout(const tool_ctx_t* tc, const char* type,
 		 commit);
 	char* argv[] = {"ostree",      "checkout",     "-U",
 			"-M",	       "--fsync=none", repo_arg,
-			(char*)commit, jail_deploy,    NULL};
+			"--",	       (char*)commit,  jail_deploy, NULL};
 	// -U = OSTREE_REPO_CHECKOUT_MODE_USER: skip the chown/xattr init
 	// that, as root, would make the deploy unreadable by the app.
 	// A bar, not a spinner: the worker's spinner never reaches the caller,
@@ -1034,11 +1036,13 @@ char** fetch_remote_refs(const char* remote, size_t* n_out,
 		argv[nargv++] = "refs";
 		argv[nargv++] = "--repo";
 		argv[nargv++] = local_repo;
+		argv[nargv++] = "--";
 	} else {
 		argv[nargv++] = "ostree";
 		argv[nargv++] = "remote";
 		argv[nargv++] = "refs";
 		argv[nargv++] = repo_arg;
+		argv[nargv++] = "--";
 		argv[nargv++] = (char*)remote;
 	}
 	argv[nargv] = NULL;
@@ -1087,7 +1091,7 @@ char* commit_xa_metadata(const char* commit) {
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 	char* argv[] = {
 		"ostree", "show",	 "--print-metadata-key=xa.metadata",
-		repo_arg, (char*)commit, NULL};
+		repo_arg, "--",		 (char*)commit, NULL};
 	tool_res_t res;
 	char* body = NULL;
 	if (ostree_run(argv, &res) == 0 && res.out_too_big) {
@@ -1117,7 +1121,7 @@ char* cat_commit_metadata(const char* commit) {
 	char repo_arg[PATH_MAX + 32];
 	snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", tc.repo);
 	char* argv[] = {"ostree",      "cat",	   repo_arg,
-			(char*)commit, "metadata", NULL};
+			"--",	       (char*)commit, "metadata", NULL};
 	tool_res_t res;
 	if (ostree_run(argv, &res) != 0) {
 		tool_res_free(&res);
@@ -1199,8 +1203,9 @@ int ostree_fetch_ref_metadata(const char* remote, const char* request,
 				 tc.repo);
 			char refhdr[600];
 			flatpak_ref_header(refstr, refhdr, sizeof(refhdr));
-			char* argv[] = {"ostree", "pull", "--disable-fsync", rem,
-					refstr, repo_arg, refhdr, NULL};
+			char* argv[] = {"ostree", "pull", "--disable-fsync",
+					repo_arg, refhdr, "--", rem, refstr,
+					NULL};
 			tool_res_t res;
 			if (ostree_run(argv, &res) != 0 || res.rc != 0) {
 				tool_res_free(&res);
@@ -1441,8 +1446,8 @@ char* summary_ref_commit(const char* remote, const char* refstr) {
 		tool_res_t res;
 
 		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", local);
-		char* argv[] = {"ostree", "rev-parse", repo_arg, (char*)refstr,
-				NULL};
+		char* argv[] = {"ostree", "rev-parse", repo_arg, "--",
+				(char*)refstr, NULL};
 		if (ostree_run(argv, &res) != 0 || res.rc != 0 || !res.out ||
 		    !*res.out) {
 			tool_res_free(&res);
@@ -1510,8 +1515,8 @@ char* summary_ref_metadata_text(const char* remote,
 		tool_res_t res;
 
 		snprintf(repo_arg, sizeof(repo_arg), "--repo=%s", local);
-		char* argv[] = {"ostree", "cat", repo_arg, commit, "metadata",
-				NULL};
+		char* argv[] = {"ostree", "cat", repo_arg, "--", commit,
+				"metadata", NULL};
 		int rc = ostree_run(argv, &res);
 
 		// argv kept the pointer: free it only after the child ran.
