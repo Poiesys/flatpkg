@@ -693,6 +693,7 @@ static void format_msg(char* buf, size_t buflen, const char* fmt, va_list ap) {
 		return;
 	}
 	(void)vsnprintf(buf, buflen, get_string(fmt), ap);
+	fpkg_text_clean(buf);
 }
 
 void fp_anchor_after_log_line(size_t rows);
@@ -888,6 +889,9 @@ void fp_outl(const char* fmt, ...) {
 	va_end(ap);
 	if (n < 0) return;
 	if ((size_t)n >= sizeof(line) - 1) n = (int)(sizeof(line) - 2);
+	line[n] = '\0';
+	fpkg_text_clean(line);
+	n = (int)strlen(line);
 	line[n++] = '\n';
 	fp_out_raw(line, (size_t)n);
 }

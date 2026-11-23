@@ -1,11 +1,11 @@
 #!/bin/sh
-# table-cells.sh - a table cell is data, and data cannot carry an escape.
+# table-cells.sh - printed text is data, and data cannot carry an escape.
 #
-# Cell text comes from app metadata, appstream and remote files.  The renderer
-# passes escapes through on purpose (fplog's own colours are escapes), so a
-# control byte in a cell used to reach the terminal as one: OSC 0 renames the
-# window, OSC 52 writes the clipboard.  The cells are cleaned at the one place
-# they are handed to the renderer, and this drives that renderer.
+# Cell and log text comes from app metadata, appstream and remote files.  The
+# renderer writes escape sequences on purpose for its own colours, so a control
+# byte in the text used to reach the terminal as one: OSC 0 renames the window,
+# OSC 52 writes the clipboard.  One rule (fpkg_text_clean) cleans the text, and
+# this drives the two paths that print it: a table and a log line.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
@@ -21,7 +21,14 @@ done
 T=$(mktemp -d /tmp/.fpkg-cells.XXXXXX)
 trap 'rm -rf "$T"' EXIT
 
-cat > "$T/probe.c" <<'PROBE'
+OBJS="$ROOT/build/obj/cli/tb_tui.o $ROOT/build/obj/cli/tb_core.o"
+OBJS="$OBJS $ROOT/build/obj/cli/tb_progress.o"
+OBJS="$OBJS $ROOT/build/obj/cli/translations.o"
+LIBS="-L$ROOT/build -lflatpkg_shared -Wl,-rpath,$ROOT/build"
+LIBS="$LIBS -L/usr/local/lib -ljail -ldbus-1 -lutil -lz"
+LIBS="$LIBS -lgio-2.0 -lgobject-2.0 -lglib-2.0 -lintl"
+
+cat > "$T/table.c" <<'PROBE'
 #include <stdio.h>
 
 #include "fplog.h"
@@ -38,62 +45,94 @@ int main(void) {
 }
 PROBE
 
-if ! cc -O1 -I"$ROOT/include" -include sys/param.h -o "$T/probe" \
-	"$T/probe.c" "$ROOT/build/obj/cli/tb_tui.o" \
-	"$ROOT/build/obj/cli/tb_core.o" \
-	"$ROOT/build/obj/cli/tb_progress.o" \
-	"$ROOT/build/obj/cli/translations.o" -L"$ROOT/build" \
-	-lflatpkg_shared -Wl,-rpath,"$ROOT/build" -L/usr/local/lib -ljail \
-	-ldbus-1 -lutil -lz -lgio-2.0 -lgobject-2.0 -lglib-2.0 -lintl \
-	>"$T/cc.log" 2>&1; then
+cat > "$T/log.c" <<'PROBE'
+#include "flatpkg.h"
+#include "fpkglog.h"
+
+int main(void) {
+	// A version out of app metadata on its way to the terminal.
+	fpkg_errorf("version=%s", "\033]0;pwned\007\033[31m1.0");
+	fp_outl("%s", "\033]0;pwned\007");
+	return 0;
+}
+PROBE
+
+build() {
+	src=$1
+	out=$2
+	extra=$3
+	# shellcheck disable=SC2086
+	cc -O1 -I"$ROOT/include" -include sys/param.h -o "$out" "$src" \
+		$OBJS $extra $LIBS >"$T/cc.log" 2>&1
+}
+
+# A control byte that reached the terminal is the finding; one that was
+# replaced is not.
+clean_check() {
+	out=$1
+	what=$2
+	if grep -qF "$(printf '\033]')" "$out"; then
+		echo "FAIL: a $what carried an OSC escape to the terminal"
+		return 1
+	fi
+	if grep -qF "$(printf '\007')" "$out"; then
+		echo "FAIL: a $what carried an unterminated OSC to the terminal"
+		return 1
+	fi
+	if grep -qF "$(printf '\033[31m')" "$out"; then
+		echo "FAIL: a $what carried an injected colour to the terminal"
+		return 1
+	fi
+	return 0
+}
+
+if ! build "$T/table.c" "$T/table" ""; then
 	echo "FAIL: the table probe does not build:"
 	head -6 "$T/cc.log" | sed 's/^/       /'
 	exit 1
 fi
-
-"$T/probe" >"$T/out" 2>/dev/null
-# The header line carries fplog's own colour, so an escape is not itself the
-# finding: the OSC and the injected SGR are.  A BEL cannot appear at all.
-if tr -d '\n' <"$T/out" | grep -qF "$(printf '\033]')"; then
-	echo "FAIL: a table cell reached the terminal as an OSC escape"
+if ! build "$T/log.c" "$T/log" ""; then
+	echo "FAIL: the log probe does not build:"
+	head -6 "$T/cc.log" | sed 's/^/       /'
 	exit 1
 fi
-if tr -d '\n' <"$T/out" | grep -qF "$(printf '\007')"; then
-	echo "FAIL: an unterminated OSC survived into the table"
-	exit 1
-fi
-# The cell itself still says what it said, with the control bytes replaced.
-grep -q 'pwned' "$T/out" ||
-	{ echo "FAIL: the cell text was dropped instead of cleaned"; exit 1; }
-grep -qF "$(printf '\033[31m')" "$T/out" &&
-	{ echo "FAIL: an injected colour reached the terminal"; exit 1; }
 
-# The probe must be able to fail: with the cell cleaner compiled out, the OSC
-# comes back.  The renderer is compiled here rather than copied, so this is the
-# same source the binary is built from.
-sed 's/buf\[k++\] = (c < 0x20 || c == 0x7f) ? .?. : (char)c;/buf[k++] = (char)c;/' \
-	"$ROOT/src/cli/tb_tui.c" >"$T/tb_tui_plant.c"
-cmp -s "$ROOT/src/cli/tb_tui.c" "$T/tb_tui_plant.c" &&
-	{ echo "FAIL: the cell-cleaner plant was not applied"; exit 1; }
+rc=0
+"$T/table" >"$T/table.out" 2>/dev/null
+clean_check "$T/table.out" "table cell" || rc=1
+grep -q 'pwned' "$T/table.out" ||
+	{ echo "FAIL: the cell text was dropped, not cleaned"; rc=1; }
+
+"$T/log" >"$T/log.out" 2>&1
+clean_check "$T/log.out" "log line" || rc=1
+grep -q 'version=' "$T/log.out" ||
+	{ echo "FAIL: the log line lost its text"; rc=1; }
+
+# The probes must be able to fail: with the cleaner compiled out, the OSC comes
+# back.  The cleaner is compiled here from the source the binary is built from.
+sed 's/\*p = .?.;/;/' "$ROOT/src/shared/util.c" >"$T/util_plant.c"
+cmp -s "$ROOT/src/shared/util.c" "$T/util_plant.c" &&
+	{ echo "FAIL: the text-cleaner plant was not applied"; exit 1; }
 if cc -O1 -w -I"$ROOT/include" -include sys/param.h -c \
-	-o "$T/tb_tui_plant.o" "$T/tb_tui_plant.c" >"$T/plant.log" 2>&1; then
-	cc -O1 -I"$ROOT/include" -include sys/param.h -o "$T/probe-plant" \
-		"$T/probe.c" "$T/tb_tui_plant.o" \
-		"$ROOT/build/obj/cli/tb_core.o" \
-		"$ROOT/build/obj/cli/tb_progress.o" \
-		"$ROOT/build/obj/cli/translations.o" -L"$ROOT/build" \
-		-lflatpkg_shared -Wl,-rpath,"$ROOT/build" -L/usr/local/lib \
-		-ljail -ldbus-1 -lutil -lz -lgio-2.0 -lgobject-2.0 -lglib-2.0 \
-		-lintl >"$T/plant-cc.log" 2>&1 &&
-		"$T/probe-plant" >"$T/out-plant" 2>/dev/null &&
-		tr -d '\n' <"$T/out-plant" |
-			grep -qF "$(printf '\033]')" ||
-		{ echo "FAIL: the probe passes without the cell cleaner"; exit 1; }
+	-o "$T/util_plant.o" "$T/util_plant.c" >"$T/plant.log" 2>&1; then
+	build "$T/table.c" "$T/table-plant" "$T/util_plant.o" ||
+		{ echo "FAIL: the planted table probe does not build"; exit 1; }
+	build "$T/log.c" "$T/log-plant" "$T/util_plant.o" ||
+		{ echo "FAIL: the planted log probe does not build"; exit 1; }
+	"$T/table-plant" >"$T/table-plant.out" 2>/dev/null
+	grep -qF "$(printf '\033]')" "$T/table-plant.out" ||
+		{ echo "FAIL: the table probe passes without the cleaner"; exit 1; }
+	"$T/log-plant" >"$T/log-plant.out" 2>&1
+	grep -qF "$(printf '\033]')" "$T/log-plant.out" ||
+		{ echo "FAIL: the log probe passes without the cleaner"; exit 1; }
 else
-	echo "FAIL: the planted renderer does not build:"
+	echo "FAIL: the planted cleaner does not build:"
 	head -4 "$T/plant.log" | sed 's/^/       /'
 	exit 1
 fi
 
-echo "PASS: a table cell carrying an OSC or a colour is cleaned before it"
-echo "      reaches the terminal, and fplog's own colour still does."
+[ "$rc" -eq 0 ] &&
+	echo "PASS: a table cell or a log line carrying an OSC or a colour is" \
+	     "cleaned before it reaches the terminal, and fplog's own colour" \
+	     "still does."
+exit "$rc"

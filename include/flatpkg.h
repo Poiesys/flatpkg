@@ -156,6 +156,9 @@ typedef struct {
 // larger or holds a NUL.  `what` names the kind in the message.
 int fpkg_read_text_file(const char* path, size_t max, const char* what,
 			char** out);
+// Replace control bytes in text that is about to be printed, so data cannot
+// carry a terminal escape.  Newline and tab are kept.
+void fpkg_text_clean(char* s);
 // The growable string list: push copies the item, free releases the list.
 void strlist_push(strlist_t* l, const char* item);
 void strlist_free(strlist_t* l);

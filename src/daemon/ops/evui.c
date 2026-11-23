@@ -50,6 +50,9 @@ void fp_vlogf(const char* scope, const char* desc, int level, const char* fmt,
 	char line[FP_MAX_MSG + 128];
 
 	vsnprintf(msg, sizeof(msg), fmt, ap);
+	// The worker's stderr and the frames it sends are printed by something
+	// else; neither may carry a terminal escape from data.
+	fpkg_text_clean(msg);
 	if (g_have_sink && g_sink.log != NULL) {
 		g_sink.log(g_sink.ctx, level, scope ? scope : "daemon", msg);
 		return;

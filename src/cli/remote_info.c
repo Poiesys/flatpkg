@@ -36,7 +36,11 @@ int cmd_remote_info_print(const char* ref, const char* commit,
 		fp_outl("%s", commit);
 	}
 	if (show_metadata) {
-		if (body != NULL) fp_out_raw(body, strlen(body));
+		// A remote's commit metadata, printed to a terminal.
+		if (body != NULL) {
+			fpkg_text_clean((char*)body);
+			fp_out_raw(body, strlen(body));
+		}
 	}
 	if (show_ref || show_commit || show_metadata) return 0;
 

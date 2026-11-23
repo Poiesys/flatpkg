@@ -1,3 +1,4 @@
+#include "flatpkg.h"
 #include "evui.h"
 #include "fplog.h"
 #include "fplog_int.h"
@@ -570,20 +571,18 @@ static void tui_write_cell(const char* s, size_t width, bool color) {
 }
 
 // Table cells are data: an app's version, a remote's title, a description out
-// of appstream.  A control byte in one would reach the terminal as an escape -
-// OSC sets the window title or writes the clipboard - and the renderer passes
-// escapes through on purpose for fplog's own colours, which are written
-// through tui_sgr(), never as cell text.
+// of appstream.  The renderer passes escapes through on purpose for fplog's own
+// colours, which are written through tui_sgr(), never as cell text - so the
+// text itself is cleaned first, with the one rule util.c holds.
 static const char* tui_cell_clean(const char* cell, char* buf, size_t n) {
-	size_t k = 0;
+	size_t k;
 
 	if (cell == NULL) cell = "";
-	for (const char* p = cell; *p != '\0' && k + 1 < n; p++) {
-		unsigned char c = (unsigned char)*p;
-
-		buf[k++] = (c < 0x20 || c == 0x7f) ? '?' : (char)c;
-	}
+	k = strlen(cell);
+	if (k >= n) k = n - 1;
+	memcpy(buf, cell, k);
 	buf[k] = '\0';
+	fpkg_text_clean(buf);
 	return buf;
 }
 

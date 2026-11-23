@@ -134,6 +134,20 @@ int fpkg_read_text_file(const char* path, size_t max, const char* what,
 	return 0;
 }
 
+// Text that will be printed: the renderers write escape sequences on purpose
+// for their own colours, so a control byte in the text itself would reach the
+// terminal as an escape (OSC 0 renames the window, OSC 52 writes the
+// clipboard).  Newline and tab stay - a message of several lines is a message.
+void fpkg_text_clean(char* s) {
+	if (s == NULL) return;
+	for (char* p = s; *p != '\0'; p++) {
+		unsigned char c = (unsigned char)*p;
+
+		if ((c < 0x20 && c != '\n' && c != '\t') || c == 0x7f)
+			*p = '?';
+	}
+}
+
 // The growable string list behind strlist_t: metadata.c and permissions.c
 // each carried a copy, and the type is public in flatpkg.h.
 void strlist_push(strlist_t* l, const char* item) {
