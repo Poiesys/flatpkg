@@ -1446,10 +1446,23 @@ static const char* const* opt_values(const cli_opt_t* o) {
 
 static void choices_join(const cli_opt_t* o, char* out, size_t n) {
 	size_t len = 0;
+
+	if (n == 0) return;
 	out[0] = '\0';
-	for (const char* const* c = opt_values(o); c != NULL && *c; c++)
-		len += (size_t)snprintf(out + len, len < n ? n - len : 0,
-					"%s%s", len ? ", " : "", *c);
+	for (const char* const* c = opt_values(o); c != NULL && *c; c++) {
+		int w;
+
+		if (len >= n) break;
+		w = snprintf(out + len, n - len, "%s%s", len ? ", " : "", *c);
+		if (w < 0) break;
+		if ((size_t)w >= n - len) {
+			// Full: the rest is dropped rather than pointing past
+			// the buffer with a zero size.
+			len = n;
+			break;
+		}
+		len += (size_t)w;
+	}
 }
 
 static bool value_ok(const cli_opt_t* o, const char* v, char* bad,
