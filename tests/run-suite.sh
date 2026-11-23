@@ -66,7 +66,20 @@ else
 	echo "      will SKIP and the summary will count them as skips."
 fi
 
-guards=$*
+# Guards that read pixels back from a real compositor.  A box whose
+# compositor cannot render (a headless VM whose wlmaker core-dumps) cannot
+# make these pass; --skip-graphical / FLATPKG_SKIP_GRAPHICAL=1 omits them
+# as "not run", which is not a skip and so does not trip a strict-skip run.
+GRAPHICAL='apps-visual.sh headless-visual.sh sandbox-launch.sh visual-capture.sh'
+
+skip_graphical=${FLATPKG_SKIP_GRAPHICAL:-0}
+guards=
+for _a in "$@"; do
+	case "$_a" in
+	--skip-graphical) skip_graphical=1 ;;
+	*) guards="$guards $_a" ;;
+	esac
+done
 if [ -z "$guards" ]; then
 	guards=$(ls "$ROOT"/tests/*.sh | sed 's|.*/||' | sort | tr '\n' ' ')
 fi
@@ -78,6 +91,7 @@ skipped=
 failed=
 not_guards=
 sourced=
+graphical=
 
 manifest > "$LOGS/before" || { echo "cannot read the tree; giving up"; exit 2; }
 
@@ -102,6 +116,17 @@ for g in $guards; do
 			echo "-    $g (not a guard)"
 		fi
 		continue
+	fi
+	if [ "$skip_graphical" = 1 ]; then
+		_skipg=no
+		for _gg in $GRAPHICAL; do
+			[ "$g" = "$_gg" ] && _skipg=yes
+		done
+		if [ "$_skipg" = yes ]; then
+			graphical="$graphical $g"
+			echo "-    $g (needs a graphical session; not run)"
+			continue
+		fi
 	fi
 	if [ ! -f "$ROOT/tests/$g" ]; then
 		echo "FAIL  $g: no such file in tests/"
@@ -156,6 +181,9 @@ if [ -n "$skipped" ]; then
 fi
 if [ -n "$failed" ]; then
 	echo "  failed: $failed"
+fi
+if [ -n "$graphical" ]; then
+	echo "  not run (graphical session unavailable):$graphical"
 fi
 if [ -n "$sourced" ]; then
 	echo "  sourced, never run:$sourced"

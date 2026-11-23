@@ -674,8 +674,14 @@ int main(int argc, char **argv) {
 EOF
 		if zig cc --target=x86_64-linux-musl -static \
 			-o "$tmp/ttyprobe" "$tmp/ttyprobe.c" > "$tmp/zig.log" 2>&1; then
-			mdo cp "$tmp/ttyprobe" "$ap/files/bin/ttyprobe"
+			mdo cp "$tmp/ttyprobe" "$ap/files/bin/ttyprobe" ||
+				note "could not install ttyprobe into the app"
 			mdo chmod 755 "$ap/files/bin/ttyprobe"
+			# A copy that did not land reads as the app failing to exec it;
+			# say which side is broken.
+			if ! mdo test -s "$ap/files/bin/ttyprobe"; then
+				note "ttyprobe is missing or empty in the deploy"
+			fi
 			NO_COLOR=1 TERM=xterm python3 "$ROOT/tests/ptyrun.py" --rows 31 --cols 97 \
 				--wait PROBE-WAITING --send 'hello\n' --timeout 90 "$tmp/pty.out" \
 				"$bin" run --command=ttyprobe org.test.Echo && rc=0 || rc=$?

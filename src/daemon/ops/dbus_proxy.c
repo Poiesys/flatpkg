@@ -71,8 +71,12 @@ char* dbus_host_session_address(const sandbox_plan_t* plan) {
 
 		// A caller-named bus counts only when it is the caller's own
 		// socket; anything else falls back to the paths below.
-		if (path != NULL && path_is_user_socket(path, plan->uid))
-			return xasprintf("unix:path=%s", path);
+		if (path != NULL && path_is_user_socket(path, plan->uid)) {
+			char* out = xasprintf("unix:path=%s", path);
+
+			free(path);
+			return out;
+		}
 		free(path);
 	}
 
