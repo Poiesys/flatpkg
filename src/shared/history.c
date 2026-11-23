@@ -18,6 +18,18 @@ static void history_path(char* buf, size_t len) {
 	snprintf(buf, len, "%s/history", store_root());
 }
 
+// A field of the history record: the separators cannot appear inside one.
+static void history_field(char* out, size_t n, const char* in,
+			  const char* dash) {
+	size_t k = 0;
+
+	if (out == NULL || n == 0) return;
+	if (in == NULL || *in == '\0') in = dash;
+	for (const char* p = in; *p != '\0' && k + 1 < n; p++)
+		out[k++] = (*p == '\t' || *p == '\n' || *p == '\r') ? '_' : *p;
+	out[k] = '\0';
+}
+
 int history_append(const char* action, const char* ref, const char* old_version,
 		   const char* new_version) {
 	char path[PATH_MAX];
@@ -30,10 +42,16 @@ int history_append(const char* action, const char* ref, const char* old_version,
 		fpkg_warnf("cannot write history: %s", strerror(errno));
 		return -1;
 	}
+	// The version strings come out of app metadata, and this is a
+	// tab-separated record: a tab or newline in one would forge a field or a
+	// whole line in `flatpkg history`.
 	time_t now = time(NULL);
+	char oldv[256], newv[256];
+
+	history_field(oldv, sizeof(oldv), old_version, "-");
+	history_field(newv, sizeof(newv), new_version, "-");
 	fprintf(f, "%ld\t%s\t%s\t%s\t%s\n", (long)now, action ? action : "?",
-		ref ? ref : "?", old_version ? old_version : "-",
-		new_version ? new_version : "-");
+		ref ? ref : "?", oldv, newv);
 	fclose(f);
 	return 0;
 }
