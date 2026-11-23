@@ -68,8 +68,8 @@ jobs:
 
           # The daemon is root's and the suite is the caller's, the same split
           # as a developer's box.  mdo is how the guards reach root.  The
-          # group is the daemon's socket mode and the dbus policy's owner, so
-          # it exists before either starts.
+          # group must exist before dbus reads its policy and before the
+          # daemon makes the run directory root:flatpkg 0770.
           sudo pw groupadd flatpkg || true
           sudo pw groupmod flatpkg -m "$(id -un)"
           sudo sysctl security.bsd.unprivileged_setcred=1 || true
@@ -78,17 +78,16 @@ jobs:
           sudo sysrc flatpkgd_enable=YES
           sudo service flatpkgd start
 
-          # -f on FreeBSD 15 means "close the fds", not "foreground", and the
-          # rc.d script's -o sends everything the daemon says to this file.
-          # Startup installs the base devfs rulesets with ~70 /sbin/devfs
-          # execs, which on this VM has taken 30 s on its own; wait for the
-          # socket properly and show the log instead of a bare failure.
+          # The socket is 0660 root:flatpkg inside a 0770 directory, and this
+          # ssh session's supplementary groups predate the groupadd, so an
+          # unprivileged test -S answers EACCES and reads as "absent".  Ask
+          # as root, and show the daemon's log on a real timeout.
           socket_wait=0
-          while [ ! -S /var/run/flatpkg/control.sock ] && [ "$socket_wait" -lt 600 ]; do
+          while ! sudo test -S /var/run/flatpkg/control.sock && [ "$socket_wait" -lt 240 ]; do
             sleep 0.25
             socket_wait=$((socket_wait + 1))
           done
-          if [ ! -S /var/run/flatpkg/control.sock ]; then
+          if ! sudo test -S /var/run/flatpkg/control.sock; then
             echo "flatpkgd did not create /var/run/flatpkg/control.sock" >&2
             sudo service flatpkgd status || true
             sudo tail -n 100 /var/log/flatpkgd.log 2>&1 || true
@@ -104,6 +103,9 @@ jobs:
           sudo flatpkg install -y com.github.tchx84.Flatseal
 
           # No skip survives: FLATPKG_STRICT_SKIPS turns every SKIP into a
-          # failure that names the guard and its reason.
-          FLATPKG_STRICT_SKIPS=1 FLATPKG_SANDBOX_LAUNCH=1 \
+          # failure that names the guard and its reason.  Re-enter as the same
+          # user so sudo rebuilds the group set from /etc/group; otherwise
+          # this session cannot connect to the daemon's 0660 socket either.
+          sudo -u "$(id -un)" env HOME="$HOME" PATH="$PATH" \
+              FLATPKG_STRICT_SKIPS=1 FLATPKG_SANDBOX_LAUNCH=1 \
               sh tests/run-suite.sh
