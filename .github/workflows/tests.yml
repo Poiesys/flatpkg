@@ -120,7 +120,7 @@ jobs:
           sudo rm -rf /tmp/libostree-ci.* || true
           sudo mount -t tmpfs -o size=1536m tmpfs /tmp || true
           sudo mkdir -p /tmp/.X11-unix
-          df -h / 2>&1 || true
+          df -h / /tmp 2>&1 || true
 
           # A session bus and a display: the portal is D-Bus activated, the
           # visual guards capture what the app drew, and a headless VM has
@@ -157,12 +157,21 @@ jobs:
           # that beside this job's visual stack and Flatseal's runtime.
           guards=$(ls tests/*.sh | sed 's|.*/||' |
               grep -vE '^(user-store-mount|x11-fallback)\.sh$' | tr '\n' ' ')
-          sudo -u "$(id -un)" env HOME="$HOME" PATH="$PATH" \
+          rc=0
+          sudo -u "$(id -un)" env HOME="$HOME" PATH="$PATH" KEEP_LOGS=1 \
               XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
               WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
               DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
+              GSK_RENDERER=cairo GDK_BACKEND=wayland LIBGL_ALWAYS_SOFTWARE=1 \
               FLATPKG_STRICT_SKIPS=1 FLATPKG_SANDBOX_LAUNCH=1 \
-              sh tests/run-suite.sh $guards
+              sh tests/run-suite.sh $guards || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            for r in /tmp/.fpkg-suite.*/residue; do
+              [ -f "$r" ] && { echo "== residue: $r"; cat "$r"; }
+            done
+            df -h / /tmp 2>&1 || true
+          fi
+          exit "$rc"
 
   # Two guards need Bazaar, which declares xdg-data/flatpak (user-store-mount)
   # and fallback-x11+wayland (x11-fallback).  Bazaar's runtime is GNOME 51 and
