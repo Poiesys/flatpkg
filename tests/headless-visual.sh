@@ -88,8 +88,12 @@ for app in $apps; do
 	WLM_PID=$!
 	sleep 6
 	# wlmaker starts a foot terminal at 0,0; it would cover an app window
-	# of the same position and make the capture show the terminal.
-	pkill -x foot 2>/dev/null || true
+	# of the same position and make the capture show the terminal.  Kill
+	# only this compositor's children: a blanket `pkill -x foot` also kills
+	# the session compositor's terminal.
+	for fp in $(pgrep -P "$WLM_PID" -x foot 2>/dev/null); do
+		kill "$fp" 2>/dev/null || true
+	done
 
 	# Xwayland inside the private compositor gives X11-only clients
 	# (Bitwig, Electron's X11 path) a server that the capture can see,
