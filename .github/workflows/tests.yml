@@ -66,9 +66,20 @@ jobs:
           # The daemon is root's and the suite is the caller's, the same split
           # as a developer's box.  mdo is how the guards reach root.
           sudo sysctl security.bsd.unprivileged_setcred=1 || true
+          sudo sysrc dbus_enable=YES
           sudo service dbus start
           sudo sysrc flatpkgd_enable=YES
           sudo service flatpkgd start
+
+          socket_wait=0
+          while [ ! -S /var/run/flatpkg/control.sock ] && [ "$socket_wait" -lt 30 ]; do
+            sleep 0.1
+            socket_wait=$((socket_wait + 1))
+          done
+          if [ ! -S /var/run/flatpkg/control.sock ]; then
+            echo "flatpkgd did not create /var/run/flatpkg/control.sock" >&2
+            exit 1
+          fi
           sudo pw groupadd flatpkg || true
           sudo pw groupmod flatpkg -m "$(id -un)"
 
