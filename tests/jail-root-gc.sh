@@ -42,6 +42,7 @@ cleanup() {
 	# shellcheck disable=SC2153
 	mdo devfs rule -s "$stale" delset >/dev/null 2>&1 || true
 	mdo sh -c "umount '$leaked/mnt' 2>/dev/null;
+	    umount '$abandoned/dev' 2>/dev/null;
 	    rm -rf '$leaked' '$alive' '$held' '$abandoned' '$other'" >/dev/null 2>&1 || true
 	rm -rf "$T"
 }
@@ -87,12 +88,16 @@ cc -O1 -o "$T/hold" "$T/hold.c" || exit 1
 mdo "$T/hold" "$held/.lock" "$T/holder.pid" &
 sleep 1
 
-# A worker killed between alloc_devfs_ruleset() and teardown() leaves its
-# number allocated.  Nothing of ours is live at startup, so the daemon sweeps
+# What a worker killed between alloc_devfs_ruleset() and teardown() leaves
+# behind: a jail root, a devfs mounted in it with the allocated ruleset, and
+# the ruleset itself.  Nothing of ours is live at startup, so the daemon sweeps
 # its own range - and only its range: the base sets are permanent.
 stale=$((1100 + 7))
 mdo devfs rule -s "$stale" add include 1000 >/dev/null 2>&1 ||
 	note "could not create a stale ruleset to sweep (continuing)"
+mdo sh -c "mkdir -p '$abandoned/dev' &&
+    mount -t devfs -o ruleset=$stale devfs '$abandoned/dev'" >/dev/null 2>&1 ||
+	note "could not mount the stale ruleset in the abandoned root"
 mdo devfs rule showsets 2>/dev/null | grep -qx "$stale" ||
 	note "the stale ruleset was not created, so the sweep is untested"
 
