@@ -167,6 +167,20 @@ fi
 # No "is every script classified?" check here: the run set is every tests/*.sh
 # minus the two declared lists, so an undeclared script is simply run.
 
+# A skip is legitimate locally and a lie in CI: there the box is the one the
+# project chose, so a guard that cannot run is a guard that should run.  The
+# workflow sets this, and a green run means every guard actually ran.
+if [ "${FLATPKG_STRICT_SKIPS:-0}" = 1 ] && [ "$n_skip" -ne 0 ]; then
+	echo
+	echo "FAIL $n_skip guard(s) skipped and FLATPKG_STRICT_SKIPS=1:"
+	for g in $skipped; do
+		echo "        $g: $(grep -m1 '^SKIP:' "$LOGS/$g.log" 2>/dev/null | cut -c6-)"
+	done
+	echo "     Make the guard able to run here (packages, a display, root), or"
+	echo "     state why it skips in its own output."
+	exit 1
+fi
+
 if [ "$n_fail" -ne 0 ]; then
 	exit 1
 fi

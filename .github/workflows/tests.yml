@@ -3,6 +3,14 @@ name: Tests
 # The tree is FreeBSD-only, so the suite runs on a FreeBSD machine or not at
 # all.  This job is the only place the guards are exercised outside a
 # developer's box; a red run is the point of it.
+#
+# Skips are failures here.  A guard that cannot run on the box the project
+# chose is a guard that should run: the session-bus proxy and a headless
+# compositor are installed for the portal and visual guards,
+# FLATPKG_SANDBOX_LAUNCH turns on the real launches, and the sanctioned app is
+# installed because the visual guards take their inventory from what is
+# present.  If a new guard skips, install what it needs or say in its own
+# output why it cannot run - do not let the number read "green".
 on:
   push:
     branches: [ "master" ]
@@ -13,7 +21,8 @@ on:
 jobs:
   suite:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Real launches, a runtime pull and the visual passes are minutes each.
+    timeout-minutes: 150
     steps:
     - uses: actions/checkout@v7
 
@@ -35,7 +44,9 @@ jobs:
         # Linux-ELF shims and the Linuxulator runs them, so the shim guards
         # get a Linux base and module; python3 is what one of them generates
         # its syscall table with, and git is what the distinfo guard lists the
-        # tree with.
+        # tree with.  xdg-dbus-proxy, wlmaker with its headless backend,
+        # Xwayland, grim and foot are what the portal and visual guards need
+        # (wlmaker starts foot on its own).
         run: |
           sudo pkg update -f
           # linux_base's PRE-INSTALL refuses without 64-bit Linux support, so
@@ -46,7 +57,29 @@ jobs:
           sudo pkg install -y zig pkgconf dbus glib git gmake \
             autoconf automake libtool bison gettext-runtime \
             libarchive libgpg-error gpgme libsoup3 e2fsprogs-core \
-            python3 linux_base-rl9
+            python3 linux_base-rl9 \
+            xdg-dbus-proxy wayland wlmaker xwayland grim foot
           sh scripts/ci-libostree.sh
           make
-          sh tests/run-suite.sh
+          sudo make install
+
+          # The daemon is root's and the suite is the caller's, the same split
+          # as a developer's box.  mdo is how the guards reach root.
+          sudo sysctl security.bsd.unprivileged_setcred=1 || true
+          sudo service dbus start
+          sudo sysrc flatpkgd_enable=YES
+          sudo service flatpkgd start
+          sudo pw groupadd flatpkg || true
+          sudo pw groupmod flatpkg -m "$(id -un)"
+
+          # The sanctioned app for sandbox-launch.sh and spawn-signal-scope.sh.
+          # It draws on the off-screen compositor too, so it is also what the
+          # visual guard's inventory holds.
+          sudo flatpkg remote-add --if-not-exists flathub \
+              https://dl.flathub.org/repo/ || true
+          sudo flatpkg install -y com.github.tchx84.Flatseal
+
+          # No skip survives: FLATPKG_STRICT_SKIPS turns every SKIP into a
+          # failure that names the guard and its reason.
+          FLATPKG_STRICT_SKIPS=1 FLATPKG_SANDBOX_LAUNCH=1 \
+              sh tests/run-suite.sh
