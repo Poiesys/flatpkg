@@ -85,6 +85,55 @@ char* xasprintf(const char* fmt, ...) {
 	return r;
 }
 
+// Read a small text file the caller named, into a NUL-terminated buffer.  The
+// caller's own privileges apply, so this is never a way for root to open a
+// path it was handed; the cap and the NUL check are because the file is a
+// document the daemon will parse.
+int fpkg_read_text_file(const char* path, size_t max, const char* what,
+			char** out) {
+	FILE* f;
+	char* buf;
+	size_t n;
+	bool err;
+
+	assert(path != NULL);
+	assert(out != NULL);
+	assert(what != NULL);
+	*out = NULL;
+	f = fopen(path, "r");
+	if (f == NULL) {
+		fpkg_errorf("cannot read %s: %s", path, strerror(errno));
+		return -1;
+	}
+	buf = malloc(max + 1);
+	if (buf == NULL) {
+		fclose(f);
+		fpkg_errorf("out of memory");
+		return -1;
+	}
+	n = fread(buf, 1, max + 1, f);
+	err = ferror(f) != 0;
+	fclose(f);
+	if (err) {
+		fpkg_errorf("cannot read %s", path);
+		free(buf);
+		return -1;
+	}
+	if (n > max) {
+		fpkg_errorf("%s is too large for a %s", path, what);
+		free(buf);
+		return -1;
+	}
+	buf[n] = '\0';
+	if (strlen(buf) != n) {
+		fpkg_errorf("%s is not a text %s", path, what);
+		free(buf);
+		return -1;
+	}
+	*out = buf;
+	return 0;
+}
+
 // The growable string list behind strlist_t: metadata.c and permissions.c
 // each carried a copy, and the type is public in flatpkg.h.
 void strlist_push(strlist_t* l, const char* item) {

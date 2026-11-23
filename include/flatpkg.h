@@ -152,6 +152,10 @@ typedef struct {
 	size_t count;
 } strlist_t;
 
+// Read a text file the caller named, up to `max` bytes, refusing one that is
+// larger or holds a NUL.  `what` names the kind in the message.
+int fpkg_read_text_file(const char* path, size_t max, const char* what,
+			char** out);
 // The growable string list: push copies the item, free releases the list.
 void strlist_push(strlist_t* l, const char* item);
 void strlist_free(strlist_t* l);

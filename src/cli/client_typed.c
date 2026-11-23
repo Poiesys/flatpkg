@@ -168,40 +168,10 @@ static bool caller_repo_path(const char* s) {
 // few KB of text, so the cap is the point as much as the grammar.
 static char* read_repo_file(const char* word) {
 	const char* path = strncmp(word, "file://", 7) == 0 ? word + 7 : word;
-	FILE* f = fopen(path, "r");
-	char* buf;
-	size_t n;
-	bool err;
+	char* buf = NULL;
 
-	if (f == NULL) {
-		fpkg_errorf("cannot read %s: %s", path, strerror(errno));
+	if (fpkg_read_text_file(path, REPO_FILE_MAX, "repo file", &buf) != 0)
 		return NULL;
-	}
-	buf = malloc(REPO_FILE_MAX + 1);
-	if (buf == NULL) {
-		fclose(f);
-		fpkg_errorf("out of memory");
-		return NULL;
-	}
-	n = fread(buf, 1, REPO_FILE_MAX + 1, f);
-	err = ferror(f) != 0;
-	fclose(f);
-	if (err) {
-		fpkg_errorf("cannot read %s", path);
-		free(buf);
-		return NULL;
-	}
-	if (n > REPO_FILE_MAX) {
-		fpkg_errorf("%s is too large for a repo file", path);
-		free(buf);
-		return NULL;
-	}
-	buf[n] = '\0';
-	if (strlen(buf) != n) {
-		fpkg_errorf("%s is not a text repo file", path);
-		free(buf);
-		return NULL;
-	}
 	return buf;
 }
 
@@ -211,36 +181,10 @@ static char* read_repo_file(const char* word) {
 // accepted, and only up to the size the protocol carries.
 #define KEY_FILE_MAX (64 * 1024)
 static char* read_key_file(const char* path) {
-	FILE* f = fopen(path, "r");
-	if (f == NULL) {
-		fpkg_errorf("cannot read %s: %s", path, strerror(errno));
+	char* buf = NULL;
+
+	if (fpkg_read_text_file(path, KEY_FILE_MAX, "key file", &buf) != 0)
 		return NULL;
-	}
-	char* buf = malloc(KEY_FILE_MAX + 1);
-	if (buf == NULL) {
-		fclose(f);
-		fpkg_errorf("out of memory");
-		return NULL;
-	}
-	size_t n = fread(buf, 1, KEY_FILE_MAX + 1, f);
-	bool err = ferror(f) != 0;
-	fclose(f);
-	if (err) {
-		fpkg_errorf("cannot read %s", path);
-		free(buf);
-		return NULL;
-	}
-	if (n > KEY_FILE_MAX) {
-		fpkg_errorf("%s is too large for a key file", path);
-		free(buf);
-		return NULL;
-	}
-	buf[n] = '\0';
-	if (strlen(buf) != n) {
-		fpkg_errorf("%s is not a text key file", path);
-		free(buf);
-		return NULL;
-	}
 	if (strncmp(buf, "-----BEGIN PGP", 14) != 0) {
 		fpkg_errorf("%s is not an armored PGP key", path);
 		free(buf);
