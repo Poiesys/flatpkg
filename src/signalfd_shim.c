@@ -95,6 +95,11 @@ int signalfd4(int fd, const sigset_t* mask, int flags) {
 		pthread_sigmask(SIG_BLOCK, mask, NULL);
 		pthread_t th;
 		if (pthread_create(&th, NULL, shim_sigloop, NULL) != 0) {
+			// No reader: leaving the descriptors recorded would hand a
+			// later call a signalfd that can never deliver anything.
+			(void)close(shim_rfd);
+			shim_rfd = -1;
+			shim_wfd = -1;
 			pthread_mutex_unlock(&shim_lock);
 			return -1;
 		}
