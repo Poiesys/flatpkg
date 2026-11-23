@@ -48,6 +48,11 @@ static bool xauth_read_file(const char* path, unsigned char** out,
 			cap *= 2;
 		}
 		ssize_t n = read(fd, buf + len, cap - len);
+
+		// A signal during the read used to fail the whole staging, and an
+		// app without its Xauthority is the "Authorization required"
+		// failure x11-fallback.sh exists to catch.
+		if (n < 0 && errno == EINTR) continue;
 		if (n < 0) {
 			free(buf);
 			close(fd);
@@ -56,6 +61,7 @@ static bool xauth_read_file(const char* path, unsigned char** out,
 		if (n == 0) break;
 		len += (size_t)n;
 		if (len > 1024 * 1024) {
+			fpkg_warnf("xauth: %s is larger than 1 MiB", path);
 			free(buf);
 			close(fd);
 			return false;
