@@ -20,16 +20,29 @@ void tool_ctx_init(tool_ctx_t* tc) {
 	snprintf(tc->keys, sizeof(tc->keys), "/ostree/keys");
 	snprintf(tc->store, sizeof(tc->store), "/ostree");
 }
-size_t buf_append(char** buf, size_t* cap, const char* data,
-			 size_t len) {
+// Same buffer, but the length is carried and the total is bounded: a tool's
+// output is remote-controlled when it prints commit metadata.
+size_t buf_append_capped(char** buf, size_t* cap, size_t* len, bool* stopped,
+			 const char* data, size_t n) {
 	assert(buf != NULL);
 	assert(cap != NULL);
+	assert(len != NULL);
+	assert(stopped != NULL);
 	assert(data != NULL);
-	size_t cur = *buf ? strlen(*buf) : 0;
-	if (cur + len + 1 > *cap) {
+
+	if (*stopped) return *len;
+	if (!*buf) *len = 0;
+	if (*len + n + 1 > FPKG_TOOL_CAPTURE_MAX) {
+		// Keep what arrived, stop copying, and let the consumer refuse.
+		*stopped = true;
+		return *len;
+	}
+	if (*len + n + 1 > *cap) {
 		size_t nc = *cap ? *cap : 8192;
-		while (cur + len + 1 > nc) nc *= 2;
+
+		while (*len + n + 1 > nc) nc *= 2;
 		char* nb = realloc(*buf, nc);
+
 		if (!nb) {
 			fpkg_errorf("out of memory");
 			exit(1);
@@ -37,10 +50,12 @@ size_t buf_append(char** buf, size_t* cap, const char* data,
 		*buf = nb;
 		*cap = nc;
 	}
-	memcpy(*buf + cur, data, len);
-	(*buf)[cur + len] = '\0';
-	return cur + len;
+	memcpy(*buf + *len, data, n);
+	*len += n;
+	(*buf)[*len] = '\0';
+	return *len;
 }
+
 static void line_feed(line_buf_t* lb, const char* data, size_t n,
 		      tool_line_cb cb, void* arg) {
 	assert(lb != NULL);
@@ -77,7 +92,8 @@ static int capture_child(pid_t pid, int outfd, int errfd, tool_res_t* res,
 		{errfd, POLLIN, 0},
 	};
 	bool done[2] = {false, false};
-	size_t ocap = 0, ecap = 0;
+	size_t ocap = 0, ecap = 0, olen = 0, elen = 0;
+	bool ostopped = false, estopped = false;
 	int reaped = 0;
 	int grace = 0;
 	line_buf_t lbo = {.len = 0}, lbe = {.len = 0};
@@ -99,12 +115,15 @@ static int capture_child(pid_t pid, int outfd, int errfd, tool_res_t* res,
 								  (size_t)r, cb,
 								  arg);
 						else
-							buf_append(&res->out,
-								   &ocap, chunk,
-								   (size_t)r);
+							buf_append_capped(
+								&res->out, &ocap,
+								&olen, &ostopped,
+								chunk, (size_t)r);
 					} else {
-						buf_append(&res->err, &ecap,
-							   chunk, (size_t)r);
+						buf_append_capped(
+							&res->err, &ecap,
+							&elen, &estopped,
+							chunk, (size_t)r);
 						if (cb)
 							line_feed(&lbe, chunk,
 								  (size_t)r, cb,
@@ -190,6 +209,7 @@ static int capture_child(pid_t pid, int outfd, int errfd, tool_res_t* res,
 		lbe.buf[lbe.len] = '\0';
 		cb(lbe.buf, arg);
 	}
+	if (ostopped) res->out_too_big = true;
 	if (!res->out) res->out = xstrdup("");
 	if (!res->err) res->err = xstrdup("");
 	return 0;
@@ -1070,7 +1090,15 @@ char* commit_xa_metadata(const char* commit) {
 		repo_arg, (char*)commit, NULL};
 	tool_res_t res;
 	char* body = NULL;
-	if (ostree_run(argv, &res) == 0 && res.rc == 0 && res.out && *res.out) {
+	if (ostree_run(argv, &res) == 0 && res.out_too_big) {
+		// Half a metadata document reads as a complete one with the keys
+		// after the cut missing.
+		fpkg_errorf("commit metadata is larger than %u bytes",
+			    (unsigned)FPKG_TOOL_CAPTURE_MAX);
+		tool_res_free(&res);
+		return NULL;
+	}
+	if (res.rc == 0 && res.out && *res.out) {
 		GVariant* v = g_variant_parse(G_VARIANT_TYPE_STRING, res.out,
 					      NULL, NULL, NULL);
 		if (v) {
@@ -1103,6 +1131,12 @@ char* cat_commit_metadata(const char* commit) {
 	}
 	if (!res.out || !*res.out) {
 		fpkg_errorf("ostree cat %s metadata: no output", commit);
+		tool_res_free(&res);
+		return NULL;
+	}
+	if (res.out_too_big) {
+		fpkg_errorf("%s's metadata is larger than %u bytes", commit,
+			    (unsigned)FPKG_TOOL_CAPTURE_MAX);
 		tool_res_free(&res);
 		return NULL;
 	}

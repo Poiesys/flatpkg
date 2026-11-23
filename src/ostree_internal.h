@@ -45,6 +45,10 @@ typedef struct {
 	char* out;
 	char* err;
 	int rc;
+	// The tool wrote more than FPKG_TOOL_CAPTURE_MAX to stdout: the text is
+	// a prefix, and a consumer that parses it has to refuse rather than act
+	// on half a document.
+	bool out_too_big;
 } tool_res_t;
 
 typedef void (*tool_line_cb)(const char* line, void* arg);
@@ -131,8 +135,15 @@ char* first_remote(void);
 void tool_res_init(tool_res_t* res);
 void tool_res_free(tool_res_t* res);
 void tool_ctx_init(tool_ctx_t* tc);
-size_t buf_append(char** buf, size_t* cap, const char* data,
-			 size_t len);
+// A tool's stdout is not trusted to be small: a remote's commit metadata can
+// be any size, and the capture is held in memory before anything parses it.
+#define FPKG_TOOL_CAPTURE_MAX (16u << 20)
+// Append, refusing to grow past FPKG_TOOL_CAPTURE_MAX; returns the new length,
+// and *stopped is set when the data did not fit.  The length is carried so a
+// large capture does not strlen() the whole buffer for every chunk.
+size_t buf_append_capped(char** buf, size_t* cap, size_t* len, bool* stopped,
+			 const char* data, size_t n);
+
 int ostree_run_cb(char* const argv[], tool_res_t* res, tool_line_cb cb,
 			 void* arg, void (*tick)(void* tick_arg),
 			 void* tick_arg);

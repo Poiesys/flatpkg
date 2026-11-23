@@ -1300,7 +1300,8 @@ static void child_repo_fix_parent(const char* child_repo) {
 	const char* p = src;
 	bool changed = false;
 	char* out = NULL;
-	size_t ocap = 0;
+	size_t ocap = 0, olen = 0;
+	bool ostopped = false;
 	while (*p != '\0') {
 		const char* eol = strchr(p, '\n');
 		size_t len = eol ? (size_t)(eol - p) : strlen(p);
@@ -1327,12 +1328,18 @@ static void child_repo_fix_parent(const char* child_repo) {
 				pfx = 16;
 			if (pfx > 0 && access(val, F_OK) != 0) {
 				const char* rest = val + pfx;
-				buf_append(&out, &ocap, line,
-					   (size_t)(val - line));
-				buf_append(&out, &ocap, store_root(),
-					   strlen(store_root()));
-				buf_append(&out, &ocap, rest, strlen(rest));
-				if (eol) buf_append(&out, &ocap, "\n", 1);
+				buf_append_capped(&out, &ocap, &olen,
+						  &ostopped, line,
+						  (size_t)(val - line));
+				buf_append_capped(&out, &ocap, &olen,
+						  &ostopped, store_root(),
+						  strlen(store_root()));
+				buf_append_capped(&out, &ocap, &olen,
+						  &ostopped, rest,
+						  strlen(rest));
+				if (eol)
+					buf_append_capped(&out, &ocap, &olen,
+							  &ostopped, "\n", 1);
 				changed = true;
 				free(line);
 				if (!eol) break;
@@ -1340,14 +1347,22 @@ static void child_repo_fix_parent(const char* child_repo) {
 				continue;
 			}
 		}
-		buf_append(&out, &ocap, line, len);
-		if (eol) buf_append(&out, &ocap, "\n", 1);
+		buf_append_capped(&out, &ocap, &olen, &ostopped, line, len);
+		if (eol)
+			buf_append_capped(&out, &ocap, &olen, &ostopped, "\n",
+					  1);
 		free(line);
 		if (!eol) break;
 		p = eol + 1;
 	}
 
-	if (changed && out != NULL) (void)write_file(path, out, 0644);
+	// A prefix of a config would drop the settings after the cut.
+	if (ostopped) {
+		fpkg_warnf("%s is larger than %u bytes; left as it was", path,
+			   (unsigned)FPKG_TOOL_CAPTURE_MAX);
+	} else if (changed && out != NULL) {
+		(void)write_file(path, out, 0644);
+	}
 	free(src);
 	free(out);
 }
