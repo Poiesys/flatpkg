@@ -80,9 +80,11 @@ jobs:
 
           # -f on FreeBSD 15 means "close the fds", not "foreground", and the
           # rc.d script's -o sends everything the daemon says to this file.
-          # Wait for the socket, then show that log instead of a bare failure.
+          # Startup installs the base devfs rulesets with ~70 /sbin/devfs
+          # execs, which on this VM has taken 30 s on its own; wait for the
+          # socket properly and show the log instead of a bare failure.
           socket_wait=0
-          while [ ! -S /var/run/flatpkg/control.sock ] && [ "$socket_wait" -lt 120 ]; do
+          while [ ! -S /var/run/flatpkg/control.sock ] && [ "$socket_wait" -lt 600 ]; do
             sleep 0.25
             socket_wait=$((socket_wait + 1))
           done
