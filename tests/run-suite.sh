@@ -70,7 +70,7 @@ fi
 # compositor cannot render (a headless VM whose wlmaker core-dumps) cannot
 # make these pass; --skip-graphical / FLATPKG_SKIP_GRAPHICAL=1 omits them
 # as "not run", which is not a skip and so does not trip a strict-skip run.
-GRAPHICAL='apps-visual.sh headless-visual.sh sandbox-launch.sh visual-capture.sh'
+GRAPHICAL='apps-visual.sh headless-visual.sh sandbox-launch.sh spawn-signal-scope.sh visual-capture.sh'
 
 skip_graphical=${FLATPKG_SKIP_GRAPHICAL:-0}
 guards=
