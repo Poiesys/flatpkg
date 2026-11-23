@@ -1782,11 +1782,10 @@ static void push(strlist_t* l, const char* item) {
 }
 
 static void set_str(char** dst, const char* v) {
+	char* copy = xstrdup(v);
+
 	free(*dst);
-	if ((*dst = strdup(v)) == NULL) {
-		fpkg_errorf("out of memory");
-		exit(1);
-	}
+	*dst = copy;
 }
 
 
