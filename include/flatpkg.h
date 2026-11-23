@@ -457,6 +457,10 @@ int sandbox_exec(sandbox_t* sb, const fp_metadata_t* meta,
 void sandbox_teardown(sandbox_t* sb);
 // Remove jail roots whose jail no longer exists (a worker that died early).
 void sandbox_gc_leaks(void);
+// Drop devfs rulesets in flatpkg's own range that no mount refers to (a worker
+// killed between allocating one and teardown).  Startup only: nothing of ours
+// is live then.
+void sandbox_gc_rulesets(void);
 void install_devfs_base_rulesets(void);
 bool sb_is_mounted(sandbox_t* sb, const char* path);
 int m_nullfs(sandbox_t* sb, const char* from, const char* to, bool ro);

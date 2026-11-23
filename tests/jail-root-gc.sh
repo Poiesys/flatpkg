@@ -39,6 +39,8 @@ cleanup() {
 	fi
 	mdo jail -r "$jname" >/dev/null 2>&1 || true
 	mdo jail -r "$aname" >/dev/null 2>&1 || true
+	# shellcheck disable=SC2153
+	mdo devfs rule -s "$stale" delset >/dev/null 2>&1 || true
 	mdo sh -c "umount '$leaked/mnt' 2>/dev/null;
 	    rm -rf '$leaked' '$alive' '$held' '$abandoned' '$other'" >/dev/null 2>&1 || true
 	rm -rf "$T"
@@ -85,6 +87,15 @@ cc -O1 -o "$T/hold" "$T/hold.c" || exit 1
 mdo "$T/hold" "$held/.lock" "$T/holder.pid" &
 sleep 1
 
+# A worker killed between alloc_devfs_ruleset() and teardown() leaves its
+# number allocated.  Nothing of ours is live at startup, so the daemon sweeps
+# its own range - and only its range: the base sets are permanent.
+stale=$((1100 + 7))
+mdo devfs rule -s "$stale" add include 1000 >/dev/null 2>&1 ||
+	note "could not create a stale ruleset to sweep (continuing)"
+mdo devfs rule showsets 2>/dev/null | grep -qx "$stale" ||
+	note "the stale ruleset was not created, so the sweep is untested"
+
 scratchd_start
 
 # The sweep runs before the daemon serves, and scratchd_start only waits for
@@ -108,6 +119,20 @@ grep -q 'removed leaked sandbox' "$SD_LOG" 2>/dev/null ||
 	note "the sweep left the root of an abandoned jail of ours"
 mdo jls -h name 2>/dev/null | grep -qx "$aname" &&
 	note "the sweep left the abandoned jail itself"
+
+# The ruleset sweep: ours goes, the base sets stay.
+n=0
+while mdo devfs rule showsets 2>/dev/null | grep -qx "$stale" &&
+	[ "$n" -lt 50 ]; do
+	sleep 0.1
+	n=$((n + 1))
+done
+mdo devfs rule showsets 2>/dev/null | grep -qx "$stale" &&
+	note "the startup sweep left a stale devfs ruleset in flatpkg's range"
+for base in 1000 1001 1002 1003; do
+	mdo devfs rule showsets 2>/dev/null | grep -qx "$base" ||
+		note "the sweep removed base ruleset $base"
+done
 mdo jail -r "$jname" >/dev/null 2>&1 || true
 
 if [ "$fail" -eq 0 ]; then

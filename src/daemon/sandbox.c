@@ -162,7 +162,11 @@ static int alloc_devfs_ruleset(const sandbox_plan_t* plan) {
 	}
 
 	if (ruleset < 0) {
-		fpkg_errorf("no free devfs ruleset number (min %d max %d)",
+		fpkg_errorf("no free devfs ruleset number (min %d max %d): a "
+			    "mounted devfs still refers to every one of them, "
+			    "so a jail or sandbox is holding them.  Check `jls` "
+			    "and `mount -p | grep devfs`, then restart flatpkgd, "
+			    "which sweeps the stale ones",
 			    FLATPKG_RULESET_MIN, FLATPKG_RULESET_MAX);
 		if (devnull >= 0) close(devnull);
 		return -1;
@@ -698,6 +702,53 @@ static bool root_is_held(const char* dir) {
 	e = errno;
 	close(fd);
 	return e == EWOULDBLOCK;
+}
+
+// A worker killed between alloc_devfs_ruleset() and teardown() leaves its
+// number allocated.  Nothing in our range is live at startup, so any set there
+// is stale: the allocator recycles one on the next launch, and this clears the
+// host before that.  The base sets (FLATPKG_RULESET_BASE..+3) are permanent and
+// deliberately out of the range.
+void sandbox_gc_rulesets(void) {
+	int p[2];
+	char buf[4096];
+	size_t n = 0;
+	char* argv[] = {(char*)"/sbin/devfs", (char*)"rule",
+			(char*)"showsets", NULL};
+
+	if (pipe(p) != 0) return;
+	if (run_program(argv, -1, p[1], -1) != 0) {
+		close(p[0]);
+		close(p[1]);
+		return;
+	}
+	close(p[1]);
+	for (;;) {
+		ssize_t r = read(p[0], buf + n, sizeof(buf) - 1 - n);
+
+		if (r < 0 && errno == EINTR) continue;
+		if (r <= 0) break;
+		n += (size_t)r;
+		if (n >= sizeof(buf) - 1) break;
+	}
+	close(p[0]);
+	buf[n] = '\0';
+
+	int devnull = open("/dev/null", O_WRONLY);
+	for (char* save = NULL, *tok = strtok_r(buf, " \t\n", &save); tok != NULL;
+	     tok = strtok_r(NULL, " \t\n", &save)) {
+		char* end = NULL;
+		long v = strtol(tok, &end, 10);
+
+		if (end == tok || *end != '\0') continue;
+		if (v < FLATPKG_RULESET_MIN || v > FLATPKG_RULESET_MAX) continue;
+		// A set a live mount still uses refuses the delete; the next
+		// sweep gets it.
+		if (devfs_rule((int)v, -1, devnull, "delset", NULL, NULL, NULL) ==
+		    0)
+			fpkg_infof("dropped stale devfs ruleset %ld", v);
+	}
+	if (devnull >= 0) close(devnull);
 }
 
 // Jail roots left behind by a worker that died between mkdtemp and teardown.
