@@ -84,7 +84,37 @@ char** instance_load_run_environ(const char* inst_dir) {
 
 	if (inst_dir == NULL || inst_dir[0] == '\0') return NULL;
 	snprintf(path, sizeof(path), "%s-private/run-environ", inst_dir);
-	if (!g_file_get_contents(path, &buf, &len, NULL)) return NULL;
+	// The instance directory is the caller's own, so `-private` can be moved
+	// aside and replaced with a link: this runs as root in `enter`, and
+	// g_file_get_contents() followed such a link.  No link is ever legitimate
+	// here, and the file is our own snapshot of an environment.
+	len = 0;
+	{
+		struct stat st;
+		int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+
+		if (fd < 0) return NULL;
+		if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+		    st.st_size > (off_t)(1 << 20)) {
+			close(fd);
+			return NULL;
+		}
+		buf = malloc((size_t)st.st_size + 1);
+		if (buf == NULL) {
+			close(fd);
+			return NULL;
+		}
+		while (len < (gsize)st.st_size) {
+			ssize_t n = read(fd, buf + len,
+					 (size_t)st.st_size - len);
+
+			if (n < 0 && errno == EINTR) continue;
+			if (n <= 0) break;
+			len += (gsize)n;
+		}
+		close(fd);
+		buf[len] = '\0';
+	}
 
 	out = g_ptr_array_new_with_free_func(g_free);
 	for (gsize off = 0; off < len;) {

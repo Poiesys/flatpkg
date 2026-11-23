@@ -202,6 +202,21 @@ if [ -n "$pc" ] && [ -n "$ja" ] && [ "$pc" -ge "$ja" ]; then
 	note "cmd_enter() attaches before checking it owns the jail (line $pc vs $ja)"
 fi
 
+# The reader runs as root in `enter`, and the instance directory is the
+# caller's own: `-private` can be moved aside and replaced with a link, so the
+# snapshot is opened without following one.
+lbody=$(carved "$(srcf instance.c)" '^char\*\* instance_load_run_environ' || true)
+[ -n "$lbody" ] || note "could not carve instance_load_run_environ() out of src/shared/instance.c"
+case "$lbody" in
+*O_NOFOLLOW*) : ;;
+*) note "instance_load_run_environ() opens the snapshot by name, so a link" ;;
+esac
+case "$lbody" in
+*g_file_get_contents*)
+	note "instance_load_run_environ() still uses g_file_get_contents(),"
+	note "  which follows a symlink" ;;
+*) : ;;
+esac
 # ---- the run-environ snapshot: WHERE it is taken, and who reads it ----
 # `run-environ` is the app's environment, so it is written after the app's
 # [Environment]/--env= are applied and before the chroot, and enter reads it.
