@@ -1,0 +1,76 @@
+flatpkg 0.1.0, compiled for FreeBSD/x86_64.
+
+Usage: flatpkg [<GLOBAL OPTIONS>...] COMMAND [<OPTIONS>...] [<ARGUMENTS>...]
+
+Application installation and removal:
+  install        Add an application or runtime to WORLD and commit changes
+  import         Register a deploy root's applications in the store and add them
+                 to WORLD
+  uninstall      Remove an application or runtime from WORLD and commit changes
+
+System maintenance:
+  update         Update installed applications from their remotes
+  upgrade        Re-solve WORLD and commit available upgrades
+  repair         Verify deploys and report the broken ones
+  exports        Rebuild exported desktop menu entries
+  rollback       Roll a ref back to a deploy kept from an earlier update and
+                 commit changes
+
+Querying application information:
+  list           List installed applications
+  info           Show metadata and effective permissions
+  search         Search configured remotes for applications
+  list-commits   List deploys kept for rollback
+  history        Show the install, upgrade and uninstall log
+
+Running applications:
+  run            Build a jail from the runtime and run the application
+  ps             List running instances
+  enter          Run a command in a running instance
+  kill           Terminate a running instance
+  override       Change an application's permissions persistently
+
+Remote management:
+  remote-add     Add a remote repository
+  remote-info    Show information about an application or runtime in a remote
+  remote-modify  Modify a remote repository
+  remote-list    List configured remotes
+  remote-delete  Remove a remote repository
+
+Miscellaneous:
+  help           Show help for flatpkg or a command
+
+Global options:
+  -h, --help                 Show help; after a command, that command's page
+  --version                  Print the version and exit
+  --gl-drivers               Print the list of active GL drivers and exit
+  -v, --verbose              Show debug output
+  --ostree-verbose           Also pass through the output of the ostree tool
+  --profile                  Print how long each phase took, then a table ranked
+                             by the time spent in each phase alone
+  --no-color                 Disable colour output
+  -n, --simulate, --dry-run  Print the changeset without applying it
+  -l FILE                    Append logfmt records to FILE
+  -u, --installation=NAME    Select the installation: 'default' (system) or
+                             'user'
+  --user                     Use the user installation in ~/.local/share/flatpak
+  --system                   Use the system installation
+
+Environment:
+  FLATPKG_VERBOSE            Same as --verbose
+  FLATPKG_LOGFMT             Same as -l
+  FLATPKG_PROFILE            Same as --profile
+  FLATPKG_SIMULATE           Same as --simulate
+  NO_COLOR                   Same as --no-color
+  FORCE_COLOR                Colour even when the output is not a terminal
+  FLATPKG_STORE              Use this directory as the store instead of
+                             /var/db/flatpkg
+  FLATPKG_DEBUG_KEEP         Keep the jail and its mounts after a run
+  FLATPKG_NO_SHIMS           Do not preload the Linux compatibility shims into
+                             the application
+  FLATPKG_RLIMIT_SHIM_TRACE  Trace what the rlimit shim synthesises;
+                             FLATPKG_DEVT_SHIM_TRACE, FLATPKG_MEMFD_SHIM_TRACE
+                             and FLATPKG_SYNCOBJ_SHIM_TRACE do the same for
+                             their shims
+
+For more information: man 8 flatpkg

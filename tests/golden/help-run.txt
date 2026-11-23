@@ -1,0 +1,52 @@
+Usage: flatpkg run [<OPTIONS>...] APP-ID [ARGUMENTS...]
+
+Description:
+  Build a jail from the runtime and run the application
+
+  Build a jail around the application and run it; with the daemon up it runs as
+  the calling user. Options go before APP-ID. Everything after APP-ID, or after
+  --, is the application's own.
+
+  These are the per-launch grants. The rest of an application's permissions are
+  persistent: set them once with `flatpkg override`.
+
+Options:
+  --socket=NAME       Expose a socket: x11, wayland, fallback-x11, pulseaudio,
+                      session-bus, system-bus, ssh-auth, pcsc, cups, gpg-agent,
+                      inherit-wayland-socket
+  --device=NAME       Expose a device: all, dri, kvm, input, usb, shm, snd
+  --share=NAME        Share with the host: network, ipc
+  --unshare=NAME      Unshare from the host; process is already the case, every
+                      sandbox is its own jail: network, ipc, process, all
+  --filesystem=WHERE  Expose a filesystem: host, home, xdg-*, ~/path or /path,
+                      with a :ro or :create suffix; a leading ! takes one away
+  --command=CMD       Run CMD instead of the application's command
+  --env=VAR=VALUE     Set an environment variable
+  --devel             Use the developer environment (devel exports)
+  --branch=BRANCH     Expect this branch; warns when the active deploy is
+                      another
+  --arch=ARCH         Expect this architecture; warns when the active deploy is
+                      another
+  --clearenv          Drop the host environment
+  --file-forwarding   Forward @@ and @@u file arguments through the portal;
+                      always on, accepted because exported .desktop files pass
+                      it
+  --die-with-parent   Kill the application when flatpkg exits
+
+Global options:
+  -h, --help                 Show help; after a command, that command's page
+  --version                  Print the version and exit
+  --gl-drivers               Print the list of active GL drivers and exit
+  -v, --verbose              Show debug output
+  --ostree-verbose           Also pass through the output of the ostree tool
+  --profile                  Print how long each phase took, then a table ranked
+                             by the time spent in each phase alone
+  --no-color                 Disable colour output
+  -n, --simulate, --dry-run  Print the changeset without applying it
+  -l FILE                    Append logfmt records to FILE
+  -u, --installation=NAME    Select the installation: 'default' (system) or
+                             'user'
+  --user                     Use the user installation in ~/.local/share/flatpak
+  --system                   Use the system installation
+
+For the environment, see `flatpkg --help`.
