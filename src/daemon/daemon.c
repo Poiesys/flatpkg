@@ -142,7 +142,11 @@ int daemon_main(bool user) {
 		fpkg_errorf("daemon must run as root");
 		return 1;
 	}
-	(void)signal(SIGCHLD, SIG_IGN);
+	// Children have to be waitable: the daemon's own helpers - the base devfs
+	// rulesets, the store repair, the ruleset sweep - read an exit status,
+	// and with SIGCHLD ignored waitpid() answers ECHILD and every one of them
+	// "fails".  Workers are reaped in the loop below instead.
+	(void)signal(SIGCHLD, SIG_DFL);
 	(void)signal(SIGPIPE, SIG_IGN);
 	(void)signal(SIGHUP, SIG_IGN);
 
@@ -242,6 +246,7 @@ int daemon_main(bool user) {
 	}
 	// One daemon owns the run dir now; a tree no jail refers to is a leak.
 	if (!g_user) sandbox_gc_leaks();
+	if (!g_user) sandbox_gc_rulesets();
 	fpkg_infof("flatpkg daemon listening on %s (libostree %s)", g_socket,
 		   fp_repo_version());
 
@@ -259,7 +264,12 @@ int daemon_main(bool user) {
 
 	for (;;) {
 		struct pollfd pfd[1 + BUS_MAX_PEERS];
-		int n = 1 + broker_pollfds(pfd + 1, BUS_MAX_PEERS);
+		int n;
+
+		// Every worker is this process's child: reap them here.
+		while (waitpid(-1, NULL, WNOHANG) > 0)
+			;
+		n = 1 + broker_pollfds(pfd + 1, BUS_MAX_PEERS);
 		pfd[0].fd = lfd;
 		pfd[0].events = POLLIN;
 		pfd[0].revents = 0;
