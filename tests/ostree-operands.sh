@@ -76,15 +76,22 @@ def scan(path):
                 break
         joined = " ".join(block)
         words = re.findall(r'"([^"]*)"', joined)
-        sub = next((w for w in words if w != "ostree" and not w.startswith("-")), "")
-        sub2 = ""
-        if sub in ("remote", "config", "static-delta", "refs"):
-            rest = [w for w in words if w != "ostree"]
-            try:
-                idx = rest.index(sub)
-                sub2 = next((w for w in rest[idx + 1:] if not w.startswith("-")), "")
-            except ValueError:
-                pass
+        rest = [w for w in words if w != "ostree"]
+        sub = next((w for w in rest if not w.startswith("-")), "")
+        # A block may hold more than one argv (one per branch), so look at
+        # every adjacent pair: `refs --repo X` next to `remote refs` is one
+        # block, and the second pair is the subcommand that matters.
+        pairs = set(zip(rest, rest[1:]))
+        exempt = next((p for p in pairs if p in NO_SEPARATOR), None)
+        sub2 = exempt[1] if exempt is not None else ""
+        no_sep = exempt is not None
+        if no_sep and '"--"' in joined:
+            # `remote add|delete|refs` print their usage when given `--`: a
+            # separator here does not harden the site, it breaks it - this is
+            # how `remote refs` stopped listing a network remote.
+            findings.append((path, i + 1, sub, sub2,
+                             "has -- but this subcommand rejects it"))
+            continue
         if '"--"' in joined:
             # An option after the separator is a positional to ostree: this is
             # how `pull --disable-fsync -- remote ref --repo=...` broke, with
@@ -106,7 +113,7 @@ def scan(path):
             if re.search(re.escape(v) + r"(?![A-Za-z0-9_])", bare))
         if not present:
             continue
-        if (sub, sub2) in NO_SEPARATOR or (sub, "") in NO_SEPARATOR:
+        if no_sep:
             _fn, body = enclosing(starts, i + 1, text)
             if any(v in body for v in VALIDATORS):
                 continue

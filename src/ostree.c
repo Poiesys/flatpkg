@@ -1036,13 +1036,11 @@ char** fetch_remote_refs(const char* remote, size_t* n_out,
 		argv[nargv++] = "refs";
 		argv[nargv++] = "--repo";
 		argv[nargv++] = local_repo;
-		argv[nargv++] = "--";
 	} else {
 		argv[nargv++] = "ostree";
 		argv[nargv++] = "remote";
 		argv[nargv++] = "refs";
 		argv[nargv++] = repo_arg;
-		argv[nargv++] = "--";
 		argv[nargv++] = (char*)remote;
 	}
 	argv[nargv] = NULL;
