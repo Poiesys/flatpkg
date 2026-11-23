@@ -9,6 +9,10 @@
 # reaches the network or the live store.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# remote-list is parsed below, so it must not carry colour for the terminal
+# this guard happens to be run from.
+NO_COLOR=1
+export NO_COLOR
 . "$ROOT/tests/scratchd.sh"
 
 command -v ostree >/dev/null 2>&1 ||

@@ -63,8 +63,13 @@ fi
 [ -n "$bus" ] || echo "note: no live session bus; bus-dependent apps will fail"
 
 XWAY_PID=
+WLM_PID=
 cleanup() {
-	pkill -x wlmaker 2>/dev/null
+	# Kill the compositor THIS guard started, by pid: a blanket
+	# `pkill -x wlmaker` also kills the session compositor the rest of the
+	# suite is drawing on.
+	[ -n "$WLM_PID" ] && kill "$WLM_PID" 2>/dev/null
+	WLM_PID=
 	pkill -f 'flatpkg run' 2>/dev/null
 	[ -n "$XWAY_PID" ] && kill "$XWAY_PID" 2>/dev/null
 	XWAY_PID=
@@ -80,6 +85,7 @@ for app in $apps; do
 	XDG_RUNTIME_DIR="$RT" WLR_BACKENDS=headless WLR_RENDERER=pixman \
 		WLR_LIBINPUT_NO_DEVICES=1 XDG_SESSION_TYPE=wayland \
 		"$WLM" >"$SHOT_DIR/$app.compositor.log" 2>&1 &
+	WLM_PID=$!
 	sleep 6
 	# wlmaker starts a foot terminal at 0,0; it would cover an app window
 	# of the same position and make the capture show the terminal.

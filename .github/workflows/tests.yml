@@ -113,18 +113,128 @@ jobs:
 
           # The image is small and the toolchain plus a runtime with its
           # extension pulls fill it; the package cache is pure waste by now,
-          # and a leftover libostree build tree lands in /tmp.
+          # and a leftover libostree build tree lands in /tmp.  The guards'
+          # scratch builds and the valgrind reports go to /tmp, so give it
+          # memory instead of the last few hundred MiB of root.
           sudo pkg clean -a -y || true
           sudo rm -rf /tmp/libostree-ci.* || true
+          sudo mount -t tmpfs -o size=1536m tmpfs /tmp || true
+          sudo mkdir -p /tmp/.X11-unix
           df -h / 2>&1 || true
 
-          # No skip survives: FLATPKG_STRICT_SKIPS turns every SKIP into a
-          # failure that names the guard and its reason.  Re-enter as the same
-          # user so sudo rebuilds the group set from /etc/group; otherwise
-          # this session cannot connect to the daemon's 0660 socket either.
-          # dbus-run-session gives the guards a real session bus, which the
-          # portal and the visual sweep need and a headless VM has none of.
+          # A session bus and a display: the portal is D-Bus activated, the
+          # visual guards capture what the app drew, and a headless VM has
+          # neither.  The bus lives at the path the sandbox's own lookup tries
+          # (the "no session bus found" log line names it), and wlmaker's
+          # headless backend draws in software.
+          export XDG_RUNTIME_DIR="$HOME/.run/flatpkg-ci"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          dbus-daemon --session --nopidfile --fork --print-pid \
+              --address="unix:path=$XDG_RUNTIME_DIR/bus" >/dev/null
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+          XDG_SESSION_TYPE=wayland WLR_BACKENDS=headless WLR_RENDERER=pixman \
+              WLR_LIBINPUT_NO_DEVICES=1 wlmaker \
+              >"$XDG_RUNTIME_DIR/wlmaker.log" 2>&1 &
+          wl_wait=0
+          while [ -z "$(ls "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null)" ] &&
+                [ "$wl_wait" -lt 120 ]; do
+            sleep 0.5
+            wl_wait=$((wl_wait + 1))
+          done
+          WAYLAND_DISPLAY=$(basename "$(ls "$XDG_RUNTIME_DIR"/wayland-* 2>/dev/null | head -n 1)")
+          [ -n "$WAYLAND_DISPLAY" ] || {
+            echo "wlmaker did not create a Wayland socket" >&2
+            cat "$XDG_RUNTIME_DIR/wlmaker.log" >&2 || true
+            exit 1
+          }
+          export WAYLAND_DISPLAY
+          # wlmaker starts a foot terminal at 0,0; it would cover the app.
+          pkill -x foot 2>/dev/null || true
+
+          # The two guards that need Bazaar run in the second job: Bazaar
+          # brings its own GNOME 51 runtime, and the 11G image cannot hold
+          # that beside this job's visual stack and Flatseal's runtime.
+          guards=$(ls tests/*.sh | sed 's|.*/||' |
+              grep -vE '^(user-store-mount|x11-fallback)\.sh$' | tr '\n' ' ')
           sudo -u "$(id -un)" env HOME="$HOME" PATH="$PATH" \
-              dbus-run-session -- env \
+              XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
+              WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
+              DBUS_SESSION_BUS_ADDRESS="$DBUS_SESSION_BUS_ADDRESS" \
               FLATPKG_STRICT_SKIPS=1 FLATPKG_SANDBOX_LAUNCH=1 \
-              sh tests/run-suite.sh
+              sh tests/run-suite.sh $guards
+
+  # Two guards need Bazaar, which declares xdg-data/flatpak (user-store-mount)
+  # and fallback-x11+wayland (x11-fallback).  Bazaar's runtime is GNOME 51 and
+  # Flatseal's is GNOME 50, and two runtimes plus the visual toolchain do not
+  # fit in the image's 11G disk.  This box builds the same tree, installs only
+  # Bazaar, and runs exactly those two guards; the main job runs the rest.
+  bazaar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+    - uses: actions/checkout@v7
+    - name: Run the Bazaar guards on FreeBSD
+      uses: cross-platform-actions/action@v0.27.0
+      with:
+        operating_system: freebsd
+        version: '15.1'
+        architecture: x86-64
+        image_url: https://github.com/cross-platform-actions/freebsd-builder/releases/download/v0.17.0/freebsd-15.1-x86-64.qcow2
+        memory: 4096
+        cpu_count: 2
+        run: |
+          sudo pkg update -f
+          sudo kldload linux64 || true
+          kldstat | grep -q 'linux64.ko' ||
+            { echo "linux64 did not load" >&2; exit 1; }
+          sudo pkg install -y zig pkgconf dbus glib git gmake \
+            autoconf automake libtool bison gettext-runtime \
+            libarchive libgpg-error gpgme libsoup3 e2fsprogs-core \
+            python3 linux_base-rl9 xdg-dbus-proxy
+          sh scripts/ci-libostree.sh
+          make
+          sudo make install
+          sudo /sbin/ldconfig -m /usr/local/lib || true
+
+          sudo pw groupadd flatpkg || true
+          sudo pw groupmod flatpkg -m "$(id -un)"
+          sudo kldload mac_do || true
+          sudo sysctl 'security.mac.do.rules=uid='"$(id -u)"'>uid=*,gid=*,+gid=*'
+          mdo -u root true ||
+            { echo "mdo cannot reach root: mac_do is not set up" >&2; exit 1; }
+          sudo sysrc dbus_enable=YES
+          sudo service dbus start
+          sudo sysrc flatpkgd_enable=YES
+          sudo service flatpkgd start
+
+          socket_wait=0
+          while ! sudo test -S /var/run/flatpkg/control.sock && [ "$socket_wait" -lt 240 ]; do
+            sleep 0.25
+            socket_wait=$((socket_wait + 1))
+          done
+          if ! sudo test -S /var/run/flatpkg/control.sock; then
+            echo "flatpkgd did not create /var/run/flatpkg/control.sock" >&2
+            sudo service flatpkgd status || true
+            sudo tail -n 100 /var/log/flatpkgd.log 2>&1 || true
+            exit 1
+          fi
+
+          sudo flatpkg remote-add --if-not-exists flathub \
+              https://dl.flathub.org/repo/ || true
+          sudo flatpkg install -y io.github.kolunmi.Bazaar
+          sudo pkg clean -a -y || true
+
+          # x11-fallback only needs DISPLAY to name an X11 session; the app
+          # it launches is `--command=env`, and stage_x11 asks for the
+          # socket directory to exist.
+          export XDG_RUNTIME_DIR="$HOME/.run/flatpkg-ci"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          sudo mkdir -p /tmp/.X11-unix
+          export DISPLAY=:90
+
+          sudo -u "$(id -un)" env HOME="$HOME" PATH="$PATH" \
+              XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" DISPLAY="$DISPLAY" \
+              FLATPKG_STRICT_SKIPS=1 \
+              sh tests/run-suite.sh user-store-mount.sh x11-fallback.sh

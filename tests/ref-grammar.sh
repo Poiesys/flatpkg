@@ -10,6 +10,10 @@
 # planner and a valid remote name must still work.
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+# remote-list's output is parsed below, so it must not carry colour for the
+# terminal this guard happens to be run from.
+NO_COLOR=1
+export NO_COLOR
 . "$ROOT/tests/scratchd.sh"
 . "$ROOT/tests/commentlib.sh"
 
@@ -137,8 +141,10 @@ strip_comments <"$ROOT/src/shared/metadata.c" >"$T/metadata.c"
 grep -q 'ext_skip = !fpkg_component_ok(group + 10)' "$T/metadata.c" ||
 	note "an extension id is not run through the component grammar"
 
-[ "$fail" -eq 0 ] &&
-	# ostree reads an option after its positionals, so a remote URL has to look
+# The source half runs even when a functional case above failed: the missing
+# file a short-circuit left behind turned one failure into four "could not
+# carve" notes.
+# ostree reads an option after its positionals, so a remote URL has to look
 # like a URL before it goes into ostree's argv: "--gpg-import=/x" is an option
 # ostree would act on as root.
 strip_comments <"$ROOT/src/ostree_cmds.c" >"$T/cmds-stripped.c"
