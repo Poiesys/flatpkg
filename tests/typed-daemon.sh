@@ -529,12 +529,12 @@ if [ "$have_run" -eq 1 ]; then
 	[ "$rc" -ne 0 ] || note "run: a failing command was reported as success"
 
 	# Forwarded descriptors: the portal's Spawn hands them to the app on the numbers
-	# it names (FLATPKG_FORWARD_FDS).  A static Linux reader reads fd 9, so the claim
+	# it names (FLATPKG_FORWARD_FDS).  A Linux reader built for the runtime's loader reads fd 9, so
 	# is about the descriptor the app holds, not about the request.
 	if command -v zig >/dev/null 2>&1; then
 		printf '#include <unistd.h>\nint main(void){char b[64];ssize_t n=read(9,b,sizeof b);if(n<=0)return 1;return write(1,b,(size_t)n)==n?0:3;}\n' \
 			> "$tmp/readfd.c"
-		if zig cc --target=x86_64-linux-musl -static \
+		if zig cc --target=x86_64-linux-gnu \
 			-o "$tmp/readfd" "$tmp/readfd.c" > "$tmp/zig.log" 2>&1; then
 			mdo cp "$tmp/readfd" "$ap/files/bin/readfd"
 			mdo chmod 755 "$ap/files/bin/readfd"
@@ -566,7 +566,7 @@ if [ "$have_run" -eq 1 ]; then
 			grep -q "FLATPKG_FORWARD_FDS" "$tmp/fwd.err" ||
 				note "run with an unopened forwarded descriptor gave no reason"
 		else
-			echo "NOTE: zig could not build the static fd reader; forwarding was not exercised"
+			echo "NOTE: zig could not build the fd reader; forwarding was not exercised"
 		fi
 	else
 		echo "NOTE: no zig; forwarded descriptors were not exercised"
@@ -585,7 +585,7 @@ int main(void) {
 	for (;;) pause();
 }
 EOF
-		if zig cc --target=x86_64-linux-musl -static \
+		if zig cc --target=x86_64-linux-gnu \
 			-o "$tmp/sleeper" "$tmp/sleeper.c" >"$tmp/zig-sleeper.log" 2>&1; then
 			mdo cp "$tmp/sleeper" "$ap/files/bin/sleeper"
 			mdo chmod 755 "$ap/files/bin/sleeper"
@@ -622,7 +622,7 @@ EOF
 	fi
 
 	# A terminal on stdin, stdout and stderr: the app gets a pty of the daemon's own and the
-	# caller's terminal is relayed to it.  The static probe reports what the app holds - a
+	# caller's terminal is relayed to it.  The probe reports what the app holds - a
 	# terminal, the caller's size, a device that is not the caller's own.  "flood N" writes
 	# N KiB and exits at once ('#' only: letters also occur in the scratch dir's name).
 	if command -v zig >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
@@ -672,7 +672,7 @@ int main(int argc, char **argv) {
 	return strcmp(b, "five") == 0 ? 5 : 0;
 }
 EOF
-		if zig cc --target=x86_64-linux-musl -static \
+		if zig cc --target=x86_64-linux-gnu \
 			-o "$tmp/ttyprobe" "$tmp/ttyprobe.c" > "$tmp/zig.log" 2>&1; then
 			mdo cp "$tmp/ttyprobe" "$ap/files/bin/ttyprobe" ||
 				note "could not install ttyprobe into the app"
@@ -682,26 +682,6 @@ EOF
 			if ! mdo test -s "$ap/files/bin/ttyprobe"; then
 				note "ttyprobe is missing or empty in the deploy"
 			fi
-			# The probes are static musl built by zig.  If the app cannot
-			# exec one by name, an absolute path separates "not in the
-			# mount" from "PATH lookup", and the size says whether the
-			# copy is whole.
-			_tp_sz=$(mdo stat -f %z "$ap/files/bin/ttyprobe" 2>/dev/null ||
-				echo unknown)
-			echo "NOTE: ttyprobe on the host: $_tp_sz bytes"
-			if "$tmp/ttyprobe" flood 1 >/dev/null 2>&1; then
-				echo "NOTE: ttyprobe executes on the host"
-			else
-				echo "NOTE: ttyprobe does not execute on the host: rc=$?"
-			fi
-			NO_COLOR=1 TERM=dumb timeout 60 "$bin" run \
-				--command=/app/bin/ttyprobe org.test.Echo flood 1 \
-				>"$tmp/tp.out" 2>&1 && _tp=0 || _tp=$?
-			echo "NOTE: ttyprobe by absolute path: rc=$_tp $(tr '\n' ' ' < "$tmp/tp.out" | tail -c 800)"
-			NO_COLOR=1 TERM=dumb timeout 60 "$bin" run \
-				org.test.Echo after-copy >"$tmp/ac.out" 2>&1 &&
-				_ac=0 || _ac=$?
-			echo "NOTE: hello after the copy: rc=$_ac $(tr '\n' ' ' < "$tmp/ac.out" | cut -c1-600)"
 			NO_COLOR=1 TERM=xterm python3 "$ROOT/tests/ptyrun.py" --rows 31 --cols 97 \
 				--wait PROBE-WAITING --send 'hello\n' --timeout 90 "$tmp/pty.out" \
 				"$bin" run --command=ttyprobe org.test.Echo && rc=0 || rc=$?
