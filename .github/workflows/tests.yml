@@ -57,7 +57,7 @@ jobs:
           sudo pkg install -y zig pkgconf dbus glib git gmake \
             autoconf automake libtool bison gettext-runtime \
             libarchive libgpg-error gpgme libsoup3 e2fsprogs-core \
-            python3 linux_base-rl9 \
+            python3 linux_base-rl9 valgrind \
             xdg-dbus-proxy wayland wlmaker xwayland grim foot
           sh scripts/ci-libostree.sh
           make
@@ -72,7 +72,16 @@ jobs:
           # daemon makes the run directory root:flatpkg 0770.
           sudo pw groupadd flatpkg || true
           sudo pw groupmod flatpkg -m "$(id -un)"
-          sudo sysctl security.bsd.unprivileged_setcred=1 || true
+          # mdo(1) is how the root-half guards escalate, and it authorizes
+          # through mac_do(4), not the old setcred sysctl: load the policy and
+          # install the rule this uid needs to become any uid/gid.  A fresh
+          # boot has neither, and with no rule mdo is silently refused.
+          sudo kldload mac_do || true
+          sudo sysctl 'security.mac.do.rules=uid='"$(id -u)"'>uid=*,gid=*,+gid=*'
+          mdo -u root true ||
+            { echo "mdo cannot reach root: mac_do is not set up" >&2; exit 1; }
+          # nullfs-duplicate.sh mounts as the user, which needs this.
+          sudo sysctl vfs.usermount=1 || true
           sudo sysrc dbus_enable=YES
           sudo service dbus start
           sudo sysrc flatpkgd_enable=YES
@@ -113,6 +122,9 @@ jobs:
           # failure that names the guard and its reason.  Re-enter as the same
           # user so sudo rebuilds the group set from /etc/group; otherwise
           # this session cannot connect to the daemon's 0660 socket either.
+          # dbus-run-session gives the guards a real session bus, which the
+          # portal and the visual sweep need and a headless VM has none of.
           sudo -u "$(id -un)" env HOME="$HOME" PATH="$PATH" \
+              dbus-run-session -- env \
               FLATPKG_STRICT_SKIPS=1 FLATPKG_SANDBOX_LAUNCH=1 \
               sh tests/run-suite.sh
