@@ -107,8 +107,7 @@ jobs:
           # and a leftover libostree build tree lands in /tmp.
           sudo pkg clean -a -y || true
           sudo rm -rf /tmp/libostree-ci.* || true
-          df -h / /tmp /var /usr/local 2>&1 || true
-          du -sh /var/db/flatpkg /var/cache/pkg 2>/dev/null || true
+          df -h / 2>&1 || true
 
           # No skip survives: FLATPKG_STRICT_SKIPS turns every SKIP into a
           # failure that names the guard and its reason.  Re-enter as the same
