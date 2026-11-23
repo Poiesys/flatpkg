@@ -62,26 +62,37 @@ jobs:
           sh scripts/ci-libostree.sh
           make
           sudo make install
+          # make install adds libflatpkg_shared.so after ci-libostree.sh last
+          # ran ldconfig, so put the hints back for the daemon to load it.
+          sudo /sbin/ldconfig -m /usr/local/lib || true
 
           # The daemon is root's and the suite is the caller's, the same split
-          # as a developer's box.  mdo is how the guards reach root.
+          # as a developer's box.  mdo is how the guards reach root.  The
+          # group is the daemon's socket mode and the dbus policy's owner, so
+          # it exists before either starts.
+          sudo pw groupadd flatpkg || true
+          sudo pw groupmod flatpkg -m "$(id -un)"
           sudo sysctl security.bsd.unprivileged_setcred=1 || true
           sudo sysrc dbus_enable=YES
           sudo service dbus start
           sudo sysrc flatpkgd_enable=YES
           sudo service flatpkgd start
 
+          # -f on FreeBSD 15 means "close the fds", not "foreground", and the
+          # rc.d script's -o sends everything the daemon says to this file.
+          # Wait for the socket, then show that log instead of a bare failure.
           socket_wait=0
-          while [ ! -S /var/run/flatpkg/control.sock ] && [ "$socket_wait" -lt 30 ]; do
-            sleep 0.1
+          while [ ! -S /var/run/flatpkg/control.sock ] && [ "$socket_wait" -lt 120 ]; do
+            sleep 0.25
             socket_wait=$((socket_wait + 1))
           done
           if [ ! -S /var/run/flatpkg/control.sock ]; then
             echo "flatpkgd did not create /var/run/flatpkg/control.sock" >&2
+            sudo service flatpkgd status || true
+            sudo tail -n 100 /var/log/flatpkgd.log 2>&1 || true
+            sudo tail -n 100 /var/log/messages 2>&1 || true
             exit 1
           fi
-          sudo pw groupadd flatpkg || true
-          sudo pw groupmod flatpkg -m "$(id -un)"
 
           # The sanctioned app for sandbox-launch.sh and spawn-signal-scope.sh.
           # It draws on the off-screen compositor too, so it is also what the
