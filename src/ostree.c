@@ -1159,12 +1159,21 @@ int ostree_fetch_ref_metadata(const char* remote, const char* request,
 
 	fpkg_ref_t r;
 	if (ref_parse(request, &r) != 0) return -1;
-	const char* kind = strncmp(request, "runtime/", 8) == 0 ? "runtime"
-			   : strncmp(request, "extension/", 10) == 0
-			       ? "extension"
-			       : "app";
+	// The request may carry a remote: prefix; classify the ref body, not
+	// the start of the string, or "flathub:extension/..." reads as an app.
+	const char* rbody = strchr(request, ':');
+
+	rbody = rbody != NULL ? rbody + 1 : request;
+	const char* kind = strncmp(rbody, "runtime/", 8) == 0 ? "runtime"
+			   : strncmp(rbody, "extension/", 10) == 0
+				   ? "extension"
+				   : "app";
 	char refstr[512];
-	ref_full(&r, kind, refstr, sizeof(refstr));
+	// A solver extension row is spelled extension/<id>, but the remote
+	// publishes that ref under runtime/<id>.  Keep "extension" for the
+	// metadata rules below and use "runtime" for the ref itself.
+	ref_full(&r, strcmp(kind, "extension") == 0 ? "runtime" : kind,
+		 refstr, sizeof(refstr));
 
 	char* rem = NULL;
 	if (remote != NULL && *remote != '\0') {

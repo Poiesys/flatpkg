@@ -766,13 +766,22 @@ static bool typed_plan_install(typed_ctx_t* c, int* status) {
 		size_t nplanned = 0;
 
 		for (size_t k = 0; k < c->plan.cs.count && k < FP_APPLY_MAX; k++) {
+			flatpkg_change_t* row = &c->plan.cs.items[k];
+			// Only rows that will be changed need metadata.  The solver
+			// leaves a KEEP row for every installed app; prefetching those
+			// used first_remote(), which is the wrong remote for apps from
+			// another repo, and failed the whole install.
+			if (row->type != FP_CHANGE_INSTALL &&
+			    row->type != FP_CHANGE_UPGRADE &&
+			    row->type != FP_CHANGE_DOWNGRADE &&
+			    row->type != FP_CHANGE_REINSTALL)
+				continue;
 			// The solver writes extension rows as extension/<id>/...; the
 			// remote publishes them under the runtime prefix, so they are
 			// not directly fetchable and are left to the planner.
-			if (strncmp(c->plan.cs.items[k].ref, "extension/", 10) ==
-			    0)
+			if (strncmp(row->ref, "extension/", 10) == 0)
 				continue;
-			planned[nplanned++] = c->plan.cs.items[k].ref;
+			planned[nplanned++] = row->ref;
 		}
 		if (prefetch_meta(c->fd, planned, nplanned) != 0) {
 			ostree_plan_meta_reset();

@@ -1188,9 +1188,25 @@ static size_t expand_one_runtime(flatpkg_changeset_t* cs, const char* remote,
 				  &refs, &nrefs);
 	fp_metadata_free(&rmeta);
 	for (size_t k = 0; k < nrefs; k++) {
-		char eref[512];
-		snprintf(eref, sizeof(eref), "extension/%s/%s/%s", refs[k].id,
-			 refs[k].arch, refs[k].branch ? refs[k].branch : "");
+		char plain[512], eref[640];
+		char full[512];
+
+		snprintf(plain, sizeof(plain), "extension/%s/%s/%s",
+			 refs[k].id, refs[k].arch,
+			 refs[k].branch ? refs[k].branch : "");
+		// A runtime's extensions live on the remote that has the runtime,
+		// which is often not the app's remote: an app from a small repo can
+		// declare a GNOME runtime whose GL layer is on flathub.  Spell the
+		// remote on the row so the prefetch and the pull both use it.
+		snprintf(full, sizeof(full), "%s/%s/%s/%s", "runtime",
+			 refs[k].id, refs[k].arch,
+			 refs[k].branch ? refs[k].branch : "");
+		char* erem = remote_for_ref(use_remote, full);
+		if (erem != NULL && *erem != '\0')
+			snprintf(eref, sizeof(eref), "%s:%s", erem, plain);
+		else
+			snprintf(eref, sizeof(eref), "%s", plain);
+		free(erem);
 		size_t before = cs->count;
 		cs_add_install_once(cs, eref, refs[k].branch);
 		if (cs->count != before) added++;
@@ -1457,8 +1473,23 @@ static void install_req_add_row(flatpkg_changeset_t* cs,
 				const install_req_t* q, bool reinstall) {
 	assert(cs != NULL);
 	assert(q != NULL);
-	char nref[512];
-	ref_full(&q->ref, q->dep_type, nref, sizeof(nref));
+	char nref[640];
+
+	// ref_full() drops the remote, but a row from `install REMOTE REF` must
+	// carry it: the prefetch uses the row to fetch metadata, and with no
+	// prefix it falls back to first_remote(), which is the wrong repo for
+	// an app from another remote.
+	const char* rowremote = q->remote != NULL && *q->remote != '\0'
+					? q->remote
+					: q->ref.remote;
+	if (rowremote != NULL && *rowremote != '\0') {
+		char plain[512];
+
+		ref_full(&q->ref, q->dep_type, plain, sizeof(plain));
+		snprintf(nref, sizeof(nref), "%s:%s", rowremote, plain);
+	} else {
+		ref_full(&q->ref, q->dep_type, nref, sizeof(nref));
+	}
 	if (q->is_ext) {
 		// An extension requested by itself (a flatpak Deploy) is not a
 		// world entry: the app or runtime that declares it owns it.
@@ -1469,7 +1500,24 @@ static void install_req_add_row(flatpkg_changeset_t* cs,
 			changeset_add_install(cs, nref, branch);
 		return;
 	}
-	if (changeset_has_ref_id(cs, q->ref.id)) return;
+	if (changeset_has_ref_id(cs, q->ref.id)) {
+		// The solver left a KEEP row for this id with a remote-less ref.
+		// The request names the remote; put it on the row so the prefetch
+		// does not fall back to first_remote().
+		for (size_t i = 0; i < cs->count; i++) {
+			fpkg_ref_t existing;
+
+			if (ref_parse(cs->items[i].ref, &existing) != 0)
+				continue;
+			bool same = strcmp(existing.id, q->ref.id) == 0;
+			ref_free(&existing);
+			if (!same) continue;
+			free(cs->items[i].ref);
+			cs->items[i].ref = xstrdup(nref);
+			break;
+		}
+		return;
+	}
 	if (reinstall)
 		changeset_add_reinstall(cs, nref);
 	else
